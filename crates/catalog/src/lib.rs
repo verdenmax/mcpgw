@@ -73,6 +73,26 @@ impl Catalog {
     }
 }
 
+/// Error returned when loading a catalog from JSON.
+#[derive(Debug)]
+pub struct CatalogLoadError(pub serde_json::Error);
+
+impl std::fmt::Display for CatalogLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to parse catalog JSON: {}", self.0)
+    }
+}
+
+impl std::error::Error for CatalogLoadError {}
+
+impl Catalog {
+    /// Parse a JSON array of `ToolDef` objects into a `Catalog`.
+    pub fn from_json_str(json: &str) -> Result<Self, CatalogLoadError> {
+        let tools: Vec<ToolDef> = serde_json::from_str(json).map_err(CatalogLoadError)?;
+        Ok(Catalog::from_tooldefs(tools))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +141,28 @@ mod tests {
         c.remove_server("github");
         assert_eq!(c.len(), 1);
         assert!(c.get("slack__post_message").is_some());
+    }
+
+    #[test]
+    fn from_json_str_parses_array_of_tools() {
+        let json = r#"
+        [
+          {"server":"github","name":"create_issue","description":"Create an issue",
+           "input_schema":{"type":"object"}},
+          {"server":"slack","name":"post_message","description":"Post a message"}
+        ]"#;
+        let c = Catalog::from_json_str(json).expect("valid json");
+        assert_eq!(c.len(), 2);
+        assert_eq!(
+            c.get("github__create_issue").unwrap().description,
+            "Create an issue"
+        );
+        // input_schema defaults to Null when omitted.
+        assert_eq!(c.get("slack__post_message").unwrap().input_schema, Value::Null);
+    }
+
+    #[test]
+    fn from_json_str_rejects_invalid_json() {
+        assert!(Catalog::from_json_str("not json").is_err());
     }
 }
