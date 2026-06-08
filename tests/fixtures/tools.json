@@ -1,0 +1,10 @@
+[
+  {"server":"github","name":"create_issue","description":"Create a new issue in a GitHub repository"},
+  {"server":"github","name":"list_pull_requests","description":"List open pull requests for a repository"},
+  {"server":"github","name":"merge_pull_request","description":"Merge a pull request into the base branch"},
+  {"server":"slack","name":"post_message","description":"Send a chat message to a Slack channel"},
+  {"server":"slack","name":"list_channels","description":"List available Slack channels"},
+  {"server":"weather","name":"get_forecast","description":"Get the weather forecast for a location"},
+  {"server":"filesystem","name":"read_file","description":"Read the contents of a file from disk"},
+  {"server":"filesystem","name":"write_file","description":"Write contents to a file on disk"}
+]
