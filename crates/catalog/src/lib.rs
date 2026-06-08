@@ -83,7 +83,11 @@ impl std::fmt::Display for CatalogLoadError {
     }
 }
 
-impl std::error::Error for CatalogLoadError {}
+impl std::error::Error for CatalogLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 impl Catalog {
     /// Parse a JSON array of `ToolDef` objects into a `Catalog`.
