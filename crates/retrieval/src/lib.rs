@@ -140,6 +140,12 @@ impl RetrievalStrategy for Bm25Strategy {
                     score,
                 }
             })
+            // Keep only docs that share a query term. This `> 0.0` test is only a correct
+            // "matched at all" check because `idf()` is always > 0 (the `+ 1.0` inside the ln
+            // guarantees it): every contributing term adds a strictly positive amount, and
+            // non-matching docs keep their initial 0.0. If `idf()` is ever changed to allow
+            // negative values (e.g. the textbook BM25 idf), this filter would start dropping
+            // legitimately-matched docs — keep that invariant in sync.
             .filter(|s| s.score > 0.0)
             .collect();
 
