@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/catalog", "crates/retrieval", "crates/config"]
-# Future members (added by later tasks; cargo requires each manifest to exist):
-# "crates/mcpgw"
+members = ["crates/catalog", "crates/retrieval", "crates/config", "crates/mcpgw"]
 
 [workspace.package]
 edition = "2021"

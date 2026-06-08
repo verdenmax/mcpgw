@@ -1,0 +1,11 @@
+[package]
+name = "mcpgw"
+version = "0.1.0"
+edition = { workspace = true }
+
+[dependencies]
+catalog = { path = "../catalog" }
+retrieval = { path = "../retrieval" }
+config = { path = "../config" }
+serde_json = { workspace = true }
+clap = { workspace = true }

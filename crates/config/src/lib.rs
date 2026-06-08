@@ -44,6 +44,12 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Convenience constructor returning the all-defaults config.
+    pub fn default_from_empty() -> Self {
+        // Parsing an empty document applies every `#[serde(default)]`.
+        Config::from_toml_str("").expect("empty config is always valid")
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         const KNOWN: [&str; 3] = ["bm25", "vector", "hybrid"];
         if !KNOWN.contains(&self.retrieval.strategy.as_str()) {
