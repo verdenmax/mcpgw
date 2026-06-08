@@ -25,7 +25,13 @@ fn search_subcommand_returns_relevant_tool() {
         .expect("run mcpgw");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("weather__get_forecast"), "stdout was: {stdout}");
+
+    // Output must be a JSON array, and --top-k 1 must actually cap it to one element.
+    let results: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("stdout is not JSON: {e}\n{stdout}"));
+    let arr = results.as_array().expect("output is a JSON array");
+    assert_eq!(arr.len(), 1, "--top-k 1 should return exactly one hit, got: {stdout}");
+    assert_eq!(arr[0]["name"], "weather__get_forecast", "stdout was: {stdout}");
 }
 
 #[test]
