@@ -16,11 +16,15 @@ pub fn tool_to_def(server: &str, tool: &Tool) -> ToolDef {
 
 /// Ingest a server's tools into `catalog`. Returns the number of intra-server
 /// duplicate tool names that were skipped (already warned via tracing).
+///
+/// Dedup is per-call (intra-server, first-wins). Re-ingesting a server already present
+/// in the catalog overwrites its entries via `upsert`; the returned count reflects only
+/// collisions within `tools`, not against prior catalog state.
 pub fn ingest_tools(catalog: &mut Catalog, server: &str, tools: &[Tool]) -> usize {
     let mut seen = std::collections::HashSet::new();
     let mut dupes = 0;
     for tool in tools {
-        if !seen.insert(tool.name.to_string()) {
+        if !seen.insert(tool.name.as_ref()) {
             dupes += 1;
             tracing::warn!(server, tool = %tool.name, "duplicate tool name from upstream; keeping first");
             continue;
@@ -60,6 +64,23 @@ mod tests {
     fn tool_to_def_handles_missing_description() {
         let d = tool_to_def("s", &tool("t", None));
         assert_eq!(d.description, "");
+    }
+
+    #[test]
+    fn tool_to_def_preserves_input_schema() {
+        use rmcp::model::JsonObject;
+        let mut schema = JsonObject::new();
+        schema.insert("type".into(), serde_json::Value::String("object".into()));
+        schema.insert(
+            "required".into(),
+            serde_json::Value::Array(vec![serde_json::Value::String("x".into())]),
+        );
+        let t = Tool::new("t".to_string(), "d".to_string(), schema);
+        let d = tool_to_def("s", &t);
+        assert_eq!(
+            d.input_schema,
+            serde_json::json!({ "type": "object", "required": ["x"] })
+        );
     }
 
     #[test]
