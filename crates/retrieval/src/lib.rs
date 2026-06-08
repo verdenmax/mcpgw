@@ -160,6 +160,26 @@ impl RetrievalStrategy for Bm25Strategy {
     }
 }
 
+use config::RetrievalConfig;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum StrategyError {
+    #[error("retrieval strategy {0:?} is not implemented in this version")]
+    NotImplemented(String),
+}
+
+/// Construct a retrieval strategy from config. Only "bm25" is implemented in v1;
+/// "vector" and "hybrid" are reserved for P2 and return `NotImplemented`.
+pub fn build_strategy(
+    cfg: &RetrievalConfig,
+) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
+    match cfg.strategy.as_str() {
+        "bm25" => Ok(Box::new(Bm25Strategy::new())),
+        other => Err(StrategyError::NotImplemented(other.to_string())),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -226,5 +246,24 @@ mod tests {
         // top_k caps the result count.
         let capped = s.search("repository", 1);
         assert_eq!(capped.len(), 1);
+    }
+
+    use config::RetrievalConfig;
+
+    #[test]
+    fn build_strategy_returns_bm25_and_indexes() {
+        let cfg = RetrievalConfig { strategy: "bm25".into(), top_k: 8 };
+        let mut strat = build_strategy(&cfg).expect("bm25 is supported");
+        strat.index(&sample_catalog());
+        let hits = strat.search("forecast", 8);
+        assert_eq!(hits.first().map(|h| h.qualified_name.as_str()), Some("weather__get_forecast"));
+    }
+
+    #[test]
+    fn build_strategy_errors_on_unimplemented_strategies() {
+        for s in ["vector", "hybrid"] {
+            let cfg = RetrievalConfig { strategy: s.into(), top_k: 8 };
+            assert!(matches!(build_strategy(&cfg), Err(StrategyError::NotImplemented(_))));
+        }
     }
 }

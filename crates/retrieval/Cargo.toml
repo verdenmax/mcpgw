@@ -6,6 +6,7 @@ edition = { workspace = true }
 [dependencies]
 catalog = { path = "../catalog" }
 thiserror = { workspace = true }
+config = { path = "../config" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
