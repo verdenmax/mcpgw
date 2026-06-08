@@ -1,6 +1,7 @@
 //! mcpgw `upstream`: connect to upstream MCP servers, ingest their tools into a
 //! namespaced catalog, and forward tool calls.
 
+pub mod mapping;
 pub mod testkit;
 
 #[cfg(test)]
