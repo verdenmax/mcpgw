@@ -22,6 +22,57 @@ impl ToolDef {
     }
 }
 
+use std::collections::BTreeMap;
+
+/// In-memory registry of all tools across upstream servers, keyed by qualified name.
+#[derive(Debug, Default, Clone)]
+pub struct Catalog {
+    tools: BTreeMap<String, ToolDef>,
+}
+
+impl Catalog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert or replace a tool (keyed by its qualified name).
+    pub fn upsert(&mut self, tool: ToolDef) {
+        self.tools.insert(tool.qualified_name(), tool);
+    }
+
+    /// Remove every tool belonging to `server`.
+    pub fn remove_server(&mut self, server: &str) {
+        self.tools.retain(|_, t| t.server != server);
+    }
+
+    /// Look up a tool by qualified name (e.g. "github__create_issue").
+    pub fn get(&self, qualified_name: &str) -> Option<&ToolDef> {
+        self.tools.get(qualified_name)
+    }
+
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
+    /// Iterate over all tools in deterministic (qualified-name) order.
+    pub fn iter(&self) -> impl Iterator<Item = &ToolDef> {
+        self.tools.values()
+    }
+
+    /// Build a catalog from a flat list of tools.
+    pub fn from_tooldefs(tools: Vec<ToolDef>) -> Self {
+        let mut c = Catalog::new();
+        for t in tools {
+            c.upsert(t);
+        }
+        c
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,5 +86,40 @@ mod tests {
             input_schema: Value::Null,
         };
         assert_eq!(t.qualified_name(), "github__create_issue");
+    }
+
+    fn tool(server: &str, name: &str) -> ToolDef {
+        ToolDef {
+            server: server.into(),
+            name: name.into(),
+            description: format!("{server} {name}"),
+            input_schema: Value::Null,
+        }
+    }
+
+    #[test]
+    fn catalog_upsert_get_and_remove_server() {
+        let mut c = Catalog::new();
+        c.upsert(tool("github", "create_issue"));
+        c.upsert(tool("github", "list_repos"));
+        c.upsert(tool("slack", "post_message"));
+
+        assert_eq!(c.len(), 3);
+        assert_eq!(
+            c.get("github__create_issue").map(|t| t.name.as_str()),
+            Some("create_issue")
+        );
+
+        // upsert with the same qualified name replaces, not duplicates.
+        let mut updated = tool("github", "create_issue");
+        updated.description = "updated".into();
+        c.upsert(updated);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c.get("github__create_issue").unwrap().description, "updated");
+
+        // removing a server drops only its tools.
+        c.remove_server("github");
+        assert_eq!(c.len(), 1);
+        assert!(c.get("slack__post_message").is_some());
     }
 }
