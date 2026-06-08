@@ -1278,3 +1278,22 @@ Plan 2 will add, against the same `Catalog` + `RetrievalStrategy` interfaces:
 - `crates/downstream`: `rmcp` server exposing the three meta-tools over stdio + axum HTTP.
 - `crates/metatools`: `search_tools` / `get_tool_details` / `call_tool` wiring catalog + retrieval + router.
 - `crates/config`: extend with `[server]` and `[[upstream]]` sections (already reserved in the spec).
+
+### Deferred notes from the Plan 1 final review (address during Plan 2)
+
+These were judged non-blocking for Plan 1 but should be revisited as the live I/O layer lands:
+
+- **Dual strategy whitelist.** `config::validate` accepts `["bm25","vector","hybrid"]` while
+  `retrieval::build_strategy` only implements `bm25`. The lists can drift — when implementing
+  vector/hybrid, make the "implemented?" check the single source of truth (e.g. have config defer
+  to the retrieval layer, or add a comment cross-linking them).
+- **CLI default catalog path.** `mcpgw`'s `--catalog` defaults to the dev fixture
+  `tests/fixtures/tools.json` (CWD-relative). Before anything user-facing ships, make `--catalog`
+  required or env/config-driven.
+- **`index(&mut self)` vs concurrency.** The live server will refresh the catalog while serving
+  searches. `RetrievalStrategy::index(&mut self)` forces a write lock over the whole strategy during
+  re-index. Consider a build-then-swap shape (build an immutable index, swap behind `ArcSwap`) so
+  reads aren't blocked during refresh.
+- **Silent dedup on catalog load.** `Catalog::upsert` (and thus `from_json_str`) silently
+  last-wins on duplicate `{server}__{name}`. When ingesting tool lists from live upstreams,
+  add explicit duplicate/collision detection (warn or error).
