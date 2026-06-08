@@ -159,7 +159,6 @@ impl RetrievalStrategy for Bm25Strategy {
     }
 }
 
-use config::RetrievalConfig;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -168,10 +167,13 @@ pub enum StrategyError {
     NotImplemented(String),
 }
 
-/// Construct a retrieval strategy from config. Only "bm25" is implemented in v1;
+/// Construct a retrieval strategy by name. Only "bm25" is implemented in v1;
 /// "vector" and "hybrid" are reserved for P2 and return `NotImplemented`.
-pub fn build_strategy(cfg: &RetrievalConfig) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
-    match cfg.strategy.as_str() {
+///
+/// Takes a plain `&str` (not a config type) so this crate stays free of any
+/// dependency on `config` — callers pass `cfg.retrieval.strategy.as_str()`.
+pub fn build_strategy(strategy: &str) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
+    match strategy {
         "bm25" => Ok(Box::new(Bm25Strategy::new())),
         other => Err(StrategyError::NotImplemented(other.to_string())),
     }
@@ -260,15 +262,9 @@ mod tests {
         assert_eq!(capped.len(), 1);
     }
 
-    use config::RetrievalConfig;
-
     #[test]
     fn build_strategy_returns_bm25_and_indexes() {
-        let cfg = RetrievalConfig {
-            strategy: "bm25".into(),
-            top_k: 8,
-        };
-        let mut strat = build_strategy(&cfg).expect("bm25 is supported");
+        let mut strat = build_strategy("bm25").expect("bm25 is supported");
         strat.index(&sample_catalog());
         let hits = strat.search("forecast", 8);
         assert_eq!(
@@ -280,12 +276,8 @@ mod tests {
     #[test]
     fn build_strategy_errors_on_unimplemented_strategies() {
         for s in ["vector", "hybrid"] {
-            let cfg = RetrievalConfig {
-                strategy: s.into(),
-                top_k: 8,
-            };
             assert!(matches!(
-                build_strategy(&cfg),
+                build_strategy(s),
                 Err(StrategyError::NotImplemented(_))
             ));
         }

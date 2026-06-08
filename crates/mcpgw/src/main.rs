@@ -55,7 +55,7 @@ fn run(cli: Cli) -> Result<(), String> {
 
     match cli.command {
         Command::Search { query, top_k } => {
-            let mut strat = build_strategy(&cfg.retrieval).map_err(|e| e.to_string())?;
+            let mut strat = build_strategy(&cfg.retrieval.strategy).map_err(|e| e.to_string())?;
             strat.index(&catalog);
             let k = top_k.unwrap_or(cfg.retrieval.top_k);
             let hits = strat.search(&query, k);
