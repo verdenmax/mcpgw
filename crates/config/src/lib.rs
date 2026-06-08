@@ -30,9 +30,15 @@ impl Default for RetrievalConfig {
     }
 }
 
+/// One upstream MCP server.
+///
+/// Note: this struct flattens an internally-tagged transport enum, which precludes
+/// `#[serde(deny_unknown_fields)]`. Unknown keys inside an `[[upstream]]` table are
+/// therefore silently ignored (e.g. a `comand` typo would be dropped, surfacing later
+/// as a connection failure rather than a parse error).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct UpstreamConfig {
-    /// Namespace prefix for this server's tools. Must not contain "__".
+    /// Namespace prefix for this server's tools. Must be non-blank and must not contain "__".
     pub name: String,
     /// Per-call timeout in milliseconds.
     #[serde(default = "default_call_timeout_ms")]
@@ -92,8 +98,10 @@ impl Config {
         }
         let mut seen = std::collections::HashSet::new();
         for u in &self.upstreams {
-            if u.name.is_empty() {
-                return Err(ConfigError::Invalid("upstream.name must not be empty".into()));
+            if u.name.trim().is_empty() {
+                return Err(ConfigError::Invalid(
+                    "upstream.name must not be empty or blank".into(),
+                ));
             }
             if u.name.contains("__") {
                 return Err(ConfigError::Invalid(format!(
@@ -214,5 +222,42 @@ mod tests {
     fn upstreams_default_to_empty() {
         let cfg = Config::from_toml_str("").unwrap();
         assert!(cfg.upstreams.is_empty());
+    }
+
+    #[test]
+    fn parses_explicit_call_timeout_through_flatten() {
+        // Lock the flatten path for an explicitly-specified numeric field, plus the
+        // args/env_passthrough defaults when omitted.
+        let cfg = Config::from_toml_str(
+            "[[upstream]]\nname=\"s\"\ncall_timeout_ms=5000\ntransport=\"stdio\"\ncommand=\"x\"\n",
+        )
+        .unwrap();
+        let u = &cfg.upstreams[0];
+        assert_eq!(u.call_timeout_ms, 5000);
+        match &u.transport {
+            UpstreamTransport::Stdio { args, env_passthrough, .. } => {
+                assert!(args.is_empty());
+                assert!(env_passthrough.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_transport() {
+        // Guards behavior once an `http` variant is added in M1-C.
+        let err = Config::from_toml_str(
+            "[[upstream]]\nname=\"s\"\ntransport=\"carrier-pigeon\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn rejects_blank_upstream_name() {
+        let err = Config::from_toml_str(
+            "[[upstream]]\nname=\"   \"\ntransport=\"stdio\"\ncommand=\"x\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
     }
 }
