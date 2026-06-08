@@ -4,10 +4,9 @@ use retrieval::{Bm25Strategy, RetrievalStrategy};
 fn load_catalog() -> Catalog {
     // `cargo test` sets CWD to the crate's manifest dir (crates/retrieval) for a
     // workspace member, so resolve the workspace-root fixture via CARGO_MANIFEST_DIR.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/tools.json");
-    let json =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/tools.json");
+    let json = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
     Catalog::from_json_str(&json).expect("fixture must be valid")
 }
 

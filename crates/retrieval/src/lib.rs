@@ -128,9 +128,8 @@ impl RetrievalStrategy for Bm25Strategy {
                 for term in &q_terms {
                     if let Some(&f) = doc.term_freq.get(term) {
                         let f = f as f32;
-                        let denom = f
-                            + self.k1
-                                * (1.0 - self.b + self.b * (doc.len as f32 / self.avgdl));
+                        let denom =
+                            f + self.k1 * (1.0 - self.b + self.b * (doc.len as f32 / self.avgdl));
                         score += self.idf(term) * (f * (self.k1 + 1.0)) / denom;
                     }
                 }
@@ -171,15 +170,12 @@ pub enum StrategyError {
 
 /// Construct a retrieval strategy from config. Only "bm25" is implemented in v1;
 /// "vector" and "hybrid" are reserved for P2 and return `NotImplemented`.
-pub fn build_strategy(
-    cfg: &RetrievalConfig,
-) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
+pub fn build_strategy(cfg: &RetrievalConfig) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
     match cfg.strategy.as_str() {
         "bm25" => Ok(Box::new(Bm25Strategy::new())),
         other => Err(StrategyError::NotImplemented(other.to_string())),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -209,10 +205,26 @@ mod tests {
 
     fn sample_catalog() -> Catalog {
         Catalog::from_tooldefs(vec![
-            tool("github", "create_issue", "Create a new issue in a GitHub repository"),
-            tool("github", "list_pull_requests", "List pull requests for a repository"),
-            tool("slack", "post_message", "Send a chat message to a Slack channel"),
-            tool("weather", "get_forecast", "Get the weather forecast for a location"),
+            tool(
+                "github",
+                "create_issue",
+                "Create a new issue in a GitHub repository",
+            ),
+            tool(
+                "github",
+                "list_pull_requests",
+                "List pull requests for a repository",
+            ),
+            tool(
+                "slack",
+                "post_message",
+                "Send a chat message to a Slack channel",
+            ),
+            tool(
+                "weather",
+                "get_forecast",
+                "Get the weather forecast for a location",
+            ),
         ])
     }
 
@@ -252,18 +264,30 @@ mod tests {
 
     #[test]
     fn build_strategy_returns_bm25_and_indexes() {
-        let cfg = RetrievalConfig { strategy: "bm25".into(), top_k: 8 };
+        let cfg = RetrievalConfig {
+            strategy: "bm25".into(),
+            top_k: 8,
+        };
         let mut strat = build_strategy(&cfg).expect("bm25 is supported");
         strat.index(&sample_catalog());
         let hits = strat.search("forecast", 8);
-        assert_eq!(hits.first().map(|h| h.qualified_name.as_str()), Some("weather__get_forecast"));
+        assert_eq!(
+            hits.first().map(|h| h.qualified_name.as_str()),
+            Some("weather__get_forecast")
+        );
     }
 
     #[test]
     fn build_strategy_errors_on_unimplemented_strategies() {
         for s in ["vector", "hybrid"] {
-            let cfg = RetrievalConfig { strategy: s.into(), top_k: 8 };
-            assert!(matches!(build_strategy(&cfg), Err(StrategyError::NotImplemented(_))));
+            let cfg = RetrievalConfig {
+                strategy: s.into(),
+                top_k: 8,
+            };
+            assert!(matches!(
+                build_strategy(&cfg),
+                Err(StrategyError::NotImplemented(_))
+            ));
         }
     }
 }

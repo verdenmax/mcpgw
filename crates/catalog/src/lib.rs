@@ -139,7 +139,10 @@ mod tests {
         updated.description = "updated".into();
         c.upsert(updated);
         assert_eq!(c.len(), 3);
-        assert_eq!(c.get("github__create_issue").unwrap().description, "updated");
+        assert_eq!(
+            c.get("github__create_issue").unwrap().description,
+            "updated"
+        );
 
         // removing a server drops only its tools.
         c.remove_server("github");
@@ -162,7 +165,10 @@ mod tests {
             "Create an issue"
         );
         // input_schema defaults to Null when omitted.
-        assert_eq!(c.get("slack__post_message").unwrap().input_schema, Value::Null);
+        assert_eq!(
+            c.get("slack__post_message").unwrap().input_schema,
+            Value::Null
+        );
     }
 
     #[test]
