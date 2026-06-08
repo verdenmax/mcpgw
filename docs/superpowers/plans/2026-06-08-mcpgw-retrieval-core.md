@@ -70,7 +70,10 @@ Create `Cargo.toml` (a **virtual** manifest — no `[package]`, so the workspace
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/catalog", "crates/retrieval", "crates/config", "crates/mcpgw"]
+# Start with only the crate that exists. A virtual workspace fails to LOAD if any
+# listed member's Cargo.toml is missing, so later tasks add their crate here as they
+# create it (Task 4 -> retrieval, Task 7 -> config, Task 9 -> mcpgw).
+members = ["crates/catalog"]
 
 [workspace.package]
 edition = "2021"
@@ -386,6 +389,15 @@ serde_json = { workspace = true }
 
 > The `serde_json` dev-dependency is only needed by tests that construct `ToolDef`
 > values directly (its `input_schema` field is a `serde_json::Value`).
+
+- [ ] **Step 1b: Register the crate in the workspace**
+
+Edit the root `Cargo.toml` `members` to add the new crate (a virtual workspace fails to load
+if a member manifest is missing, so it is added only now that it exists):
+
+```toml
+members = ["crates/catalog", "crates/retrieval"]
+```
 
 - [ ] **Step 2: Write the failing test for `tokenize`**
 
@@ -769,6 +781,14 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 ```
 
+- [ ] **Step 1b: Register the crate in the workspace**
+
+Edit the root `Cargo.toml` `members` to add the new crate:
+
+```toml
+members = ["crates/catalog", "crates/retrieval", "crates/config"]
+```
+
 - [ ] **Step 2: Write the failing tests for config parsing + validation**
 
 Create `crates/config/src/lib.rs`:
@@ -996,6 +1016,15 @@ retrieval = { path = "../retrieval" }
 config = { path = "../config" }
 serde_json = { workspace = true }
 clap = { workspace = true }
+```
+
+- [ ] **Step 1b: Register the crate in the workspace**
+
+Edit the root `Cargo.toml` `members` to add the final crate (and remove the now-obsolete
+"future members" comment from Task 1):
+
+```toml
+members = ["crates/catalog", "crates/retrieval", "crates/config", "crates/mcpgw"]
 ```
 
 - [ ] **Step 2: Implement the CLI**
