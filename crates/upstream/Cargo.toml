@@ -18,3 +18,10 @@ schemars = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+
+# The integration test uses the in-memory mock, which lives behind the `testkit`
+# feature. Declaring it here makes `cargo test` (without the flag) SKIP this target
+# rather than fail to compile.
+[[test]]
+name = "integration"
+required-features = ["testkit"]
