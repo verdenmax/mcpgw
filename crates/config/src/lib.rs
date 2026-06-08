@@ -95,4 +95,20 @@ mod tests {
         let err = Config::from_toml_str("[retrieval]\ntop_k = 0\n").unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
     }
+
+    #[test]
+    fn rejects_unknown_field_as_parse_error() {
+        // `deny_unknown_fields` must turn typos / stray keys into a Parse error,
+        // not silently accept them.
+        let err = Config::from_toml_str("[retrieval]\nbogus = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn partially_specified_section_fills_defaults() {
+        // Specifying only top_k must leave strategy at its default.
+        let cfg = Config::from_toml_str("[retrieval]\ntop_k = 3\n").unwrap();
+        assert_eq!(cfg.retrieval.strategy, "bm25");
+        assert_eq!(cfg.retrieval.top_k, 3);
+    }
 }
