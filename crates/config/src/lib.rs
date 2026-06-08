@@ -8,6 +8,8 @@ use thiserror::Error;
 pub struct Config {
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    #[serde(default, rename = "upstream")]
+    pub upstreams: Vec<UpstreamConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -26,6 +28,33 @@ impl Default for RetrievalConfig {
             top_k: 8,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct UpstreamConfig {
+    /// Namespace prefix for this server's tools. Must not contain "__".
+    pub name: String,
+    /// Per-call timeout in milliseconds.
+    #[serde(default = "default_call_timeout_ms")]
+    pub call_timeout_ms: u64,
+    #[serde(flatten)]
+    pub transport: UpstreamTransport,
+}
+
+fn default_call_timeout_ms() -> u64 {
+    30_000
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "transport", rename_all = "lowercase")]
+pub enum UpstreamTransport {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env_passthrough: Vec<String>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -60,6 +89,24 @@ impl Config {
         }
         if self.retrieval.top_k == 0 {
             return Err(ConfigError::Invalid("retrieval.top_k must be > 0".into()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for u in &self.upstreams {
+            if u.name.is_empty() {
+                return Err(ConfigError::Invalid("upstream.name must not be empty".into()));
+            }
+            if u.name.contains("__") {
+                return Err(ConfigError::Invalid(format!(
+                    "upstream.name {:?} must not contain \"__\" (namespace separator)",
+                    u.name
+                )));
+            }
+            if !seen.insert(u.name.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "duplicate upstream.name {:?}",
+                    u.name
+                )));
+            }
         }
         Ok(())
     }
@@ -116,5 +163,56 @@ mod tests {
         let cfg = Config::from_toml_str("[retrieval]\ntop_k = 3\n").unwrap();
         assert_eq!(cfg.retrieval.strategy, "bm25");
         assert_eq!(cfg.retrieval.top_k, 3);
+    }
+
+    #[test]
+    fn parses_stdio_upstreams() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [[upstream]]
+            name = "github"
+            transport = "stdio"
+            command = "npx"
+            args = ["-y", "@modelcontextprotocol/server-github"]
+            env_passthrough = ["GITHUB_TOKEN"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.upstreams.len(), 1);
+        let u = &cfg.upstreams[0];
+        assert_eq!(u.name, "github");
+        assert_eq!(u.call_timeout_ms, 30_000); // default
+        match &u.transport {
+            UpstreamTransport::Stdio { command, args, env_passthrough } => {
+                assert_eq!(command, "npx");
+                assert_eq!(args, &["-y", "@modelcontextprotocol/server-github"]);
+                assert_eq!(env_passthrough, &["GITHUB_TOKEN"]);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_upstream_name_with_double_underscore() {
+        let err = Config::from_toml_str(
+            "[[upstream]]\nname = \"a__b\"\ntransport = \"stdio\"\ncommand = \"x\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn rejects_duplicate_upstream_names() {
+        let err = Config::from_toml_str(
+            "[[upstream]]\nname=\"a\"\ntransport=\"stdio\"\ncommand=\"x\"\n\
+             [[upstream]]\nname=\"a\"\ntransport=\"stdio\"\ncommand=\"y\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn upstreams_default_to_empty() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(cfg.upstreams.is_empty());
     }
 }
