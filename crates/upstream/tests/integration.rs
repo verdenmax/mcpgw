@@ -95,24 +95,31 @@ async fn one_upstream_failure_does_not_block_others() {
     // Healthy upstream:
     let (good, good_server) = connect_mock("good").await;
 
-    // "Failed" upstream: a transport with no server on the other end → connect errors
-    // (or never completes), but that must not stop us from using the healthy one.
-    let (dead_server_io, dead_client_io) = tokio::io::duplex(4096);
-    drop(dead_server_io); // no server will ever respond
+    // "Hung" upstream: keep the server end of the duplex ALIVE but never serve on it,
+    // so the client's `initialize` request is never answered and `connect` blocks until
+    // the timeout fires. (Dropping the server end would instead fail fast with EOF; the
+    // timeout is what makes a *hung* peer non-blocking for the rest of the gateway.)
+    let (_hung_server_io, hung_client_io) = tokio::io::duplex(4096);
     let bad = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        UpstreamHandle::connect("bad", dead_client_io),
+        std::time::Duration::from_millis(300),
+        UpstreamHandle::connect("bad", hung_client_io),
     )
     .await;
+    // Self-validate the failure injection: the hung connect must NOT have succeeded.
+    assert!(
+        !matches!(bad, Ok(Ok(_))),
+        "the hung upstream should not have connected"
+    );
 
     let registry = UpstreamRegistry::new();
     registry.insert(Arc::new(good));
-    // Only register "bad" if it actually connected (it shouldn't); whether it errored
-    // or timed out, the healthy upstream must remain fully usable.
     if let Ok(Ok(h)) = bad {
         registry.insert(Arc::new(h));
     }
+    // The failed upstream must be absent; only the healthy one is registered.
+    assert_eq!(registry.server_names(), vec!["good".to_string()]);
 
+    // The healthy upstream remains fully usable despite the hung peer.
     let mut catalog = Catalog::new();
     registry
         .get("good")
