@@ -37,14 +37,16 @@ async fn forwards_call_tool_to_upstream() {
     args.insert("text".into(), serde_json::Value::String("ping".into()));
     let result = handle.call_tool("echo", Some(args)).await.unwrap();
 
+    // CallToolResult::success sets is_error = Some(false); assert it exactly.
+    assert_eq!(result.is_error, Some(false));
+
     // The mock's echo returns the text as a text content block.
     let text = result
         .content
         .iter()
         .find_map(|c| c.as_text().map(|t| t.text.clone()))
-        .unwrap_or_default();
+        .expect("echo should return a text content block");
     assert_eq!(text, "ping");
-    assert_ne!(result.is_error, Some(true));
 
     handle.shutdown().await;
     server.abort();
