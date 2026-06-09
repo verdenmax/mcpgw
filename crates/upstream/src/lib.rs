@@ -3,6 +3,7 @@
 
 pub mod connection;
 pub mod mapping;
+pub mod registry;
 pub mod testkit;
 
 #[cfg(test)]

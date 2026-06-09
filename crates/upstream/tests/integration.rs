@@ -51,3 +51,26 @@ async fn forwards_call_tool_to_upstream() {
     handle.shutdown().await;
     server.abort();
 }
+
+use std::sync::Arc;
+use upstream::registry::UpstreamRegistry;
+
+#[tokio::test]
+async fn registry_returns_handle_by_name_and_none_for_missing() {
+    let (handle, server) = connect_mock("mock").await;
+    let registry = UpstreamRegistry::new();
+    registry.insert(Arc::new(handle));
+
+    assert_eq!(registry.server_names(), vec!["mock".to_string()]);
+    assert!(registry.get("mock").is_some());
+    assert!(registry.get("nope").is_none());
+
+    // Forward a call through the registry-held handle.
+    let h = registry.get("mock").unwrap();
+    let mut args = serde_json::Map::new();
+    args.insert("text".into(), serde_json::Value::String("x".into()));
+    let r = h.call_tool("echo", Some(args)).await.unwrap();
+    assert_eq!(r.is_error, Some(false));
+
+    server.abort();
+}
