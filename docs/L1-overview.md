@@ -7,8 +7,12 @@
 少量"元工具"，由网关在内部做工具检索与按需加载，从而避免"把上百个工具一次性塞给 LLM"导致的上下文
 爆炸与选错工具。
 
-本文档覆盖的范围是 **M0（检索核心 / Plan 1）**：项目的依赖最少、纯逻辑的检索内核。它本身可独立运行
+本文档的基线范围是 **M0（检索核心 / Plan 1）**：项目的依赖最少、纯逻辑的检索内核。它本身可独立运行
 （一个加载工具目录、做 BM25 检索的库 + CLI），并为后续 M1（活 MCP I/O 层）打好接口地基。
+
+**M1 进行中**：上游 I/O 层的第一块 `upstream` crate（M1-A）已完成——用 rmcp client 连接上游 MCP 服务器、
+把上游工具命名空间化摄取进 `catalog`、转发 `call_tool`，并维护一份连接注册表。网关元工具与下游服务
+（M1-B/M1-C）尚未实现。
 
 > 完整里程碑路线见 `docs/superpowers/plans/2026-06-08-mcpgw-program-roadmap.md`。
 > 设计依据见 `docs/superpowers/specs/2026-06-08-mcpgw-progressive-discovery-design.md`。
@@ -45,6 +49,26 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
 
 依赖方向无环：`mcpgw → {catalog, retrieval, config}`，`retrieval → catalog`。
 
+## M1 新增 crate：`upstream`（M1-A，已完成）
+
+活的上游 MCP I/O 层，是 M1 的第一块拼图：
+
+```
+              ┌──────────────────────── upstream ────────────────────────┐
+              │  UpstreamHandle（rmcp client：connect/ingest_into/call_tool）│
+              │  UpstreamRegistry（server name -> Arc<Handle>）             │
+              │  mapping（Tool → 命名空间 ToolDef，含冲突检测）              │
+              └───────────────────────────┬──────────────────────────────┘
+                            (摄取进 catalog) │ (依赖 catalog 类型)
+                                            ▼
+                                        catalog
+```
+
+- 依赖 **`rmcp`**（1.7，活的 MCP client/server）+ **`catalog`**（摄取目标类型），另有 `tokio`/`thiserror`/`tracing`。
+- 把 N 个上游服务器的工具聚合进 `catalog` 命名空间（`{server}__{name}`），并把元工具层的 `call_tool` 路由回对应上游。
+- 被未来的 **gateway（M1-B）** 使用；网关元工具（`search_tools`/`get_tool_details`/`call_tool`）与下游服务（M1-C）尚未实现。
+- 接口/细节见 L2/L3/L4：[upstream](./L2-components/upstream.md)。
+
 ## 数据流（M0 CLI）
 
 ```
@@ -72,10 +96,14 @@ cargo fmt --all             # 格式化
 ## 当前状态
 
 - **M0（检索核心）✅ 已完成并合并到 `master`。** 21 测试绿、clippy 净。
-- 下一步：**M1（活 MCP I/O 层）**，见路线图。
+- **M1（活 MCP I/O 层）🚧 进行中**：
+  - **M1-A（`upstream`）✅ 已完成** —— rmcp client 连接、工具摄取、`call_tool` 转发、连接注册表；
+    含 `testkit` 内存 mock 与门控集成测试。
+  - **M1-B（gateway 元工具）/ M1-C（downstream 服务）** 待实现，见路线图。
 
 ## 向下导航
 
 各组件的职责与接口见 **L2**：
 [catalog](./L2-components/catalog.md) · [retrieval](./L2-components/retrieval.md) ·
-[config](./L2-components/config.md) · [mcpgw-cli](./L2-components/mcpgw-cli.md)
+[config](./L2-components/config.md) · [mcpgw-cli](./L2-components/mcpgw-cli.md) ·
+[upstream](./L2-components/upstream.md)

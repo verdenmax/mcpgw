@@ -28,9 +28,9 @@ spec、实现 plan、路线图等过程产物）相互独立。
 ## 索引
 
 - **L1**：[L1-overview.md](./L1-overview.md)
-- **L2**：[catalog](./L2-components/catalog.md) · [retrieval](./L2-components/retrieval.md) · [config](./L2-components/config.md) · [mcpgw-cli](./L2-components/mcpgw-cli.md)
-- **L3**：[catalog](./L3-details/catalog.md) · [retrieval](./L3-details/retrieval.md) · [config](./L3-details/config.md) · [mcpgw-cli](./L3-details/mcpgw-cli.md)
-- **L4**：[catalog/lib.rs](./L4-api/catalog-lib.md) · [retrieval/lib.rs](./L4-api/retrieval-lib.md) · [config/lib.rs](./L4-api/config-lib.md) · [mcpgw/main.rs](./L4-api/mcpgw-main.md)
+- **L2**：[catalog](./L2-components/catalog.md) · [retrieval](./L2-components/retrieval.md) · [config](./L2-components/config.md) · [mcpgw-cli](./L2-components/mcpgw-cli.md) · [upstream](./L2-components/upstream.md)
+- **L3**：[catalog](./L3-details/catalog.md) · [retrieval](./L3-details/retrieval.md) · [config](./L3-details/config.md) · [mcpgw-cli](./L3-details/mcpgw-cli.md) · [upstream](./L3-details/upstream.md)
+- **L4**：[catalog/lib.rs](./L4-api/catalog-lib.md) · [retrieval/lib.rs](./L4-api/retrieval-lib.md) · [config/lib.rs](./L4-api/config-lib.md) · [mcpgw/main.rs](./L4-api/mcpgw-main.md) · [upstream/mapping.rs](./L4-api/upstream-mapping.md) · [upstream/connection.rs](./L4-api/upstream-connection.md) · [upstream/registry.rs](./L4-api/upstream-registry.md)
 
-> 当前文档覆盖 **M0（检索核心 / Plan 1）**。后续里程碑（M1+）的代码将按上述规则继续补充各层文档。
+> 当前文档覆盖 **M0（检索核心 / Plan 1）** 与 **M1-A（`upstream` 上游 I/O 层）**。后续里程碑（M1-B/C+）的代码将按上述规则继续补充各层文档。
 > 里程碑路线图见 `docs/superpowers/plans/2026-06-08-mcpgw-program-roadmap.md`。

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/catalog", "crates/retrieval", "crates/config", "crates/mcpgw"]
+members = ["crates/catalog", "crates/retrieval", "crates/config", "crates/mcpgw", "crates/upstream"]
 
 [workspace.package]
 edition = "2021"
@@ -12,3 +12,6 @@ serde_json = "1"
 toml = "0.8"
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
+rmcp = { version = "1.7", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "process", "sync", "time"] }
+tracing = "0.1"

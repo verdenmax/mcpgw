@@ -1,0 +1,27 @@
+[package]
+name = "upstream"
+version = "0.1.0"
+edition = { workspace = true }
+
+[features]
+testkit = []
+
+[dependencies]
+catalog = { path = "../catalog" }
+rmcp = { workspace = true, features = ["client", "server", "macros", "transport-child-process", "transport-io"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+schemars = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+# The integration test uses the in-memory mock, which lives behind the `testkit`
+# feature. Declaring it here makes `cargo test` (without the flag) SKIP this target
+# rather than fail to compile.
+[[test]]
+name = "integration"
+required-features = ["testkit"]

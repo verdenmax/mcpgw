@@ -908,3 +908,22 @@ Config.upstreams}` are used consistently across tasks. The integration test reus
 > **Note for the implementer:** This plan front-loads rmcp API risk into Task 1. Treat Task 1 as a
 > BLOCKING gate — if the rmcp client↔server duplex handshake cannot be made to pass, stop and escalate
 > before proceeding; every later task depends on it.
+
+---
+
+## M1-B handoff notes (from the M1-A final review)
+
+Non-blocking seam notes to address when M1-B (gateway + downstream) builds on `upstream`:
+
+- **Per-call timeout is owned by M1-B.** `config::UpstreamConfig.call_timeout_ms` is parsed but
+  `UpstreamHandle::{connect, call_tool}` do NOT wrap themselves in a timeout — callers must
+  `tokio::time::timeout`. The eager `UpstreamManager` loop and the `call_tool` meta-tool in M1-B must
+  apply the configured timeout, or a hung upstream will block a meta-tool call indefinitely.
+- **`UpstreamError` boxes its source** (`Box<dyn Error + Send + Sync>`), erasing the rmcp error kind.
+  When M1-B adds backoff/reconnect, consider preserving a typed reason (transport-closed vs timeout vs
+  protocol) instead of string-sniffing.
+- **`ingest_into` now returns the skipped-dupe count** — surface it as gateway telemetry.
+- **`schemars = "1"`** in `crates/upstream/Cargo.toml` is a direct pin (matches the plan); consider moving
+  it to `[workspace.dependencies]` for version alignment.
+- **`UpstreamState` is defined but unwired** — M1-B's `CatalogManager` sets Connecting/Ready/Failed as it
+  drives the eager connect + reconnect loop.
