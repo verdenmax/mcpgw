@@ -26,7 +26,10 @@ mod spike_tests {
         let tools = client.list_all_tools().await.unwrap();
         let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
         assert!(names.contains(&"echo".to_string()), "tools were: {names:?}");
-        assert!(names.contains(&"greet".to_string()), "tools were: {names:?}");
+        assert!(
+            names.contains(&"greet".to_string()),
+            "tools were: {names:?}"
+        );
 
         client.cancel().await.unwrap();
         server.abort();

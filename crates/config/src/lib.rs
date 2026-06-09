@@ -191,7 +191,11 @@ mod tests {
         assert_eq!(u.name, "github");
         assert_eq!(u.call_timeout_ms, 30_000); // default
         match &u.transport {
-            UpstreamTransport::Stdio { command, args, env_passthrough } => {
+            UpstreamTransport::Stdio {
+                command,
+                args,
+                env_passthrough,
+            } => {
                 assert_eq!(command, "npx");
                 assert_eq!(args, &["-y", "@modelcontextprotocol/server-github"]);
                 assert_eq!(env_passthrough, &["GITHUB_TOKEN"]);
@@ -235,7 +239,11 @@ mod tests {
         let u = &cfg.upstreams[0];
         assert_eq!(u.call_timeout_ms, 5000);
         match &u.transport {
-            UpstreamTransport::Stdio { args, env_passthrough, .. } => {
+            UpstreamTransport::Stdio {
+                args,
+                env_passthrough,
+                ..
+            } => {
                 assert!(args.is_empty());
                 assert!(env_passthrough.is_empty());
             }
@@ -245,10 +253,8 @@ mod tests {
     #[test]
     fn rejects_unknown_transport() {
         // Guards behavior once an `http` variant is added in M1-C.
-        let err = Config::from_toml_str(
-            "[[upstream]]\nname=\"s\"\ntransport=\"carrier-pigeon\"\n",
-        )
-        .unwrap_err();
+        let err = Config::from_toml_str("[[upstream]]\nname=\"s\"\ntransport=\"carrier-pigeon\"\n")
+            .unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
     }
 

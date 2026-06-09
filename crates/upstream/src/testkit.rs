@@ -2,10 +2,10 @@
 //! `testkit` feature. Exposes two tools: `echo` and `greet`.
 #![cfg(any(test, feature = "testkit"))]
 
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::{tool, tool_router, tool_handler, ServerHandler};
-use rmcp::model::{CallToolResult, Content, ServerInfo, ServerCapabilities, Implementation};
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EchoParams {
@@ -21,11 +21,16 @@ pub struct MockUpstream {
 #[tool_router]
 impl MockUpstream {
     pub fn new() -> Self {
-        Self { tool_router: Self::tool_router() }
+        Self {
+            tool_router: Self::tool_router(),
+        }
     }
 
     #[tool(description = "Echo the provided text back")]
-    fn echo(&self, Parameters(EchoParams { text }): Parameters<EchoParams>) -> Result<CallToolResult, rmcp::ErrorData> {
+    fn echo(
+        &self,
+        Parameters(EchoParams { text }): Parameters<EchoParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
@@ -36,7 +41,9 @@ impl MockUpstream {
 }
 
 impl Default for MockUpstream {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[tool_handler(router = self.tool_router)]

@@ -85,7 +85,10 @@ async fn registry_remove_returns_handle_and_clears_entry() {
     assert!(removed.is_some(), "remove should return the handle");
     assert!(registry.get("mock").is_none());
     assert!(registry.server_names().is_empty());
-    assert!(registry.remove("mock").is_none(), "second remove is a no-op");
+    assert!(
+        registry.remove("mock").is_none(),
+        "second remove is a no-op"
+    );
 
     server.abort();
 }

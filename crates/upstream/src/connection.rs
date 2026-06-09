@@ -37,10 +37,13 @@ impl UpstreamHandle {
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        let client = ().serve(transport).await.map_err(|e| UpstreamError::Connect {
-            server: server.to_string(),
-            source: Box::new(e),
-        })?;
+        let client =
+            ().serve(transport)
+                .await
+                .map_err(|e| UpstreamError::Connect {
+                    server: server.to_string(),
+                    source: Box::new(e),
+                })?;
         Ok(Self {
             server: server.to_string(),
             client,
