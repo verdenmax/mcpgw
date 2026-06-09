@@ -25,10 +25,10 @@ pub fn server(&self) -> &str
 
 ### `UpstreamHandle::ingest_into`
 ```rust
-pub async fn ingest_into(&self, catalog: &mut catalog::Catalog) -> Result<(), UpstreamError>
+pub async fn ingest_into(&self, catalog: &mut catalog::Catalog) -> Result<usize, UpstreamError>
 ```
 `list_all_tools()` 拉取该 server 工具，再 `ingest_tools` 命名空间化摄取进 `catalog`。列工具失败返回
-`UpstreamError::Call`。返回 `Ok(())`（摄取内部的重复计数不向上传播，仅 warn）。
+`UpstreamError::Call`。成功时返回被跳过的 intra-server 重复工具名数量（也会 warn），供调用方上报摄取统计。
 
 ### `UpstreamHandle::call_tool`
 ```rust

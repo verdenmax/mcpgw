@@ -55,7 +55,9 @@ impl UpstreamHandle {
     }
 
     /// Fetch this server's tools and ingest them (namespaced) into `catalog`.
-    pub async fn ingest_into(&self, catalog: &mut Catalog) -> Result<(), UpstreamError> {
+    /// Returns the number of intra-server duplicate tool names that were skipped
+    /// (also `warn!`-logged), so callers can surface ingest telemetry.
+    pub async fn ingest_into(&self, catalog: &mut Catalog) -> Result<usize, UpstreamError> {
         let tools = self
             .client
             .list_all_tools()
@@ -64,8 +66,7 @@ impl UpstreamHandle {
                 server: self.server.clone(),
                 source: Box::new(e),
             })?;
-        ingest_tools(catalog, &self.server, &tools);
-        Ok(())
+        Ok(ingest_tools(catalog, &self.server, &tools))
     }
 
     /// Forward a tool call to this upstream. `tool` is the ORIGINAL (un-namespaced) name.

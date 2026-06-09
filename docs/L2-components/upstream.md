@@ -15,7 +15,7 @@
 |------|------|------|
 | `connect` | `async (server: &str, transport: T) -> Result<Self, UpstreamError>`，`T: AsyncRead+AsyncWrite+Send+Unpin+'static` | 在任意 async-rw 传输上握手建连（真实 stdio 子进程或内存 duplex） |
 | `server` | `(&self) -> &str` | 该连接的命名空间名 |
-| `ingest_into` | `async (&self, &mut Catalog) -> Result<(), UpstreamError>` | 拉取该 server 工具，命名空间化后摄取进 catalog |
+| `ingest_into` | `async (&self, &mut Catalog) -> Result<usize, UpstreamError>` | 拉取该 server 工具，命名空间化后摄取进 catalog；返回跳过的重复数 |
 | `call_tool` | `async (&self, tool: &str, args: Option<serde_json::Map<String, Value>>) -> Result<CallToolResult, UpstreamError>` | 转发调用；`tool` 是**原始**（未命名空间化）名 |
 | `shutdown` | `async (self)` | 取消底层 rmcp 服务 |
 
