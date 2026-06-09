@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use thiserror::Error;
 
-/// Top-level mcpgw configuration. Only the `[retrieval]` section exists in Plan 1;
-/// `[server]` and `[[upstream]]` are added in Plan 2.
+/// Top-level mcpgw configuration. `[retrieval]` and `[[upstream]]` exist now;
+/// the `[server]` section is added in M1-B.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
