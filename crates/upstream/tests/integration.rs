@@ -89,3 +89,39 @@ async fn registry_remove_returns_handle_and_clears_entry() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn one_upstream_failure_does_not_block_others() {
+    // Healthy upstream:
+    let (good, good_server) = connect_mock("good").await;
+
+    // "Failed" upstream: a transport with no server on the other end → connect errors
+    // (or never completes), but that must not stop us from using the healthy one.
+    let (dead_server_io, dead_client_io) = tokio::io::duplex(4096);
+    drop(dead_server_io); // no server will ever respond
+    let bad = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        UpstreamHandle::connect("bad", dead_client_io),
+    )
+    .await;
+
+    let registry = UpstreamRegistry::new();
+    registry.insert(Arc::new(good));
+    // Only register "bad" if it actually connected (it shouldn't); whether it errored
+    // or timed out, the healthy upstream must remain fully usable.
+    if let Ok(Ok(h)) = bad {
+        registry.insert(Arc::new(h));
+    }
+
+    let mut catalog = Catalog::new();
+    registry
+        .get("good")
+        .unwrap()
+        .ingest_into(&mut catalog)
+        .await
+        .unwrap();
+    assert!(catalog.get("good__echo").is_some());
+    assert!(catalog.get("good__greet").is_some());
+
+    good_server.abort();
+}
