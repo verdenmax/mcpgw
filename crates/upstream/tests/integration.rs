@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use catalog::Catalog;
 use upstream::connection::UpstreamHandle;
+use upstream::registry::UpstreamRegistry;
 use upstream::testkit::MockUpstream;
 
 use rmcp::ServiceExt;
@@ -52,9 +55,6 @@ async fn forwards_call_tool_to_upstream() {
     server.abort();
 }
 
-use std::sync::Arc;
-use upstream::registry::UpstreamRegistry;
-
 #[tokio::test]
 async fn registry_returns_handle_by_name_and_none_for_missing() {
     let (handle, server) = connect_mock("mock").await;
@@ -71,6 +71,21 @@ async fn registry_returns_handle_by_name_and_none_for_missing() {
     args.insert("text".into(), serde_json::Value::String("x".into()));
     let r = h.call_tool("echo", Some(args)).await.unwrap();
     assert_eq!(r.is_error, Some(false));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn registry_remove_returns_handle_and_clears_entry() {
+    let (handle, server) = connect_mock("mock").await;
+    let registry = UpstreamRegistry::new();
+    registry.insert(Arc::new(handle));
+
+    let removed = registry.remove("mock");
+    assert!(removed.is_some(), "remove should return the handle");
+    assert!(registry.get("mock").is_none());
+    assert!(registry.server_names().is_empty());
+    assert!(registry.remove("mock").is_none(), "second remove is a no-op");
 
     server.abort();
 }

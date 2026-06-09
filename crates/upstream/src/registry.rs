@@ -24,6 +24,9 @@ impl UpstreamRegistry {
         Self::default()
     }
 
+    /// Insert (or replace) the handle for its server name. Re-inserting the same
+    /// server name supersedes the prior handle; if nothing else holds the old `Arc`,
+    /// its rmcp service is cancelled on drop.
     pub fn insert(&self, handle: Arc<UpstreamHandle>) {
         self.inner
             .write()
@@ -35,8 +38,11 @@ impl UpstreamRegistry {
         self.inner.read().unwrap().get(server).cloned()
     }
 
-    pub fn remove(&self, server: &str) {
-        self.inner.write().unwrap().remove(server);
+    /// Remove and return the handle for `server`, if present. The caller may keep the
+    /// returned `Arc` to perform a graceful `shutdown().await`; dropping it cancels the
+    /// rmcp service.
+    pub fn remove(&self, server: &str) -> Option<Arc<UpstreamHandle>> {
+        self.inner.write().unwrap().remove(server)
     }
 
     pub fn server_names(&self) -> Vec<String> {
@@ -54,5 +60,6 @@ mod tests {
     fn state_values_are_distinct() {
         assert_ne!(UpstreamState::Connecting, UpstreamState::Ready);
         assert_ne!(UpstreamState::Ready, UpstreamState::Failed);
+        assert_ne!(UpstreamState::Connecting, UpstreamState::Failed);
     }
 }
