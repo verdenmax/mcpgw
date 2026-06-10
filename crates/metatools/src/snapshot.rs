@@ -7,9 +7,7 @@ use retrieval::RetrievalStrategy;
 /// An immutable snapshot of the aggregated tool catalog plus an indexed retrieval
 /// strategy over it. Held behind an `ArcSwap` by the `gateway` crate.
 pub struct GatewaySnapshot {
-    #[allow(dead_code)]
     pub(crate) catalog: Catalog,
-    #[allow(dead_code)]
     pub(crate) strategy: Box<dyn RetrievalStrategy>,
 }
 
