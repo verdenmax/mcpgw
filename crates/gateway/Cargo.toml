@@ -1,0 +1,17 @@
+[package]
+name = "gateway"
+version = "0.1.0"
+edition = { workspace = true }
+
+[dependencies]
+catalog = { path = "../catalog" }
+retrieval = { path = "../retrieval" }
+upstream = { path = "../upstream" }
+metatools = { path = "../metatools" }
+arc-swap = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+upstream = { path = "../upstream", features = ["testkit"] }
+tokio = { workspace = true, features = ["full"] }
+rmcp = { workspace = true, features = ["client", "server", "macros", "transport-io"] }
