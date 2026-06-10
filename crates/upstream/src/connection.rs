@@ -23,12 +23,15 @@ pub enum UpstreamError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    #[error("upstream {server:?} call timed out")]
+    Timeout { server: String },
 }
 
 /// A connected upstream MCP server: its namespace name + the running rmcp client.
 pub struct UpstreamHandle {
     server: String,
     client: RunningService<RoleClient, ()>,
+    call_timeout: std::time::Duration,
 }
 
 impl UpstreamHandle {
@@ -47,7 +50,14 @@ impl UpstreamHandle {
         Ok(Self {
             server: server.to_string(),
             client,
+            call_timeout: std::time::Duration::from_secs(30),
         })
+    }
+
+    /// Set the per-call timeout (consumed before the handle is shared via `Arc`).
+    pub fn with_call_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.call_timeout = timeout;
+        self
     }
 
     pub fn server(&self) -> &str {
@@ -79,13 +89,17 @@ impl UpstreamHandle {
         if let Some(args) = arguments {
             params = params.with_arguments(args);
         }
-        self.client
-            .call_tool(params)
-            .await
-            .map_err(|e| UpstreamError::Call {
+        let fut = self.client.call_tool(params);
+        match tokio::time::timeout(self.call_timeout, fut).await {
+            Err(_elapsed) => Err(UpstreamError::Timeout {
+                server: self.server.clone(),
+            }),
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(e)) => Err(UpstreamError::Call {
                 server: self.server.clone(),
                 source: Box::new(e),
-            })
+            }),
+        }
     }
 
     /// Cancel the underlying rmcp service.
