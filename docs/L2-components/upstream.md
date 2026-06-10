@@ -13,17 +13,19 @@
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `connect` | `async (server: &str, transport: T) -> Result<Self, UpstreamError>`，`T: AsyncRead+AsyncWrite+Send+Unpin+'static` | 在任意 async-rw 传输上握手建连（真实 stdio 子进程或内存 duplex） |
+| `connect` | `async (server: &str, transport: T) -> Result<Self, UpstreamError>`，`T: AsyncRead+AsyncWrite+Send+Unpin+'static` | 在任意 async-rw 传输上握手建连（真实 stdio 子进程或内存 duplex）；`call_timeout` 默认 30s |
+| `with_call_timeout` | `(self, timeout: Duration) -> Self` | builder：设定每次 `call_tool` 超时（`Arc` 共享前消费） |
 | `server` | `(&self) -> &str` | 该连接的命名空间名 |
 | `ingest_into` | `async (&self, &mut Catalog) -> Result<usize, UpstreamError>` | 拉取该 server 工具，命名空间化后摄取进 catalog；返回跳过的重复数 |
-| `call_tool` | `async (&self, tool: &str, args: Option<serde_json::Map<String, Value>>) -> Result<CallToolResult, UpstreamError>` | 转发调用；`tool` 是**原始**（未命名空间化）名 |
+| `call_tool` | `async (&self, tool: &str, args: Option<serde_json::Map<String, Value>>) -> Result<CallToolResult, UpstreamError>` | 转发调用（带 `call_timeout` 超时）；`tool` 是**原始**（未命名空间化）名 |
 | `shutdown` | `async (self)` | 取消底层 rmcp 服务 |
 
 ### 错误 `UpstreamError`（`connection.rs`）
-`#[derive(thiserror::Error)]` 枚举，两变体均带 `server: String` 与 boxed `source`：
+`#[derive(thiserror::Error)]` 枚举：
 
 - `Connect { server, source }` — 建连失败。
-- `Call { server, source }` — `list_all_tools` / `call_tool` 失败。
+- `Call { server, source }` — `list_all_tools` / `call_tool` 失败（均带 `server: String` 与 boxed `source`）。
+- `Timeout { server }` — `call_tool` 超过 `UpstreamHandle` 的 `call_timeout` 未应答。
 
 ### 类型 `UpstreamRegistry`（`registry.rs`）
 线程安全注册表，`server name -> Arc<UpstreamHandle>`。

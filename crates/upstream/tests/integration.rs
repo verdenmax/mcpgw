@@ -24,9 +24,10 @@ async fn ingests_namespaced_tools_from_upstream() {
     let mut catalog = Catalog::new();
     handle.ingest_into(&mut catalog).await.unwrap();
 
-    assert_eq!(catalog.len(), 2);
+    assert_eq!(catalog.len(), 3);
     assert!(catalog.get("mock__echo").is_some());
     assert!(catalog.get("mock__greet").is_some());
+    assert!(catalog.get("mock__slow").is_some());
 
     handle.shutdown().await;
     server.abort();
@@ -134,4 +135,18 @@ async fn one_upstream_failure_does_not_block_others() {
     assert!(catalog.get("good__greet").is_some());
 
     good_server.abort();
+}
+
+#[tokio::test]
+async fn call_tool_times_out_when_slower_than_call_timeout() {
+    let (handle, server) = connect_mock("mock").await;
+    let handle = handle.with_call_timeout(std::time::Duration::from_millis(50));
+
+    let err = handle.call_tool("slow", None).await.unwrap_err();
+    assert!(
+        matches!(err, upstream::connection::UpstreamError::Timeout { .. }),
+        "expected Timeout, got {err:?}"
+    );
+
+    server.abort();
 }

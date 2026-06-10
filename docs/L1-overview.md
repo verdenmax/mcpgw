@@ -10,9 +10,8 @@
 本文档的基线范围是 **M0（检索核心 / Plan 1）**：项目的依赖最少、纯逻辑的检索内核。它本身可独立运行
 （一个加载工具目录、做 BM25 检索的库 + CLI），并为后续 M1（活 MCP I/O 层）打好接口地基。
 
-**M1 进行中**：上游 I/O 层的第一块 `upstream` crate（M1-A）已完成——用 rmcp client 连接上游 MCP 服务器、
-把上游工具命名空间化摄取进 `catalog`、转发 `call_tool`，并维护一份连接注册表。网关元工具与下游服务
-（M1-B/M1-C）尚未实现。
+**M1 进行中**：上游 I/O 层 `upstream`（M1-A）已完成；网关元工具逻辑 `metatools` 与快照状态/重建层 `gateway`
+（**M1-B.1**）已完成。下游 MCP 服务与 eager-connect（M1-B.2）尚未实现。
 
 > 完整里程碑路线见 `docs/superpowers/plans/2026-06-08-mcpgw-program-roadmap.md`。
 > 设计依据见 `docs/superpowers/specs/2026-06-08-mcpgw-progressive-discovery-design.md`。
@@ -69,6 +68,36 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
 - 被未来的 **gateway（M1-B）** 使用；网关元工具（`search_tools`/`get_tool_details`/`call_tool`）与下游服务（M1-C）尚未实现。
 - 接口/细节见 L2/L3/L4：[upstream](./L2-components/upstream.md)。
 
+## M1-B.1 新增 crate：`metatools` + `gateway`（已完成）
+
+网关层的逻辑与状态两块拼图：
+
+```
+        ┌──────────────────────────── gateway ────────────────────────────┐
+        │  GatewayState：Arc<ArcSwap<GatewaySnapshot>>（读无锁）             │
+        │   + UpstreamRegistry + strategy_name + rebuild_lock(tokio::Mutex) │
+        │  rebuild_snapshot：ingest → build → 原子 swap（串行化、错误隔离）   │
+        └───────┬───────────────────────────────────┬──────────────────────┘
+                │ 持有/重建                          │ call_tool 路由
+        ┌───────▼───────────────────────┐   ┌───────▼────────────┐
+        │  metatools                     │   │  upstream          │
+        │  GatewaySnapshot（catalog+策略）│   │  UpstreamRegistry  │
+        │  search_tools/get_tool_details │   │  UpstreamHandle    │
+        │  /call_tool · ToolSummary      │   └────────┬───────────┘
+        │  MetaError                     │            │ (摄取/转发)
+        └───────┬────────────────────────┘            ▼
+                │ (依赖 catalog/retrieval 类型)      catalog
+                ▼
+            catalog + retrieval
+```
+
+- `metatools` → 依赖 `catalog`/`retrieval`/`upstream`/`rmcp`：在不可变 `GatewaySnapshot` 上提供三个元工具函数；
+  `call_tool` **经 catalog 查 `(server, tool)` 路由**（绝不拆 `__`）。
+- `gateway` → 依赖 `metatools`/`catalog`/`retrieval`/`upstream` + `arc-swap`/`tokio`：用 `ArcSwap` 持有快照
+  （读无锁），`rebuild_snapshot` 用 **build-then-swap** 重建并经 `tokio::sync::Mutex` 串行化（防陈旧快照、单上游失败隔离）。
+- 被下游 MCP 服务（**M1-B.2**）使用：把元工具暴露为 MCP 工具、做 eager-connect（`connect_all`/`serve`），尚未实现。
+- 接口/细节见 L2/L3/L4：[metatools](./L2-components/metatools.md) · [gateway](./L2-components/gateway.md)。
+
 ## 数据流（M0 CLI）
 
 ```
@@ -97,13 +126,16 @@ cargo fmt --all             # 格式化
 
 - **M0（检索核心）✅ 已完成并合并到 `master`。** 21 测试绿、clippy 净。
 - **M1（活 MCP I/O 层）🚧 进行中**：
-  - **M1-A（`upstream`）✅ 已完成** —— rmcp client 连接、工具摄取、`call_tool` 转发、连接注册表；
+  - **M1-A（`upstream`）✅ 已完成** —— rmcp client 连接、工具摄取、`call_tool` 转发（带每调用超时）、连接注册表；
     含 `testkit` 内存 mock 与门控集成测试。
-  - **M1-B（gateway 元工具）/ M1-C（downstream 服务）** 待实现，见路线图。
+  - **M1-B.1（`metatools` + `gateway`）✅ 已完成** —— 三个元工具函数 over 不可变 `GatewaySnapshot`、`ArcSwap`
+    快照状态 + `rebuild_snapshot`（build-then-swap、`tokio::Mutex` 串行化、单上游失败隔离）。
+  - **M1-B.2（downstream MCP 服务 / eager-connect）/ M1-C** 待实现，见路线图。
 
 ## 向下导航
 
 各组件的职责与接口见 **L2**：
 [catalog](./L2-components/catalog.md) · [retrieval](./L2-components/retrieval.md) ·
 [config](./L2-components/config.md) · [mcpgw-cli](./L2-components/mcpgw-cli.md) ·
-[upstream](./L2-components/upstream.md)
+[upstream](./L2-components/upstream.md) · [metatools](./L2-components/metatools.md) ·
+[gateway](./L2-components/gateway.md)

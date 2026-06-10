@@ -38,6 +38,12 @@ impl MockUpstream {
     fn greet(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         Ok(CallToolResult::success(vec![Content::text("hello")]))
     }
+
+    #[tool(description = "Sleep 10s then return (for timeout tests)")]
+    async fn slow(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        Ok(CallToolResult::success(vec![Content::text("done")]))
+    }
 }
 
 impl Default for MockUpstream {
