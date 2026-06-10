@@ -21,6 +21,33 @@ pub fn get_tool_details<'a>(snap: &'a GatewaySnapshot, name: &str) -> Option<&'a
     snap.catalog.get(name)
 }
 
+use crate::error::MetaError;
+use upstream::registry::UpstreamRegistry;
+
+/// Route a tool call: look the namespaced `name` up in the catalog to get its `(server, tool)`
+/// — NEVER by splitting on `__` — then forward to that upstream via the registry.
+pub async fn call_tool(
+    snap: &GatewaySnapshot,
+    registry: &UpstreamRegistry,
+    name: &str,
+    arguments: Option<serde_json::Map<String, serde_json::Value>>,
+) -> Result<rmcp::model::CallToolResult, MetaError> {
+    let def = snap
+        .catalog
+        .get(name)
+        .ok_or_else(|| MetaError::ToolNotFound(name.to_string()))?;
+    let handle = registry
+        .get(&def.server)
+        .ok_or_else(|| MetaError::UpstreamUnavailable(def.server.clone()))?;
+    handle
+        .call_tool(&def.name, arguments)
+        .await
+        .map_err(|e| match e {
+            upstream::connection::UpstreamError::Timeout { .. } => MetaError::Timeout,
+            other => MetaError::Call(other.to_string()),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +90,20 @@ mod tests {
         assert_eq!(d.server, "github");
         assert_eq!(d.name, "create_issue");
         assert!(get_tool_details(&snap, "nope__missing").is_none());
+    }
+
+    #[test]
+    fn get_tool_details_handles_tool_names_containing_double_underscore() {
+        // A tool whose ORIGINAL name contains "__" must still be retrievable by its
+        // qualified name; routing later relies on the stored `server`/`name` fields,
+        // not on splitting the qualified string.
+        let catalog = Catalog::from_tooldefs(vec![tool("srv", "weird__tool", "x")]);
+        let mut strat = Bm25Strategy::new();
+        strat.index(&catalog);
+        let snap = GatewaySnapshot::new(catalog, Box::new(strat));
+
+        let d = get_tool_details(&snap, "srv__weird__tool").unwrap();
+        assert_eq!(d.server, "srv");
+        assert_eq!(d.name, "weird__tool"); // a naive split on "__" would get this wrong
     }
 }

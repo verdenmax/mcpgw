@@ -8,3 +8,4 @@ pub mod tools;
 
 pub use error::MetaError;
 pub use snapshot::{GatewaySnapshot, ToolSummary};
+pub use tools::call_tool;
