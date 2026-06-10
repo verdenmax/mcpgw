@@ -56,3 +56,22 @@ async fn call_tool_unknown_tool_is_tool_not_found() {
     assert!(matches!(err, MetaError::ToolNotFound(_)), "got {err:?}");
     join.abort();
 }
+
+#[tokio::test]
+async fn call_tool_unregistered_upstream_is_unavailable() {
+    // The catalog references a server that has no live handle in the registry
+    // (catalog/registry skew). Routing must report UpstreamUnavailable, not forward.
+    let catalog = Catalog::from_tooldefs(vec![catalog::ToolDef {
+        server: "ghost".into(),
+        name: "do".into(),
+        description: "nobody home".into(),
+        input_schema: serde_json::Value::Null,
+    }]);
+    let mut strat = Bm25Strategy::new();
+    strat.index(&catalog);
+    let snap = GatewaySnapshot::new(catalog, Box::new(strat));
+    let registry = UpstreamRegistry::new(); // empty — no "ghost" handle
+
+    let err = call_tool(&snap, &registry, "ghost__do", None).await.unwrap_err();
+    assert!(matches!(err, MetaError::UpstreamUnavailable(_)), "got {err:?}");
+}
