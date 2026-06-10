@@ -90,3 +90,32 @@ async fn call_tool_unregistered_upstream_is_unavailable() {
         "got {err:?}"
     );
 }
+
+#[tokio::test]
+async fn call_tool_maps_upstream_timeout_to_metaerror_timeout() {
+    let (server_io, client_io) = tokio::io::duplex(4096);
+    let join = tokio::spawn(async move {
+        let svc = MockUpstream::new().serve(server_io).await.unwrap();
+        svc.waiting().await.unwrap();
+    });
+    let handle = UpstreamHandle::connect("mock", client_io)
+        .await
+        .unwrap()
+        .with_call_timeout(std::time::Duration::from_millis(50));
+
+    let mut catalog = Catalog::new();
+    handle.ingest_into(&mut catalog).await.unwrap();
+    let registry = UpstreamRegistry::new();
+    registry.insert(Arc::new(handle));
+    let mut strat = Bm25Strategy::new();
+    strat.index(&catalog);
+    let snap = GatewaySnapshot::new(catalog, Box::new(strat));
+
+    // mock__slow sleeps 10s; the 50ms handle timeout fires and maps to MetaError::Timeout.
+    let err = call_tool(&snap, &registry, "mock__slow", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, MetaError::Timeout), "got {err:?}");
+
+    join.abort();
+}

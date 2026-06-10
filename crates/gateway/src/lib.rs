@@ -70,3 +70,14 @@ impl GatewayState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// `GatewayState` exists to be shared across async tasks (B.2's downstream server +
+    /// connect manager hold cheap clones), so lock its `Send + Sync` at compile time.
+    #[test]
+    fn gateway_state_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<super::GatewayState>();
+    }
+}
