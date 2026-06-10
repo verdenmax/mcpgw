@@ -7,6 +7,7 @@ use arc_swap::ArcSwap;
 use catalog::Catalog;
 use metatools::GatewaySnapshot;
 use retrieval::build_strategy;
+use tokio::sync::Mutex;
 use upstream::registry::UpstreamRegistry;
 
 /// Shared, cheaply-cloneable gateway state: an `ArcSwap` snapshot (read lock-free) and the
@@ -16,6 +17,9 @@ pub struct GatewayState {
     snapshot: Arc<ArcSwap<GatewaySnapshot>>,
     registry: UpstreamRegistry,
     strategy_name: Arc<str>,
+    /// Serializes rebuilds so concurrent triggers can't commit a stale snapshot
+    /// (last-store-wins). Readers never touch this — they only load the `ArcSwap`.
+    rebuild_lock: Arc<Mutex<()>>,
 }
 
 impl GatewayState {
@@ -29,6 +33,7 @@ impl GatewayState {
             snapshot: Arc::new(ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))),
             registry: UpstreamRegistry::new(),
             strategy_name: Arc::from(strategy_name),
+            rebuild_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -45,7 +50,11 @@ impl GatewayState {
     /// Rebuild the snapshot from the current registry: ingest every upstream's tools into a
     /// fresh catalog, build+index the strategy, and atomically swap it in. A single upstream
     /// failing to ingest is isolated (warn + skip); others still appear.
+    ///
+    /// Rebuilds are serialized via `rebuild_lock` so overlapping triggers can't durably leave
+    /// a stale snapshot live (last-store-wins). Reads (`snapshot()`) stay lock-free throughout.
     pub async fn rebuild_snapshot(&self) -> Result<(), String> {
+        let _guard = self.rebuild_lock.lock().await;
         let mut catalog = Catalog::new();
         for name in self.registry.server_names() {
             if let Some(handle) = self.registry.get(&name) {

@@ -10,6 +10,7 @@ upstream = { path = "../upstream" }
 metatools = { path = "../metatools" }
 arc-swap = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 upstream = { path = "../upstream", features = ["testkit"] }
