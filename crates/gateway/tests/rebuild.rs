@@ -29,7 +29,10 @@ async fn rebuild_snapshot_ingests_registered_upstreams() {
 
     // After rebuild, the mock's namespaced tools are searchable.
     let hits = search_tools(&state.snapshot(), "echo", 5);
-    assert!(hits.iter().any(|s| s.name == "mock__echo"), "hits: {hits:?}");
+    assert!(
+        hits.iter().any(|s| s.name == "mock__echo"),
+        "hits: {hits:?}"
+    );
 
     join.abort();
 }
@@ -76,7 +79,10 @@ async fn rebuild_isolates_a_failed_upstream() {
     state.rebuild_snapshot().await.unwrap(); // must not error despite the broken upstream
 
     let hits = search_tools(&state.snapshot(), "echo", 10);
-    assert!(hits.iter().any(|s| s.name == "good__echo"), "hits: {hits:?}");
+    assert!(
+        hits.iter().any(|s| s.name == "good__echo"),
+        "hits: {hits:?}"
+    );
     assert!(
         !hits.iter().any(|s| s.name.starts_with("broken__")),
         "broken upstream should have been skipped: {hits:?}"

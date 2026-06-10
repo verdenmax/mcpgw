@@ -67,8 +67,16 @@ mod tests {
 
     fn snapshot() -> GatewaySnapshot {
         let catalog = Catalog::from_tooldefs(vec![
-            tool("github", "create_issue", "Create a new issue in a GitHub repository"),
-            tool("weather", "get_forecast", "Get the weather forecast for a location"),
+            tool(
+                "github",
+                "create_issue",
+                "Create a new issue in a GitHub repository",
+            ),
+            tool(
+                "weather",
+                "get_forecast",
+                "Get the weather forecast for a location",
+            ),
         ]);
         let mut strat = Bm25Strategy::new();
         strat.index(&catalog);
@@ -79,7 +87,10 @@ mod tests {
     fn search_tools_returns_namespaced_summaries() {
         let snap = snapshot();
         let hits = search_tools(&snap, "weather forecast", 5);
-        assert_eq!(hits.first().map(|s| s.name.as_str()), Some("weather__get_forecast"));
+        assert_eq!(
+            hits.first().map(|s| s.name.as_str()),
+            Some("weather__get_forecast")
+        );
         assert!(hits[0].description.contains("forecast"));
     }
 
