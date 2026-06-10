@@ -59,7 +59,8 @@ M1-B 网关接入时会用它驱动健康状态与重连策略。
 ## testkit 与门控集成测试
 
 - `testkit.rs` 用 `#![cfg(any(test, feature = "testkit"))]` 门控；`MockUpstream` 经 rmcp `#[tool_router]` /
-  `#[tool]` / `#[tool_handler]` 宏暴露 `echo`（回显入参 `text`）与 `greet`（返回 `"hello"`）。
+  `#[tool]` / `#[tool_handler]` 宏暴露 `echo`（回显入参 `text`）、`greet`（返回 `"hello"`）与 `slow`
+  （sleep 远超任何合理超时，用于触发 `call_timeout`）。
 - 集成测试 `tests/integration.rs` 依赖该 mock，故在 `Cargo.toml` 用 `[[test]] required-features = ["testkit"]`
   门控：`cargo test --all-features` 编译并运行它；裸 `cargo test` 则**跳过**该 target（不编译失败）。
 
@@ -74,8 +75,9 @@ M1-B 网关接入时会用它驱动健康状态与重连策略。
 
 - 单测（`mapping.rs`）：命名空间+字段拷贝、缺省 description、保留 input_schema、计数 dupes。
 - 单测（`registry.rs`）：`UpstreamState` 三值互异。
-- 单测（`lib.rs` spike）：client 经 duplex 看到 mock 两工具。
-- 集成（`tests/integration.rs`，需 `testkit`）：摄取命名空间工具、转发 `call_tool`、registry 取/删、单上游失败不阻塞其余。
+- 单测（`lib.rs` spike）：client 经 duplex 看到 mock 三工具。
+- 集成（`tests/integration.rs`，需 `testkit`）：摄取命名空间工具、转发 `call_tool`、registry 取/删、单上游失败不阻塞其余、
+  `call_tool` 慢于 `call_timeout` 时映射为 `UpstreamError::Timeout`。
 
 ## 相关
 

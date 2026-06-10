@@ -1,5 +1,6 @@
 //! In-memory mock upstream MCP server for tests. Reusable by other crates via the
-//! `testkit` feature. Exposes two tools: `echo` and `greet`.
+//! `testkit` feature. Exposes three tools: `echo`, `greet`, and `slow` (sleeps to
+//! exercise per-call timeouts).
 #![cfg(any(test, feature = "testkit"))]
 
 use rmcp::handler::server::router::tool::ToolRouter;

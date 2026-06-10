@@ -49,8 +49,8 @@
 | `ingest_tools` | `(catalog: &mut Catalog, server: &str, tools: &[Tool]) -> usize` | 批量摄取（intra-server first-dupe-wins，warn），返回被跳过的重复名计数 |
 
 ### 测试件 `testkit::MockUpstream`（`testkit.rs`，`testkit` feature）
-内存 mock MCP 服务器，暴露 `echo`、`greet` 两个工具。供本 crate 单测与集成测试使用，并可经 `testkit`
-feature 被其它 crate 复用。
+内存 mock MCP 服务器，暴露 `echo`、`greet`、`slow` 三个工具（`slow` 故意 sleep，用于触发 per-call 超时）。
+供本 crate 单测与集成测试使用，并可经 `testkit` feature 被其它 crate 复用。
 
 ## 依赖
 

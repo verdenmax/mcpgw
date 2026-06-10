@@ -43,8 +43,12 @@ self.snapshot.store(Arc::new(GatewaySnapshot::new(catalog, strat)));   // 原子
 ## 单上游失败隔离
 
 循环里某 `handle.ingest_into(&mut catalog).await` 失败时仅 `tracing::warn!` 并 `continue`，不让整次重建失败；其余
-上游照常摄取，新快照里仍含它们的工具。这沿用 `upstream` 层"一个挂起/失败上游不拖垮其余"的目标。注意：本步不对
-单个 `ingest_into` 加超时，挂起上游的超时仍依赖 `UpstreamHandle` 的 `call_timeout`（作用于 `call_tool`）/ 上层调度。
+上游照常摄取，新快照里仍含它们的工具。这沿用 `upstream` 层"一个挂起/失败上游不拖垮其余"的目标。
+
+⚠️ **已知缺口（B.1 不修，留 M1-B.2）**：错误隔离只覆盖**报错/EOF** 的上游；对**已连接但静默**（hung）的上游无保护。
+`ingest_into` 走的是 `list_all_tools()`，而 `UpstreamHandle` 的 `call_timeout` **只包住 `call_tool`、不包 `list_all_tools`**，
+所以本步对单个 `ingest_into` 无任何超时——一个 hung 上游会让 `ingest_into` 永久挂起，并因持有 `rebuild_lock` 而饿死后续所有
+重建（含 M1-B.2 `list_changed` 触发）。M1-B.2 须给每个 ingest 加超时或改并发 ingest（`join_all`）。
 
 ## `strategy_name`
 

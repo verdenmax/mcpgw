@@ -114,7 +114,8 @@ get-details 子命令：catalog.get(qualified_name) ──► 该工具完整 JS
 
 ```bash
 cargo build                 # 构建工作区（产出 target/debug/mcpgw）
-cargo test                  # 全部测试（catalog 4 / config 6 / retrieval 5 + golden 1 / mcpgw cli 5）
+cargo test                  # 全部测试（52 个：catalog 4 / config 13 / retrieval 5 + golden 1 / mcpgw cli 5 /
+                            #   upstream 6 + 集成 6 / metatools 3 + call_tool 4 / gateway 1 + rebuild 4）
 cargo clippy --all-targets --all-features -- -D warnings   # 静态检查，零告警
 cargo fmt --all             # 格式化
 # 手动试用（需在工作区根目录运行，默认 --catalog tests/fixtures/tools.json）
