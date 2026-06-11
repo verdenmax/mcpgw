@@ -64,6 +64,11 @@ impl UpstreamHandle {
         &self.server
     }
 
+    /// The per-call timeout configured for this handle (used by the gateway to bound ingest).
+    pub fn call_timeout(&self) -> std::time::Duration {
+        self.call_timeout
+    }
+
     /// Fetch this server's tools and ingest them (namespaced) into `catalog`.
     /// Returns the number of intra-server duplicate tool names that were skipped
     /// (also `warn!`-logged), so callers can surface ingest telemetry.

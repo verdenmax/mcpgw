@@ -90,3 +90,55 @@ async fn rebuild_isolates_a_failed_upstream() {
 
     good_join.abort();
 }
+
+// A server that initializes fine but whose list_tools never returns: used to verify
+// per-ingest timeout isolates a "connected but silent" upstream during rebuild.
+#[derive(Clone)]
+struct StalledListServer;
+
+impl rmcp::ServerHandler for StalledListServer {
+    fn get_info(&self) -> rmcp::model::ServerInfo {
+        rmcp::model::ServerInfo::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(rmcp::model::Implementation::from_build_env())
+    }
+
+    async fn list_tools(
+        &self,
+        _r: Option<rmcp::model::PaginatedRequestParams>,
+        _c: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        Ok(rmcp::model::ListToolsResult::with_all_items(vec![]))
+    }
+}
+
+#[tokio::test]
+async fn rebuild_isolates_an_upstream_that_hangs_during_ingest() {
+    use std::time::Duration;
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        if let Ok(svc) = StalledListServer.serve(server_io).await {
+            let _ = svc.waiting().await;
+        }
+    });
+    let handle = upstream::connection::UpstreamHandle::connect("hung", client_io)
+        .await
+        .unwrap()
+        .with_call_timeout(Duration::from_millis(80));
+
+    let state = gateway::GatewayState::new("bm25").unwrap();
+    state.registry().insert(std::sync::Arc::new(handle));
+
+    let summary = tokio::time::timeout(Duration::from_secs(5), state.rebuild_snapshot())
+        .await
+        .expect("rebuild must not hang on a stalled upstream")
+        .unwrap();
+
+    assert!(summary.ingested.is_empty());
+    assert_eq!(summary.skipped.len(), 1);
+    assert_eq!(summary.skipped[0].0, "hung");
+}
