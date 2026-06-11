@@ -255,14 +255,12 @@ dependencies = [
 name = "downstream"
 version = "0.1.0"
 dependencies = [
- "catalog",
  "gateway",
  "metatools",
  "retrieval",
  "rmcp",
  "serde_json",
  "tokio",
- "tracing",
  "upstream",
 ]
 

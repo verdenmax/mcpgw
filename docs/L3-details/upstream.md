@@ -105,6 +105,10 @@ M1-B 网关接入时会用它驱动健康状态与重连策略。
   `UpstreamError::Timeout`，使单个挂起上游不拖垮其余网关（集成测试 `one_upstream_failure_does_not_block_others`
   即验证此点）。摄取期的挂起则由 `gateway` 的 per-ingest 超时隔离（见 [gateway L3](./gateway.md)）。
 
+> **超时的取消语义（已知限制，留 M1-C）**：`call_tool` / `ingest_into` 超时时仅**丢弃**在途的 rmcp 请求 future，
+> **不**向真实上游发协议级 `notifications/cancelled`。Rust 语义下丢弃 future 即释放本地等待资源；上游迟到的响应在
+> rmcp 客户端侧因请求 id 无匹配而被丢弃。因此当前实现安全但非「主动取消」——真实子进程上的主动取消通知留待 M1-C。
+
 ## 测试覆盖
 
 - 单测（`mapping.rs`）：命名空间+字段拷贝、缺省 description、保留 input_schema、计数 dupes。

@@ -6,11 +6,8 @@ edition = { workspace = true }
 [dependencies]
 gateway = { path = "../gateway" }
 metatools = { path = "../metatools" }
-catalog = { path = "../catalog" }
 rmcp = { workspace = true, features = ["server", "transport-io"] }
 serde_json = { workspace = true }
-tracing = { workspace = true }
-tokio = { workspace = true }
 
 [dev-dependencies]
 upstream = { path = "../upstream", features = ["testkit"] }
