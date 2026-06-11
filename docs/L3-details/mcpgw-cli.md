@@ -26,9 +26,14 @@
 统一收尾关闭。两个下游 server 共享同一个 `Arc<GatewayState>`（HTTP 用 `state.clone()`，stdio 用另一份 clone）。
 HTTP listener 在进入 `select!` **之前**预绑定（fail-fast 暴露端口占用/权限错误，而非进入循环后才失败）。
 
+> **HTTP 守护进程模式（无本地 stdio 客户端）**：`[server].stdio` 默认 `true`，此时即使同时启用 HTTP，stdio
+> server 的 stdin-EOF（或无 stdin 附着）也会经 `select!` 拆掉整个进程。若要以 HTTP 守护进程方式长期运行，应设
+> `[server].stdio = false`，让进程仅由 HTTP server + Ctrl-C 驱动，否则 stdin EOF 会直接关停它。
+
 ## env 密钥启动期解析（fail-fast）
 
-- **`resolve_api_keys(&cfg)`**：无 `[server.http]` 时返回空 `Vec`；否则逐个 `std::env::var(&k.env)` 读取
+- **`resolve_api_keys(&cfg)`**：无 `[server.http]` 或其 `enabled = false` 时返回空 `Vec`（故关闭 HTTP 的配置即便
+  含引用未设 env 的 `api_key` 也不会启动失败）；否则逐个 `std::env::var(&k.env)` 读取
   `[[server.http.api_key]]` 的密钥，任一缺失即 `Err`。错误消息仅含 `name`/`env` **名**，**绝不含密钥值**。
 - **`validate_upstream_http_env(&cfg)`**：遍历 HTTP 上游，校验 `bearer_env` 与 `headers` 各引用的 env 均已设置；
   缺失即 `Err`（消息仅含上游名/header 名/env 名）。目的：缺凭证时**启动即失败**，而非运行期静默退化成 401 循环。

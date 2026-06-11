@@ -20,8 +20,8 @@ schemars = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-axum = "0.8"
-rmcp = { workspace = true, features = ["client", "server", "macros", "transport-io", "transport-streamable-http-server", "transport-streamable-http-client-reqwest"] }
+axum = { workspace = true }
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 
 # The integration test uses the in-memory mock, which lives behind the `testkit`
 # feature. Declaring it here makes `cargo test` (without the flag) SKIP this target

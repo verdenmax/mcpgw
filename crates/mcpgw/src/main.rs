@@ -99,7 +99,7 @@ fn run(cli: Cli) -> Result<(), String> {
 /// Resolve every `[[server.http.api_key]]` secret from its env var. Fail-fast on any
 /// missing env (returns the offending field/env name, never the value).
 fn resolve_api_keys(cfg: &config::Config) -> Result<Vec<String>, String> {
-    let Some(http) = &cfg.server.http else {
+    let Some(http) = cfg.server.http.as_ref().filter(|h| h.enabled) else {
         return Ok(Vec::new());
     };
     let mut keys = Vec::with_capacity(http.api_keys.len());
@@ -207,27 +207,30 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     let state_for_stdio = state.clone();
     let top_k = cfg.retrieval.top_k;
 
-    tokio::select! {
+    let outcome: Result<(), String> = tokio::select! {
         res = async {
             let server = downstream::GatewayServer::new(state_for_stdio, top_k);
             let service = server.serve(stdio()).await.map_err(|e| e.to_string())?;
             service.waiting().await.map_err(|e| e.to_string())
         }, if stdio_enabled => {
-            res?;
-            tracing::info!("stdio client disconnected; shutting down");
+            if res.is_ok() {
+                tracing::info!("stdio client disconnected; shutting down");
+            }
+            res.map(|_| ())
         }
         res = async {
             let (listener, router) = http_bound.unwrap();
             axum::serve(listener, router).await.map_err(|e| e.to_string())
         }, if http_enabled => {
-            res?;
+            res
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("received ctrl-c; shutting down");
+            Ok(())
         }
-    }
+    };
 
-    // Best-effort graceful shutdown of upstream children.
+    // Best-effort graceful shutdown of upstream children (runs on clean exit AND error).
     for name in state.registry().server_names() {
         if let Some(handle) = state.registry().remove(&name) {
             if let Ok(h) = Arc::try_unwrap(handle) {
@@ -235,7 +238,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    outcome
 }
 
 fn main() -> ExitCode {
@@ -288,6 +291,15 @@ mod tests {
     #[test]
     fn resolve_api_keys_empty_when_no_http() {
         let cfg = config::Config::default_from_empty();
+        assert!(resolve_api_keys(&cfg).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_api_keys_empty_when_http_disabled_even_with_keys() {
+        let cfg = config::Config::from_toml_str(
+            "[server.http]\nenabled = false\n[[server.http.api_key]]\nname=\"a\"\nenv=\"MCPGW_CLEANUP_MISSING\"\n",
+        )
+        .unwrap();
         assert!(resolve_api_keys(&cfg).unwrap().is_empty());
     }
 

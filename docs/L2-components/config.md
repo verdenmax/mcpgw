@@ -41,7 +41,7 @@
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `stdio` | `bool` | `true` | 是否把 3 个元工具经 stdio MCP server 暴露 |
+| `stdio` | `bool` | `true` | 是否把 3 个元工具经 stdio MCP server 暴露。HTTP 守护进程模式（无本地 stdio 客户端）应设为 `false`，否则 stdin EOF 会经 `select!` 关停整个进程，仅由 HTTP server + Ctrl-C 驱动 |
 | `http` | `Option<HttpConfig>` | `None` | `[server.http]` 段；省略 → HTTP 关闭（M1-C） |
 
 `[server.http]`（`HttpConfig`，`#[serde(default, deny_unknown_fields)]`）：Streamable HTTP server 设置。
