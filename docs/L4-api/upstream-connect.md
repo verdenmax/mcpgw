@@ -37,7 +37,7 @@ fn build_http_client_config(
 ```
 把 **env 引用的 auth** 解析为 rmcp `StreamableHttpClientTransportConfig`。**不做网络 I/O**，仅读 env + 组装 config：
 
-- `bearer_env: Some(env)` → 读 `std::env::var(env)`，组成 `Authorization: Bearer <token>`（经 `.auth_header(...)`）。
+- `bearer_env: Some(env)` → 读 `std::env::var(env)`，把**原始 token**（不含 `Bearer ` 前缀）传给 rmcp 的 `.auth_header(...)`；rmcp 在发请求时调用 reqwest 的 `bearer_auth`，自动在网络上加 `Authorization: Bearer <token>`。
 - `headers`（头名 → env 名映射）→ 逐项读对应 env，校验头名/头值合法后填入 `custom_headers`。
 - **缺 env 即硬错误**（`UpstreamError::Connect`）——auth 不被静默丢弃；非法头名/头值同样映射为 `Connect`。
 - `bearer_env: None` 且 `headers` 为空 → 返回无 auth、无 custom header 的纯 config。

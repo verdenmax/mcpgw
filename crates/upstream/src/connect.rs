@@ -87,7 +87,7 @@ fn build_http_client_config(
             server: name.to_string(),
             source: format!("missing env {env_name:?} for bearer_env").into(),
         })?;
-        cfg = cfg.auth_header(format!("Bearer {token}"));
+        cfg = cfg.auth_header(token);
     }
     if !headers.is_empty() {
         let mut custom = std::collections::HashMap::new();
@@ -259,7 +259,7 @@ mod tests {
             unreachable!()
         };
         let client_cfg = build_http_client_config(&cfg.name, url, bearer_env, headers).unwrap();
-        assert_eq!(client_cfg.auth_header.as_deref(), Some("Bearer sekret"));
+        assert_eq!(client_cfg.auth_header.as_deref(), Some("sekret"));
         assert_eq!(
             client_cfg
                 .custom_headers
@@ -272,6 +272,21 @@ mod tests {
     #[test]
     fn build_http_client_config_missing_env_is_error() {
         let cfg = http_cfg(Some("MCPGW_T2_DEFINITELY_MISSING"), &[]);
+        let UpstreamTransport::Http {
+            url,
+            bearer_env,
+            headers,
+        } = &cfg.transport
+        else {
+            unreachable!()
+        };
+        let err = build_http_client_config(&cfg.name, url, bearer_env, headers).unwrap_err();
+        assert!(matches!(err, UpstreamError::Connect { .. }));
+    }
+
+    #[test]
+    fn build_http_client_config_missing_header_env_is_error() {
+        let cfg = http_cfg(None, &[("X-Foo", "MCPGW_T2_MISSING_HEADER_ENV")]);
         let UpstreamTransport::Http {
             url,
             bearer_env,
