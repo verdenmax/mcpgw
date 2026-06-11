@@ -1,5 +1,19 @@
 # L3 — `downstream` 细节
 
+## HTTP 鉴权层细节（`http.rs` 的 `require_api_key` 中间件）
+
+`build_router` 在 `api_keys` 非空时叠加一层 axum `from_fn_with_state` 中间件 `require_api_key`：
+
+- **Bearer 提取**：`presented_bearer` 从 `Authorization` 头读字符串，`strip_prefix("Bearer ")` 取出 key；
+  缺头/非 ASCII/无 `Bearer ` 前缀都视为「未呈现」。
+- **常量时间比较**：`key_authorized` 用 `subtle::ConstantTimeEq::ct_eq` 对每个配置 key 与呈现值逐字节比较，
+  把结果按位 `|=` 累积成 `matched`（**不**在命中后提前 `return`，避免泄露「命中了第几个 key」的时序）。
+  `ct_eq` 对长度不同的 `&[u8]` 会短路返回 `Choice(0)`——只泄露长度，可接受；长度相同时做常量时间比较。
+- **401 不回显期望值**：校验失败一律 `StatusCode::UNAUTHORIZED.into_response()`，**不**在响应里带任何关于
+  期望 key 的信息（不区分「缺 key」「错 key」的错误体）。
+- **keyset 为空时放行**：不挂这层中间件，依赖 **localhost 绑定 + rmcp `allowed_hosts`**
+  （默认 `[localhost, 127.0.0.1, ::1]`）作为唯一防线。
+
 ## rmcp `ServerHandler` 三个方法
 
 `GatewayServer` 手写实现 `ServerHandler`（不用 `#[tool_router]` 宏，因为元工具是固定三件套、且 `call_tool`

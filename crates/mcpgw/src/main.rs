@@ -5,6 +5,7 @@ use std::sync::Arc;
 use catalog::Catalog;
 use clap::{Parser, Subcommand};
 use config::Config;
+use config::UpstreamTransport;
 use retrieval::build_strategy;
 
 /// mcpgw retrieval-core CLI: query a tool catalog with the configured strategy.
@@ -95,6 +96,52 @@ fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve every `[[server.http.api_key]]` secret from its env var. Fail-fast on any
+/// missing env (returns the offending field/env name, never the value).
+fn resolve_api_keys(cfg: &config::Config) -> Result<Vec<String>, String> {
+    let Some(http) = cfg.server.http.as_ref().filter(|h| h.enabled) else {
+        return Ok(Vec::new());
+    };
+    let mut keys = Vec::with_capacity(http.api_keys.len());
+    for k in &http.api_keys {
+        let secret = std::env::var(&k.env)
+            .map_err(|_| format!("api_key {:?}: env {:?} is not set", k.name, k.env))?;
+        keys.push(secret);
+    }
+    Ok(keys)
+}
+
+/// Verify every env referenced by an HTTP upstream (bearer + headers) is present, so a
+/// missing credential fails startup rather than silently degrading to a 401 loop.
+fn validate_upstream_http_env(cfg: &config::Config) -> Result<(), String> {
+    for u in &cfg.upstreams {
+        if let UpstreamTransport::Http {
+            bearer_env,
+            headers,
+            ..
+        } = &u.transport
+        {
+            if let Some(env_name) = bearer_env {
+                if std::env::var(env_name).is_err() {
+                    return Err(format!(
+                        "upstream {:?}: bearer_env {:?} is not set",
+                        u.name, env_name
+                    ));
+                }
+            }
+            for (hname, env_name) in headers {
+                if std::env::var(env_name).is_err() {
+                    return Err(format!(
+                        "upstream {:?}: header {:?} env {:?} is not set",
+                        u.name, hname, env_name
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build gateway state, connect upstreams, build the initial snapshot, and return the
 /// state plus the rebuild-trigger receiver for the worker. Split out so it is unit-testable.
 async fn prepare_state(
@@ -128,19 +175,62 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         )
         .try_init();
 
-    if !cfg.server.stdio {
-        return Err("only the stdio server is supported in this build".to_string());
+    let http_enabled = cfg.server.http.as_ref().is_some_and(|h| h.enabled);
+    if !cfg.server.stdio && !http_enabled {
+        return Err(
+            "no server transport enabled (set [server].stdio or [server.http].enabled)".into(),
+        );
     }
-    let (state, rx) = prepare_state(&cfg).await?;
 
-    // list_changed-driven rebuild worker.
+    // Fail-fast: resolve/verify every env-referenced secret before connecting anything.
+    let api_keys = resolve_api_keys(&cfg)?;
+    validate_upstream_http_env(&cfg)?;
+
+    let (state, rx) = prepare_state(&cfg).await?;
     tokio::spawn(gateway::run_rebuild_worker((*state).clone(), rx));
 
-    let server = downstream::GatewayServer::new(state.clone(), cfg.retrieval.top_k);
-    let service = server.serve(stdio()).await.map_err(|e| e.to_string())?;
-    service.waiting().await.map_err(|e| e.to_string())?;
+    // Pre-bind the HTTP listener (fail-fast on bind errors) before entering select!.
+    let http_bound = if http_enabled {
+        let h = cfg.server.http.as_ref().unwrap();
+        let listener = tokio::net::TcpListener::bind(&h.bind)
+            .await
+            .map_err(|e| format!("bind {:?}: {e}", h.bind))?;
+        tracing::info!(bind = %h.bind, path = %h.path, auth = !api_keys.is_empty(), "http server listening");
+        let router =
+            downstream::http::build_router(state.clone(), cfg.retrieval.top_k, &h.path, api_keys);
+        Some((listener, router))
+    } else {
+        None
+    };
 
-    // Best-effort graceful shutdown of upstream children.
+    let stdio_enabled = cfg.server.stdio;
+    let state_for_stdio = state.clone();
+    let top_k = cfg.retrieval.top_k;
+
+    let outcome: Result<(), String> = tokio::select! {
+        res = async {
+            let server = downstream::GatewayServer::new(state_for_stdio, top_k);
+            let service = server.serve(stdio()).await.map_err(|e| e.to_string())?;
+            service.waiting().await.map_err(|e| e.to_string())
+        }, if stdio_enabled => {
+            if res.is_ok() {
+                tracing::info!("stdio client disconnected; shutting down");
+            }
+            res.map(|_| ())
+        }
+        res = async {
+            let (listener, router) = http_bound.unwrap();
+            axum::serve(listener, router).await.map_err(|e| e.to_string())
+        }, if http_enabled => {
+            res
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("received ctrl-c; shutting down");
+            Ok(())
+        }
+    };
+
+    // Best-effort graceful shutdown of upstream children (runs on clean exit AND error).
     for name in state.registry().server_names() {
         if let Some(handle) = state.registry().remove(&name) {
             if let Ok(h) = Arc::try_unwrap(handle) {
@@ -148,7 +238,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    outcome
 }
 
 fn main() -> ExitCode {
@@ -180,5 +270,45 @@ mod tests {
         let cfg = config::Config::default_from_empty();
         let (state, _rx) = prepare_state(&cfg).await.expect("prepare ok");
         assert!(metatools::search_tools(&state.snapshot(), "anything", 5).is_empty());
+    }
+
+    #[test]
+    fn resolve_api_keys_reads_env_and_fails_fast_on_missing() {
+        std::env::set_var("MCPGW_T5_KEY", "abc");
+        let cfg = config::Config::from_toml_str(
+            "[server.http]\nenabled = true\n[[server.http.api_key]]\nname=\"a\"\nenv=\"MCPGW_T5_KEY\"\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_api_keys(&cfg).unwrap(), vec!["abc".to_string()]);
+
+        let cfg = config::Config::from_toml_str(
+            "[server.http]\nenabled = true\n[[server.http.api_key]]\nname=\"a\"\nenv=\"MCPGW_T5_MISSING\"\n",
+        )
+        .unwrap();
+        assert!(resolve_api_keys(&cfg).is_err());
+    }
+
+    #[test]
+    fn resolve_api_keys_empty_when_no_http() {
+        let cfg = config::Config::default_from_empty();
+        assert!(resolve_api_keys(&cfg).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_api_keys_empty_when_http_disabled_even_with_keys() {
+        let cfg = config::Config::from_toml_str(
+            "[server.http]\nenabled = false\n[[server.http.api_key]]\nname=\"a\"\nenv=\"MCPGW_CLEANUP_MISSING\"\n",
+        )
+        .unwrap();
+        assert!(resolve_api_keys(&cfg).unwrap().is_empty());
+    }
+
+    #[test]
+    fn validate_upstream_http_env_fails_fast_on_missing_bearer() {
+        let cfg = config::Config::from_toml_str(
+            "[[upstream]]\nname=\"r\"\ntransport=\"http\"\nurl=\"http://x/mcp\"\nbearer_env=\"MCPGW_T5_NO_SUCH\"\n",
+        )
+        .unwrap();
+        assert!(validate_upstream_http_env(&cfg).is_err());
     }
 }

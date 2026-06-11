@@ -6,12 +6,15 @@ edition = { workspace = true }
 [dependencies]
 gateway = { path = "../gateway" }
 metatools = { path = "../metatools" }
-rmcp = { workspace = true, features = ["server", "transport-io"] }
+rmcp = { workspace = true, features = ["server", "transport-io", "transport-streamable-http-server"] }
 serde_json = { workspace = true }
+axum = { workspace = true }
+subtle = "2"
 
 [dev-dependencies]
 upstream = { path = "../upstream", features = ["testkit"] }
 retrieval = { path = "../retrieval" }
-rmcp = { workspace = true, features = ["client", "server", "transport-io"] }
+rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-streamable-http-client-reqwest"] }
 tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

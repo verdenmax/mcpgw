@@ -9,7 +9,8 @@ testkit = []
 [dependencies]
 catalog = { path = "../catalog" }
 config = { path = "../config" }
-rmcp = { workspace = true, features = ["client", "server", "macros", "transport-child-process", "transport-io"] }
+rmcp = { workspace = true, features = ["client", "server", "macros", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest"] }
+http = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,12 +20,18 @@ schemars = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true }
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 
 # The integration test uses the in-memory mock, which lives behind the `testkit`
 # feature. Declaring it here makes `cargo test` (without the flag) SKIP this target
 # rather than fail to compile.
 [[test]]
 name = "integration"
+required-features = ["testkit"]
+
+[[test]]
+name = "http_connect"
 required-features = ["testkit"]
 
 [[bin]]
