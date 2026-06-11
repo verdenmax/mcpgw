@@ -123,7 +123,7 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
         └────────────────────┘               └──────────────────────────────────┘
 ```
 
-- `downstream` → 依赖 `gateway`/`metatools`/`catalog`/`rmcp`：`GatewayServer` 实现 rmcp `ServerHandler`，
+- `downstream` → 依赖 `gateway`/`metatools`/`rmcp`：`GatewayServer` 实现 rmcp `ServerHandler`，
   `list_tools` **恒返回 3 个元工具**（故 `get_info` 不声明 `list_changed`——元工具集合恒定），`call_tool` 分派到
   `metatools`（`MetaError`→`isError`，未知名→`McpError`）。
 - **活网关链路**（`mcpgw serve`）：`upstream::connect::connect_all` eager-connect 所有上游（**降级启动**：连不上
