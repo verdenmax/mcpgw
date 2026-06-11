@@ -10,12 +10,14 @@
 本文档的基线范围是 **M0（检索核心 / Plan 1）**：项目的依赖最少、纯逻辑的检索内核。它本身可独立运行
 （一个加载工具目录、做 BM25 检索的库 + CLI），并为后续 M1（活 MCP I/O 层）打好接口地基。
 
-**M1 进行中**：上游 I/O 层 `upstream`（M1-A）已完成；网关元工具逻辑 `metatools` 与快照状态/重建层 `gateway`
-（**M1-B.1**）已完成；下游 MCP 服务 `downstream` 与 eager-connect/`serve`（**M1-B.2**）已完成——`mcpgw serve`
-现可起一个活的 stdio MCP 网关。
+**M1 已完成**：上游 I/O 层 `upstream`（M1-A）；网关元工具逻辑 `metatools` 与快照状态/重建层 `gateway`
+（**M1-B.1**）；下游 MCP 服务 `downstream` 与 eager-connect/`serve`（**M1-B.2**）；**HTTP 双向传输 + 静态
+API-Key 鉴权（M1-C）**。`mcpgw serve` 现可并发起一个活的 **stdio 与/或 Streamable HTTP** MCP 网关，并能聚合
+**远程 HTTP 上游** MCP server。
 
 > 完整里程碑路线见 `docs/superpowers/plans/2026-06-08-mcpgw-program-roadmap.md`。
-> 设计依据见 `docs/superpowers/specs/2026-06-08-mcpgw-progressive-discovery-design.md`。
+> 设计依据见 `docs/superpowers/specs/2026-06-08-mcpgw-progressive-discovery-design.md`
+> 与 `docs/superpowers/specs/2026-06-11-mcpgw-m1c-http-auth-design.md`（M1-C HTTP/鉴权）。
 
 ## 整体架构（M0）
 
@@ -133,6 +135,54 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
 - **日志走 stderr**（stdout 留给 MCP 协议帧）。
 - 接口/细节见 L2/L3/L4：[downstream](./L2-components/downstream.md)。
 
+## M1-C 新增：HTTP 双向传输 + 静态 API-Key 鉴权（已完成）
+
+补齐网关的 HTTP 双向能力与静态鉴权，使其既能被远程客户端访问，又能聚合远程 HTTP 上游——三个元工具与 stdio 完全
+一致，只是多了 HTTP transport 与鉴权层。
+
+```
+   远程 MCP 客户端 ──HTTP(Bearer)──► ┌──────── downstream::http ────────┐
+                                     │  StreamableHttpService(GatewayServer)│
+   本地 MCP 客户端 ──stdio──────────►│   nest_service 进 axum Router       │
+                                     │   + Bearer 鉴权层（常量时间比较/401）│
+                                     └──────────────────┬──────────────────┘
+   ┌──────────── mcpgw serve（并发装配，共享 Arc<GatewayState>）───────────▼──────────┐
+   │  fail-fast 解析所有 env 引用的密钥 → 预绑定 HTTP listener →                        │
+   │  tokio::select! over { stdio waiting() · axum::serve · ctrl_c } → 统一关闭         │
+   └───────┬───────────────────────────────────────────────┬───────────────────────────┘
+           │ eager-connect（按 transport 分派）             │ call_tool 路由
+   ┌───────▼────────────────────────────────┐     ┌────────▼──────────────────────┐
+   │  upstream::connect                       │     │  gateway / metatools           │
+   │  connect_stdio_upstream（stdio 子进程）  │     │  GatewaySnapshot · call_tool   │
+   │  connect_http_upstream（远程 HTTP MCP）  │     └────────────────────────────────┘
+   │   复用泛型 connect_with_trigger 管线      │
+   └──────────────────────────────────────────┘
+```
+
+- **下游 HTTP**：`downstream::http::build_router` 用 rmcp `StreamableHttpService` 把 `GatewayServer` 经
+  `nest_service` 挂进 axum，默认绑 `127.0.0.1:8970`、路径 `/mcp`。配置 ≥1 个 API-Key 时叠加 Bearer 鉴权层
+  （多 key、**常量时间比较**；缺失/错误 → **401**，不回显期望值）；keyset 为空则放行（依赖 localhost 绑定）。
+- **上游 HTTP**：`UpstreamTransport::Http { url, bearer_env, headers }` 连接远程 HTTP MCP；`bearer_env` 持
+  **原始 token**（rmcp 在线路上自动加 `Bearer ` 前缀），`headers` 是「头名 → env 变量名」内联表。HTTP 上游
+  **复用与 stdio 同一条泛型连接/超时/list_changed 管线**，连接失败同样降级隔离。
+- **进程模型**：`serve` 按配置并发跑 stdio 与/或 HTTP，共享同一 `Arc<GatewayState>`，经
+  `tokio::select!` over `{stdio waiting()、axum::serve、ctrl_c}` 统一关闭；**至少须启用一种传输**。
+- **Fail-fast**：所有 env 引用的密钥/头值在启动时解析校验，缺失即报错并指明字段名与 env 变量名（**绝不泄露值**）。
+- **继续延后**：完整 OAuth/DCR/反向代理正确性 → M3；运行时热吊销/增删 API-Key → M4；超时主动向上游发
+  `notifications/cancelled` → 仍延后（与 HTTP/鉴权正交，drop in-flight future 在 Rust 里已安全）。
+- 接口/细节见 L2/L3/L4：[config](./L2-components/config.md) · [downstream](./L2-components/downstream.md) ·
+  [upstream](./L2-components/upstream.md) · [downstream/http.rs](./L4-api/downstream-http.md) ·
+  [upstream/connect.rs](./L4-api/upstream-connect.md)。
+
+## 传输能力一览
+
+| 方向 | stdio | HTTP（Streamable HTTP） |
+|------|-------|--------------------------|
+| **上游**（连接被聚合的 MCP server） | ✅ 子进程（`command`/`args` + env allow-list） | ✅ 远程 `url` + 静态鉴权（`bearer_env` 原始 token、`headers` 头名→env） |
+| **下游**（向客户端暴露 3 个元工具） | ✅ `serve` over stdio | ✅ 默认 `127.0.0.1:8970` `/mcp` + 多 key Bearer 鉴权 |
+
+> 下游 stdio 与 HTTP **可并发同时启用**（共享一份 `Arc<GatewayState>`）；至少启用一种。
+
 ## 数据流（M0 CLI）
 
 ```
@@ -149,23 +199,24 @@ get-details 子命令：catalog.get(qualified_name) ──► 该工具完整 JS
 
 ```bash
 cargo build                 # 构建工作区（产出 target/debug/mcpgw）
-cargo test --all-features   # 全部测试（68 个：catalog 4 / config 14 / retrieval 5 + golden 1 /
-                            #   mcpgw main 2 + cli 5 / upstream 7 + 集成 10 / metatools 3 + call_tool 4 /
-                            #   gateway 1 + rebuild 6 / downstream 1 + e2e 5）
-                            # 注：upstream 集成测试与 mock-stdio 二进制需 testkit feature，故用 --all-features
+cargo test --all-features   # 全部测试（84 个：catalog 4 / config 19 / retrieval 5 + golden 1 /
+                            #   mcpgw main 5 + cli 5 / upstream 11 + 集成 10 + http_connect 1 /
+                            #   metatools 3 + call_tool 4 / gateway 1 + rebuild 6 /
+                            #   downstream 1 + e2e(stdio) 5 + e2e(http) 3）
+                            # 注：upstream 集成测试、mock-stdio 二进制与 HTTP e2e 需 testkit feature，故用 --all-features
 cargo clippy --all-targets --all-features -- -D warnings   # 静态检查，零告警
 cargo fmt --all             # 格式化
 # 手动试用（search/get-details 需在工作区根目录运行，默认 --catalog tests/fixtures/tools.json）
 ./target/debug/mcpgw search "weather forecast"
 ./target/debug/mcpgw get-details github__create_issue
-# 起活的 stdio MCP 网关（日志走 stderr；stdout 是 MCP 协议帧）：
+# 起活的 MCP 网关（按配置并发跑 stdio 与/或 HTTP；日志走 stderr，stdout 是 MCP 协议帧）：
 ./target/debug/mcpgw --config mcpgw.toml serve
 ```
 
 ## 当前状态
 
 - **M0（检索核心）✅ 已完成并合并到 `master`。** 21 测试绿、clippy 净。
-- **M1（活 MCP I/O 层）🚧 进行中**：
+- **M1（活 MCP I/O 层）✅ 已完成**：
   - **M1-A（`upstream`）✅ 已完成** —— rmcp client 连接、工具摄取、`call_tool` 转发（带每调用超时）、连接注册表；
     含 `testkit` 内存 mock 与门控集成测试。
   - **M1-B.1（`metatools` + `gateway`）✅ 已完成** —— 三个元工具函数 over 不可变 `GatewaySnapshot`、`ArcSwap`
@@ -174,7 +225,12 @@ cargo fmt --all             # 格式化
     `ServerHandler`，暴露 3 个固定元工具）；`upstream::connect`（`connect_all` 降级启动 + env allow-list +
     握手超时）；`gateway` 重建升级为**并发摄取 + per-ingest 超时**并加 `run_rebuild_worker`（合并 list_changed
     突发）；`mcpgw serve` 把三者装配成活的 stdio 网关。
-  - **M1-C（HTTP transport 等）** 待实现，见路线图。
+  - **M1-C（HTTP 双向传输 + 静态 API-Key 鉴权）✅ 已完成** —— 下游经 rmcp `StreamableHttpService` 暴露 3 个元工具
+    （`nest_service` 进 axum，默认 `127.0.0.1:8970` `/mcp`）+ 多 key Bearer 鉴权（常量时间比较、401）；上游新增
+    `UpstreamTransport::Http`（`bearer_env` 原始 token、`headers` 头名→env 内联表）复用泛型连接管线；`serve`
+    并发跑 stdio + HTTP 共享 `Arc<GatewayState>`，`tokio::select!` 统一关闭，启动期 env fail-fast。
+- **后续里程碑**：完整 OAuth/DCR/反向代理（M3）、运行时热吊销 API-Key（M4）、超时主动 `notifications/cancelled`
+  （继续延后）见路线图。
 
 ## 向下导航
 

@@ -2,9 +2,9 @@
 
 ## 职责
 
-活的**上游 MCP I/O 层**（M1-A）：用 rmcp client 连接上游 MCP 服务器、把上游工具**摄取**成命名空间化的
-`catalog::ToolDef`、并把 `call_tool` 调用转发回对应上游。维护一份按 server 名键入的连接注册表。不了解检索、
-配置或 CLI；不暴露 MCP 元工具（那是 M1-B 网关的事）。
+活的**上游 MCP I/O 层**（M1-A）：用 rmcp client 连接上游 MCP 服务器（**stdio 子进程或远程 HTTP**）、把上游工具
+**摄取**成命名空间化的 `catalog::ToolDef`、并把 `call_tool` 调用转发回对应上游。维护一份按 server 名键入的连接
+注册表。不了解检索、配置或 CLI；不暴露 MCP 元工具（那是 M1-B 网关的事）。
 
 ## 公开接口
 
@@ -27,14 +27,21 @@
 - `UpstreamClientHandler`：装在每条连接上的 rmcp `ClientHandler`；`on_tool_list_changed` 时把上游名 `try_send`
   进 trigger（`trigger: None` 时为 no-op，内存测试用）。channel 满也无妨——worker 会合并同一波触发。
 
-### eager-connect：`connect_all` / `connect_stdio_upstream` / `ConnectSummary`（`connect.rs`）
-按配置 eager-connect 所有上游（真实 stdio 子进程），**降级启动**：单上游连不上只被记录、不阻断其余。
+### eager-connect：`connect_all` / `connect_stdio_upstream` / `connect_http_upstream` / `ConnectSummary`（`connect.rs`）
+按配置 eager-connect 所有上游（**按 `transport` 分派** stdio 子进程或远程 HTTP），**降级启动**：单上游连不上只被
+记录、不阻断其余。
 
 | 项 | 签名 | 说明 |
 |----|------|------|
-| `connect_all` | `async (&UpstreamRegistry, &[UpstreamConfig], RebuildTrigger) -> ConnectSummary` | 逐个连接：成功 `insert` 进注册表并记入 `connected`，失败 `warn!`+记入 `skipped`（不 `Err`） |
+| `connect_all` | `async (&UpstreamRegistry, &[UpstreamConfig], RebuildTrigger) -> ConnectSummary` | 逐个连接，按 `transport` 分派 stdio/http：成功 `insert` 进注册表并记入 `connected`，失败 `warn!`+记入 `skipped`（不 `Err`） |
 | `connect_stdio_upstream` | `async (&UpstreamConfig, Option<RebuildTrigger>) -> Result<UpstreamHandle, UpstreamError>` | spawn 子进程并连接，**握手受 `call_timeout_ms` 超时约束**，并施加 env allow-list |
+| `connect_http_upstream` | `async (&UpstreamConfig, Option<RebuildTrigger>) -> Result<UpstreamHandle, UpstreamError>` | 连接远程 HTTP MCP server：从 env 解析 `bearer_env`（**原始 token**，rmcp 在线路上自动加 `Bearer ` 前缀）与 `headers`（头名→env），构造 `StreamableHttpClientTransport` 后**复用泛型 `connect_with_trigger`**（同一握手超时 + per-call 超时 + list_changed 管线） |
 | `ConnectSummary` | `{ connected: Vec<String>, skipped: Vec<(String, String)> }` | 哪些上游连上 / 跳过（含原因） |
+
+**http transport 复用泛型连接路径**：HTTP 上游不另起一条管线——`connect_http_upstream` 仅负责把 env 引用的 auth
+组装成 rmcp `StreamableHttpClientTransportConfig`，随后交给与 stdio **同一个** `UpstreamHandle::connect_with_trigger`
+（这是 M1-B.2 把签名泛化为 `IntoTransport<RoleClient, E, A>` 的收益）。缺 env / 非法头 / 网络不可达均映射为
+`UpstreamError`，在 `connect_all` 里同样降级隔离。
 
 ### 错误 `UpstreamError`（`connection.rs`）
 `#[derive(thiserror::Error)]` 枚举：
@@ -76,8 +83,8 @@
 
 ## 依赖
 
-- 外部：`rmcp`（1.7，client/server/macros/transport-child-process/transport-io）、`tokio`、`thiserror`、
-  `tracing`、`serde_json`、`schemars`。
+- 外部：`rmcp`（1.7，client/server/macros/transport-child-process/transport-io/**transport-streamable-http-client-reqwest**）、
+  `tokio`、`thiserror`、`tracing`、`serde_json`、`schemars`。
 - 内部：`catalog`（摄取目标类型 `ToolDef` / `Catalog`）、`config`（`connect` 层读 `UpstreamConfig` /
   `UpstreamTransport`）。
 
@@ -85,8 +92,8 @@
 
 - `gateway`（M1-B.1）：装配 `UpstreamRegistry`，把上游工具摄取进 catalog，并经元工具 `call_tool` 路由到对应
   `UpstreamHandle`。
-- `mcpgw serve`（M1-B.2）：`connect::connect_all` eager-connect 所有上游、填充注册表，并把 `RebuildTrigger`
-  接到 `gateway::run_rebuild_worker`。
+- `mcpgw serve`（M1-B.2 / M1-C）：`connect::connect_all` eager-connect 所有上游（按 `transport` 分派 stdio 子进程
+  或远程 HTTP）、填充注册表，并把 `RebuildTrigger` 接到 `gateway::run_rebuild_worker`。
 
 ## 关键不变量
 

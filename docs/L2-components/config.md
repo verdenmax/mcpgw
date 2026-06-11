@@ -2,8 +2,8 @@
 
 ## 职责
 
-解析并校验 mcpgw 的 TOML 配置。含 `[retrieval]`、`[[upstream]]`（M1-A）与 `[server]`（M1-B）三段。
-不了解检索内部，也不反向依赖 `retrieval`。
+解析并校验 mcpgw 的 TOML 配置。含 `[retrieval]`、`[[upstream]]`（M1-A，stdio + M1-C 的 http）与 `[server]`
+（M1-B，含 M1-C 的 `[server.http]`）三段。不了解检索内部，也不反向依赖 `retrieval`。
 
 ## 公开接口
 
@@ -26,21 +26,40 @@
 
 ### 类型 `UpstreamConfig` / `UpstreamTransport`
 `[[upstream]]` 数组。每项含 `name`（命名空间前缀，非空白、禁含 `__`）、`call_timeout_ms`（默认 `30_000`）、
-经 `#[serde(flatten)]` 摊平的内部标签枚举 `UpstreamTransport`（目前仅 `Stdio { command, args, env_passthrough }`）。
-`env_passthrough` 是传给子进程的环境变量名 **allow-list**——`upstream::connect` 先清空子进程环境再仅注入这些
-（且存在于 mcpgw 环境的）变量；默认子进程拿不到父环境，须显式列出（如 `PATH`/凭据）。
+经 `#[serde(flatten)]` 摊平的内部标签枚举 `UpstreamTransport`：
+- `Stdio { command, args, env_passthrough }`（`transport = "stdio"`）。`env_passthrough` 是传给子进程的环境变量名
+  **allow-list**——`upstream::connect` 先清空子进程环境再仅注入这些（且存在于 mcpgw 环境的）变量；默认子进程拿不到
+  父环境，须显式列出（如 `PATH`/凭据）。
+- `Http { url, bearer_env, headers }`（`transport = "http"`，M1-C 新增）：远程 Streamable HTTP MCP 上游。
+  `bearer_env` 是持有 **原始 bearer token** 的 env 变量名（可选；rmcp 在线路上自动加 `Authorization: Bearer ` 前缀，
+  配置/token 本身**不含**前缀）；`headers` 是「头名 → 持有该头值的 env 变量名」的**内联表**
+  （`headers = { "X-Api-Version" = "REMOTE_VER" }`，刻意用内联表而非 `[[upstream.header]]` 数组表以适配
+  `flatten` + 内部标签枚举）。所有认证值**只经 env 引用**，配置里不出现任何明文密钥。
 
-### 类型 `ServerConfig`
+### 类型 `ServerConfig` / `HttpConfig` / `ApiKeyConfig`
 `[server]` 段。`#[serde(default, deny_unknown_fields)]`。
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `stdio` | `bool` | `true` | 是否把 3 个元工具经 stdio MCP server 暴露（HTTP 留待 M1-C） |
+| `stdio` | `bool` | `true` | 是否把 3 个元工具经 stdio MCP server 暴露 |
+| `http` | `Option<HttpConfig>` | `None` | `[server.http]` 段；省略 → HTTP 关闭（M1-C） |
+
+`[server.http]`（`HttpConfig`，`#[serde(default, deny_unknown_fields)]`）：Streamable HTTP server 设置。
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `enabled` | `bool` | `false` | 须显式 opt-in 才启动 HTTP server |
+| `bind` | `String` | `"127.0.0.1:8970"` | 监听地址；公网暴露请配合隧道/反向代理（M3） |
+| `path` | `String` | `"/mcp"` | MCP 端点挂载路径 |
+| `api_keys` | `Vec<ApiKeyConfig>` | `[]` | `#[serde(rename = "api_key")]` → `[[server.http.api_key]]`；为空 = 不鉴权（依赖 localhost 绑定） |
+
+`[[server.http.api_key]]`（`ApiKeyConfig`，`#[serde(deny_unknown_fields)]`）：每项 `name`（仅作日志/可观测标识，
+**绝不打印 key 值**）+ `env`（持有 key 明文的 env 变量名）。密钥明文只经 env 引用，配置里只存 env 变量名。
 
 ### 错误 `ConfigError`
 `enum ConfigError { Parse(toml::de::Error), Invalid(String) }`（`thiserror`，`Parse` 带 `#[from]`）。
 - `Parse`：TOML 语法错误或未知字段（`deny_unknown_fields`）。
-- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；upstream `name` 空白/含 `__`/重复）。
+- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；upstream `name` 空白/含 `__`/重复；http 上游 `url` 空白）。
 
 ## 依赖
 
@@ -50,8 +69,10 @@
 ## 被谁使用
 
 - `mcpgw`：`load_config` 读取/默认配置；`search`/`get-details` 用 `cfg.retrieval`，`serve` 用 `cfg.upstreams`
-  （eager-connect）、`cfg.server.stdio`、`cfg.retrieval.top_k`（下游默认 top_k）。
-- `upstream::connect`：读 `UpstreamConfig` / `UpstreamTransport` 起子进程上游。
+  （eager-connect）、`cfg.server.stdio` 与 `cfg.server.http`（并发选择 stdio/HTTP 传输、解析 API-Key env）、
+  `cfg.retrieval.top_k`（下游默认 top_k）。**密钥/头值的 env 引用在 `serve` 启动时 fail-fast 解析**（缺失即报错、
+  仅含字段/env 名），config 自身只校验结构、不读取 env 值。
+- `upstream::connect`：读 `UpstreamConfig` / `UpstreamTransport` 起 stdio 子进程上游或连接 http 上游。
 
 ## 关键不变量
 
