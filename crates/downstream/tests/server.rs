@@ -94,3 +94,63 @@ async fn call_tool_routes_missing_upstream_tool_to_iserror() {
     assert_eq!(r.is_error, Some(true)); // MetaError::ToolNotFound -> isError
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn list_changed_refreshes_what_search_can_find() {
+    use std::time::Duration;
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    common::attach_revealing_mock_with_worker(&state, "mock").await;
+    let client = common::connect_to_gateway(state.clone(), 8).await;
+
+    // Initially: late_tool is not revealed, so search can't find it.
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("search_tools")
+                .with_arguments(args(json!({"query":"late_tool"}))),
+        )
+        .await
+        .unwrap();
+    assert!(!r.content[0]
+        .as_text()
+        .unwrap()
+        .text
+        .contains("mock__late_tool"));
+
+    // Call the upstream's reveal THROUGH the gateway -> upstream emits tools/list_changed
+    // -> handler -> trigger -> worker rebuilds.
+    client
+        .call_tool(
+            CallToolRequestParams::new("call_tool")
+                .with_arguments(args(json!({"name":"mock__reveal"}))),
+        )
+        .await
+        .unwrap();
+
+    // Poll until search surfaces the newly revealed tool.
+    let mut found = false;
+    for _ in 0..100 {
+        let r = client
+            .call_tool(
+                CallToolRequestParams::new("search_tools")
+                    .with_arguments(args(json!({"query":"late_tool revealed runtime"}))),
+            )
+            .await
+            .unwrap();
+        if r.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("mock__late_tool")
+        {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        found,
+        "after list_changed, search_tools should surface mock__late_tool"
+    );
+
+    client.cancel().await.unwrap();
+}
