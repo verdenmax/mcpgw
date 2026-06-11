@@ -104,6 +104,20 @@ M1-B 网关接入时会用它驱动健康状态与重连策略。
 - 集成测试 `tests/integration.rs` 依赖这些 mock，故在 `Cargo.toml` 用 `[[test]] required-features = ["testkit"]`
   门控：`cargo test --all-features` 编译并运行它；裸 `cargo test` 则**跳过**该 target（不编译失败）。
 
+## HTTP 上游 e2e（`tests/http_connect.rs`）
+
+- M1-C T6 用 rmcp `StreamableHttpService`（serving `MockUpstream`，`LocalSessionManager` + 默认
+  `StreamableHttpServerConfig`）在 axum 上挂到 `/mcp`、bind `127.0.0.1:0` 取临时端口，起一个**真实的 HTTP MCP 上游**，
+  再用 `connect_http_upstream` 经真网络往返连接，端到端验收 T2 的连接/鉴权路径（握手、`IntoTransport` 绑定、头透传）。
+- axum 外挂一层 `from_fn_with_state` **记录请求头中间件**（`record_headers`）把每个请求的 `Authorization` 头存进
+  `Arc<Mutex<Vec<…>>>`；因 initialize / list_tools / call_tool 各发一次 HTTP 请求，会记录多条，故断言用 `.any()`。
+- 断言三事：工具被命名空间摄取（`remote__echo`）、`call_tool("echo")` 转发并回显、上游确实收到
+  `Authorization: Bearer topsecret`（T2-fix 存**原始** token，rmcp reqwest 客户端在线上加 `Bearer ` 前缀）。
+- **注意**：断言用的 `headers.lock()` guard 必须在 `handle.shutdown().await` **之前**释放——shutdown 会向上游发
+  session 终止请求、再次穿过 `record_headers` 中间件去 `lock()` 同一 mutex，若 guard 仍被持有则死锁。
+- 该 target 同样以 `required-features = ["testkit"]` 门控（`MockUpstream` 在 `testkit` 后面）；dev-deps 额外引入
+  `axum` 0.8 与 rmcp 的 `server` / `transport-streamable-http-server` 等 feature 仅供该测试编译。
+
 ## 观察到的行为（失败语义）
 
 - **崩溃 / 关闭的 peer**：丢弃 duplex 的服务端会让客户端 `initialize` 因 EOF **快速报错**，`connect` 立即返回
@@ -125,6 +139,8 @@ M1-B 网关接入时会用它驱动健康状态与重连策略。
 - 单测（`lib.rs` spike）：client 经 duplex 看到 mock 三工具。
 - 集成（`tests/integration.rs`，需 `testkit`）：摄取命名空间工具、转发 `call_tool`、registry 取/删、单上游失败不阻塞其余、
   `call_tool` 慢于 `call_timeout` 时映射为 `UpstreamError::Timeout`、经 `mock-stdio` 子进程的真实 stdio connect 冒烟。
+- e2e（`tests/http_connect.rs`，需 `testkit`）：经真实 axum `StreamableHttpService` 上游 + 记录头中间件，验收
+  `connect_http_upstream` 的网络往返——摄取、`call_tool` 回显、上游收到 `Authorization: Bearer topsecret`。
 
 ## 相关
 
