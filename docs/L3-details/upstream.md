@@ -8,15 +8,42 @@
 - **调用**：`client.call_tool(CallToolRequestParams::new(name).with_arguments(args)).await`。
 - **关闭**：`client.cancel().await` —— 优雅取消运行中的服务。
 
-## transport-generic `connect<T: AsyncRead + AsyncWrite>`
+## transport-generic `connect`（rmcp `IntoTransport`）
 
-`connect` 对传输泛型（`T: AsyncRead + AsyncWrite + Send + Unpin + 'static`），所以同一条建连路径同时支持：
+`connect`/`connect_with_trigger` 对传输泛型（`T: IntoTransport<RoleClient, E, A>`），所以同一条建连路径同时支持：
 
-- **生产**：真实 stdio 子进程（rmcp `transport-child-process` / `transport-io`）。
+- **生产**：真实 stdio 子进程（rmcp `TokioChildProcess`，由 `connect::connect_stdio_upstream` 构造）。
 - **测试**：`tokio::io::duplex(4096)` 的内存双工管道——无需起进程即可端到端验证。
 
-测试用 `MockUpstream::new().serve(server_io)` 起服务端，`UpstreamHandle::connect(name, client_io)` 起客户端，
-两端经 duplex 对接。
+（早期裸 `AsyncRead + AsyncWrite + Send + Unpin + 'static` 约束已升级为 rmcp 的 `IntoTransport`，以同时吃
+duplex 与 `TokioChildProcess`。）测试用 `MockUpstream::new().serve(server_io)` 起服务端，
+`UpstreamHandle::connect(name, client_io)` 起客户端，两端经 duplex 对接。
+
+## list_changed 转发：`UpstreamClientHandler` + `RebuildTrigger`
+
+每条连接都装一个 `UpstreamClientHandler { server, trigger: Option<RebuildTrigger> }`（`RebuildTrigger =
+mpsc::Sender<String>`）。rmcp 收到上游的 `tools/list_changed` 通知时回调 `on_tool_list_changed`，handler 把
+**该上游名** `try_send` 进 trigger channel：
+
+- 用 `try_send`（非阻塞）：channel 满也不阻塞 rmcp 的通知处理；网关 worker 会 coalesce 同一波突发，丢弃溢出的
+  重复触发无害（最终都会触发一次重建）。
+- `trigger: None` 时 handler 为 no-op——内存单测（`connect`）不关心 list_changed 时用它。
+- 这是 **上游 → 网关** 的单向链路；它**不**外溢到下游客户端（下游元工具集合恒定，见 [downstream L3](./downstream.md)）。
+
+## eager-connect 与降级启动（`connect.rs`）
+
+`connect_all(registry, upstreams, trigger)` 顺序 eager-connect 每个 `UpstreamConfig`，**降级启动**：
+
+- `connect_stdio_upstream` 成功 → `registry.insert` + 记 `connected`；失败 → `warn!` + 记 `skipped`，**不** `Err`。
+- 因此一个连不上/起不来的上游只被记录到 `ConnectSummary.skipped`，不阻断网关启动；`serve` 打日志后照常做初始
+  rebuild。
+
+**env allow-list**：`build_command` 先 `c.env_clear()` 清空子进程环境，再仅把 `env_passthrough` 列出、且在
+mcpgw 自身环境里存在的变量传入。默认子进程**拿不到**父进程环境，须显式 allow-list（如 `PATH`/`HOME`/凭据变量）。
+
+**握手超时**：`connect_stdio_upstream` 用 `tokio::time::timeout(cfg.call_timeout_ms, connect)` 给
+connect/initialize 握手加界——子进程**起得来但从不应答**（hung）时映射为 `UpstreamError::Timeout`，不拖垮降级
+启动。这正补上了下文「挂起 peer」一节里 connect 需调用方加超时的缺口。
 
 ## `Tool → ToolDef` 字段映射
 
@@ -58,29 +85,37 @@ M1-B 网关接入时会用它驱动健康状态与重连策略。
 
 ## testkit 与门控集成测试
 
-- `testkit.rs` 用 `#![cfg(any(test, feature = "testkit"))]` 门控；`MockUpstream` 经 rmcp `#[tool_router]` /
-  `#[tool]` / `#[tool_handler]` 宏暴露 `echo`（回显入参 `text`）、`greet`（返回 `"hello"`）与 `slow`
+- `testkit.rs` 用 `#![cfg(any(test, feature = "testkit"))]` 门控。`MockUpstream` 经 rmcp `#[tool_router]` /
+  `#[tool]` / `#[tool_handler]` 宏暴露**固定**的 `echo`（回显入参 `text`）、`greet`（返回 `"hello"`）与 `slow`
   （sleep 远超任何合理超时，用于触发 `call_timeout`）。
-- 集成测试 `tests/integration.rs` 依赖该 mock，故在 `Cargo.toml` 用 `[[test]] required-features = ["testkit"]`
+- `RevealingMockUpstream` 手写 `ServerHandler`（声明 `enable_tool_list_changed`）：`list_tools` 初始返回
+  `echo` + `reveal`，`call_tool("reveal")` 把内部 `AtomicBool` 置位、`ctx.peer.notify_tool_list_changed()`
+  发通知，此后 `list_tools` 再多返回 `late_tool`。用于端到端驱动 reveal → notify → rebuild → search 闭环。
+- testkit-only 二进制 `mock-stdio`（`required-features = ["testkit"]`）把 `MockUpstream` 跑在真实 stdio 上，
+  让子进程 connect 路径（`connect_stdio_upstream`）能对接真实子进程冒烟。
+- 集成测试 `tests/integration.rs` 依赖这些 mock，故在 `Cargo.toml` 用 `[[test]] required-features = ["testkit"]`
   门控：`cargo test --all-features` 编译并运行它；裸 `cargo test` 则**跳过**该 target（不编译失败）。
 
 ## 观察到的行为（失败语义）
 
 - **崩溃 / 关闭的 peer**：丢弃 duplex 的服务端会让客户端 `initialize` 因 EOF **快速报错**，`connect` 立即返回
   `Err(UpstreamError::Connect)`。
-- **挂起（hung）的 peer**：服务端存活但从不应答，则 `connect` 会一直阻塞——必须由调用方加 `tokio::time::timeout`
-  才能让单个挂起上游不拖垮其余网关（集成测试 `one_upstream_failure_does_not_block_others` 即验证此点）。
+- **挂起（hung）的 peer**：服务端存活但从不应答，则裸 `connect` 会一直阻塞。生产路径
+  `connect::connect_stdio_upstream` 已用 `tokio::time::timeout(call_timeout_ms, …)` 包住握手，把挂起映射为
+  `UpstreamError::Timeout`，使单个挂起上游不拖垮其余网关（集成测试 `one_upstream_failure_does_not_block_others`
+  即验证此点）。摄取期的挂起则由 `gateway` 的 per-ingest 超时隔离（见 [gateway L3](./gateway.md)）。
 
 ## 测试覆盖
 
 - 单测（`mapping.rs`）：命名空间+字段拷贝、缺省 description、保留 input_schema、计数 dupes。
 - 单测（`registry.rs`）：`UpstreamState` 三值互异。
+- 单测（`connect.rs`）：`build_command` env allow-list（仅传 allow-listed 变量、清除其余）。
 - 单测（`lib.rs` spike）：client 经 duplex 看到 mock 三工具。
 - 集成（`tests/integration.rs`，需 `testkit`）：摄取命名空间工具、转发 `call_tool`、registry 取/删、单上游失败不阻塞其余、
-  `call_tool` 慢于 `call_timeout` 时映射为 `UpstreamError::Timeout`。
+  `call_tool` 慢于 `call_timeout` 时映射为 `UpstreamError::Timeout`、经 `mock-stdio` 子进程的真实 stdio connect 冒烟。
 
 ## 相关
 
 - 接口见 L2：[upstream](../L2-components/upstream.md)
 - 逐文件 API 见 L4：[mapping](../L4-api/upstream-mapping.md) · [connection](../L4-api/upstream-connection.md) ·
-  [registry](../L4-api/upstream-registry.md)
+  [connect](../L4-api/upstream-connect.md) · [registry](../L4-api/upstream-registry.md)

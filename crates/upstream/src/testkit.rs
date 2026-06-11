@@ -1,6 +1,8 @@
-//! In-memory mock upstream MCP server for tests. Reusable by other crates via the
-//! `testkit` feature. Exposes three tools: `echo`, `greet`, and `slow` (sleeps to
-//! exercise per-call timeouts).
+//! In-memory mock upstream MCP servers for tests. Reusable by other crates via the
+//! `testkit` feature. `MockUpstream` exposes three static tools: `echo`, `greet`, and
+//! `slow` (sleeps to exercise per-call timeouts). `RevealingMockUpstream` is a
+//! runtime-revealing mock whose tool list grows when `reveal` is called (emitting
+//! `tools/list_changed`), used to drive the gateway's list_changed refresh end-to-end.
 #![cfg(any(test, feature = "testkit"))]
 
 use std::sync::atomic::{AtomicBool, Ordering};

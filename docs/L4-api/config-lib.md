@@ -9,9 +9,11 @@
 pub struct Config {
     #[serde(default)] pub retrieval: RetrievalConfig,
     #[serde(default, rename = "upstream")] pub upstreams: Vec<UpstreamConfig>,
+    #[serde(default)] pub server: ServerConfig,
 }
 ```
-`[[upstream]]` 数组通过 `rename = "upstream"` 映射到 `upstreams` 字段（缺省为空）。
+`[[upstream]]` 数组通过 `rename = "upstream"` 映射到 `upstreams` 字段（缺省为空）；`[server]` 段缺省取
+`ServerConfig::default()`。
 
 | 方法 | 签名 | 返回 / 说明 |
 |------|------|-------------|
@@ -40,12 +42,28 @@ pub enum UpstreamTransport {
     Stdio {
         command: String,
         #[serde(default)] args: Vec<String>,
-        #[serde(default)] env_passthrough: Vec<String>,
+        #[serde(default)] env_passthrough: Vec<String>,   // 环境变量 allow-list（见下）
     },
 }
 ```
 内部标签字段 `transport`（值如 `"stdio"`）与变体字段在同一 TOML 表中（经 `#[serde(flatten)]`）。
 M0/M1-A 仅实现 `stdio`；`http` 等留待 M1-C。
+
+`env_passthrough` 是传给子进程的环境变量名 **allow-list**：`upstream::connect` 启动子进程时先 `env_clear()`
+清空子进程环境，再仅把这些变量（且存在于 mcpgw 自身环境时）传入。子进程默认**拿不到**父进程环境，须显式列出
+（如 `PATH`/`HOME`/凭据变量）。
+
+## `struct ServerConfig`
+```rust
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerConfig {
+    pub stdio: bool,   // 默认 true
+}
+```
+`[server]` 段：选择下游对外的 transport。`stdio = true`（默认）表示把 3 个元工具经 stdio MCP server 暴露；HTTP
+留待 M1-C。无 `flatten`，故 `deny_unknown_fields` 生效（`[server]` 内未知键 → `Parse`）。实现 `Default`
+（`stdio = true`）。
 
 ## `struct RetrievalConfig`
 ```rust
