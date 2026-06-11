@@ -26,6 +26,29 @@
 - **未知 transport 值**（如 `transport = "carrier-pigeon"`）→ `Parse`（内部标签枚举拒绝未知判别值）。
 - `args` / `env_passthrough` 省略时默认空；`call_timeout_ms` 省略时默认 `30_000`（经 flatten 路径仍正确）。
 
+### HTTP 上游（M1-C T1）
+
+`UpstreamTransport::Http { url, bearer_env, headers }` 是 M1-C 新增的远端 Streamable HTTP 上游变体（T1
+仅扩 schema，连接逻辑在 T2+）。认证值**只经 env 变量名引用**，配置里不出现明文密钥。
+
+- **headers 用内联表而非 `[[upstream.header]]`**：`headers` 是「头名 → 持有该头值的 env 变量名」的 TOML
+  **内联表**（`headers = { "X-Api-Version" = "REMOTE_VER" }`），刻意**不**采用 `[[upstream.header]]` 这类
+  数组表。原因：`UpstreamConfig` 用 `#[serde(flatten)]` 摊平内部标签枚举 `UpstreamTransport`，而
+  `flatten` + 内部标签枚举对**数组表**（array-of-tables）的解析有限制，无法可靠地把 `[[upstream.header]]`
+  归位到变体字段；内联表（map 字段）则能正常经 flatten 路径解析。这是 spec §10 记录的回退选项。
+- `bearer_env`：可选，持有 bearer token 的 env 变量名（发为 `Authorization: Bearer <token>`），省略时 `None`。
+- `url` 经 `validate()` 强制 `trim()` 后非空（否则 `Invalid`）。
+- T1 阶段 `connect_all` 仍只调用 `connect_stdio_upstream`，故 `transport = "http"` 的上游会被降级 skip
+  （返回 "non-stdio" 连接错误）；HTTP 连接在 T2 接上。
+
+### `[server.http]` 段（M1-C T1）
+
+`ServerConfig.http: Option<HttpConfig>` 省略整个 `[server.http]` → `None`（HTTP 关闭）。`HttpConfig` 与
+`ApiKeyConfig` 均无 flatten，故 `#[serde(default, deny_unknown_fields)]` 兼容且生效（段内未知键 → `Parse`）。
+`api_keys` 经 `#[serde(rename = "api_key")]` 映射 `[[server.http.api_key]]` 数组；只给 `enabled` 时
+`bind`/`path` 取默认（`127.0.0.1:8970` / `/mcp`）、`api_keys` 为空。API key 密钥**只经 env 变量名引用**
+（`ApiKeyConfig.env`），`name` 仅作日志标签、绝非密钥值。
+
 ## `env_passthrough` 的 allow-list 语义
 
 `env_passthrough` 不是「额外追加」而是「白名单」：`upstream::connect::build_command` 先 `c.env_clear()` 清空子进程

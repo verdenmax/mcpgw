@@ -18,14 +18,11 @@ pub struct ConnectSummary {
 /// Build the child command for a stdio upstream (env allow-list applied). The child's
 /// environment is cleared and only the allow-listed vars present in mcpgw's own environment
 /// are passed through. Exposed (crate-internal) for testing the allow-list behavior.
-pub(crate) fn build_command(cfg: &UpstreamConfig) -> tokio::process::Command {
-    let (command, args, env_passthrough) = match &cfg.transport {
-        UpstreamTransport::Stdio {
-            command,
-            args,
-            env_passthrough,
-        } => (command, args, env_passthrough),
-    };
+pub(crate) fn build_command(
+    command: &str,
+    args: &[String],
+    env_passthrough: &[String],
+) -> tokio::process::Command {
     tokio::process::Command::new(command).configure(|c| {
         c.args(args);
         c.env_clear();
@@ -45,7 +42,18 @@ pub async fn connect_stdio_upstream(
     cfg: &UpstreamConfig,
     trigger: Option<RebuildTrigger>,
 ) -> Result<UpstreamHandle, UpstreamError> {
-    let cmd = build_command(cfg);
+    let UpstreamTransport::Stdio {
+        command,
+        args,
+        env_passthrough,
+    } = &cfg.transport
+    else {
+        return Err(UpstreamError::Connect {
+            server: cfg.name.clone(),
+            source: "connect_stdio_upstream called on a non-stdio upstream".into(),
+        });
+    };
+    let cmd = build_command(command, args, env_passthrough);
     let transport = TokioChildProcess::new(cmd).map_err(|e| UpstreamError::Connect {
         server: cfg.name.clone(),
         source: Box::new(e),
@@ -112,7 +120,15 @@ mod tests {
         std::env::set_var("MCPGW_TEST_DENIED", "secret");
 
         let cfg = stdio_cfg(vec!["MCPGW_TEST_ALLOWED".to_string()]);
-        let cmd = build_command(&cfg);
+        let UpstreamTransport::Stdio {
+            command,
+            args,
+            env_passthrough,
+        } = &cfg.transport
+        else {
+            unreachable!()
+        };
+        let cmd = build_command(command, args, env_passthrough);
         let std_cmd = cmd.as_std();
         let envs: Vec<_> = std_cmd.get_envs().collect();
 

@@ -44,10 +44,20 @@ pub enum UpstreamTransport {
         #[serde(default)] args: Vec<String>,
         #[serde(default)] env_passthrough: Vec<String>,   // 环境变量 allow-list（见下）
     },
+    Http {                                                 // M1-C 新增：远端 Streamable HTTP 上游
+        url: String,                                       // 端点 URL，如 "https://example.com/mcp"
+        #[serde(default)] bearer_env: Option<String>,      // 持有 bearer token 的 env 变量名
+        #[serde(default)] headers: HashMap<String, String>,// 头名 → 持有该头值的 env 变量名
+    },
 }
 ```
-内部标签字段 `transport`（值如 `"stdio"`）与变体字段在同一 TOML 表中（经 `#[serde(flatten)]`）。
-M0/M1-A 仅实现 `stdio`；`http` 等留待 M1-C。
+内部标签字段 `transport`（值如 `"stdio"` / `"http"`）与变体字段在同一 TOML 表中（经 `#[serde(flatten)]`）。
+M0/M1-A 仅实现 `stdio`；M1-C 加入 `http` 变体（连接逻辑在 T2+，T1 仅扩 schema）。
+
+`Http` 变体的认证值**只经 env 引用**：`bearer_env` 是持有 bearer token 的环境变量名（发为
+`Authorization: Bearer <token>`）；`headers` 是「头名 → 持有该头值的 env 变量名」的**内联表**
+（`headers = { "X-Api-Version" = "REMOTE_VER" }`），不在配置里出现任何明文密钥。`url` 经 `validate()`
+强制非空白（否则 `Invalid`）。
 
 `env_passthrough` 是传给子进程的环境变量名 **allow-list**：`upstream::connect` 启动子进程时先 `env_clear()`
 清空子进程环境，再仅把这些变量（且存在于 mcpgw 自身环境时）传入。子进程默认**拿不到**父进程环境，须显式列出
@@ -58,12 +68,42 @@ M0/M1-A 仅实现 `stdio`；`http` 等留待 M1-C。
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
-    pub stdio: bool,   // 默认 true
+    pub stdio: bool,                // 默认 true
+    pub http: Option<HttpConfig>,   // 默认 None（省略 [server.http] -> HTTP 关闭）
 }
 ```
-`[server]` 段：选择下游对外的 transport。`stdio = true`（默认）表示把 3 个元工具经 stdio MCP server 暴露；HTTP
-留待 M1-C。无 `flatten`，故 `deny_unknown_fields` 生效（`[server]` 内未知键 → `Parse`）。实现 `Default`
-（`stdio = true`）。
+`[server]` 段：选择下游对外的 transport。`stdio = true`（默认）表示把 3 个元工具经 stdio MCP server 暴露；
+`[server.http]` 段（M1-C）提供可选的 Streamable HTTP server。无 `flatten`，故 `deny_unknown_fields` 生效
+（`[server]` 内未知键 → `Parse`）。实现 `Default`（`stdio = true`、`http = None`）。
+
+## `struct HttpConfig`
+```rust
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HttpConfig {
+    pub enabled: bool,                  // 默认 false（须显式开启）
+    pub bind: String,                   // 默认 "127.0.0.1:8970"
+    pub path: String,                   // 默认 "/mcp"
+    #[serde(rename = "api_key")]
+    pub api_keys: Vec<ApiKeyConfig>,    // 对应 [[server.http.api_key]]，默认空
+}
+```
+`[server.http]` 段：Streamable HTTP server 设置。`enabled` 默认 `false`（须 opt-in）；`bind` 默认绑定
+localhost（对外暴露请用 tunnel/反向代理）；`path` 是 MCP 端点挂载路径。`api_keys` 经 `#[serde(rename = "api_key")]`
+映射 `[[server.http.api_key]]` 数组，为空表示无鉴权（依赖 localhost 绑定）。无 `flatten`，故 `deny_unknown_fields`
+生效。实现 `Default`（`enabled=false`、`bind="127.0.0.1:8970"`、`path="/mcp"`、`api_keys=[]`）。
+
+## `struct ApiKeyConfig`
+```rust
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyConfig {
+    pub name: String,   // 日志/可观测性标签，**绝不**是密钥值本身
+    pub env: String,    // 持有密钥的 env 变量名
+}
+```
+一个被接受的 API key：密钥**只经 env 变量名引用**（`env`），配置里不出现明文密钥；`name` 仅用于
+日志/可观测性。
 
 ## `struct RetrievalConfig`
 ```rust
