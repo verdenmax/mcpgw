@@ -10,6 +10,8 @@ pub struct Config {
     pub retrieval: RetrievalConfig,
     #[serde(default, rename = "upstream")]
     pub upstreams: Vec<UpstreamConfig>,
+    #[serde(default)]
+    pub server: ServerConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -27,6 +29,20 @@ impl Default for RetrievalConfig {
             strategy: "bm25".into(),
             top_k: 8,
         }
+    }
+}
+
+/// `[server]` section: which downstream transport(s) to serve. HTTP arrives in M1-C.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerConfig {
+    /// Serve the 3 meta-tools over a stdio MCP server.
+    pub stdio: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self { stdio: true }
     }
 }
 
@@ -265,5 +281,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn server_section_parses_and_defaults_to_stdio() {
+        // Omitting [server] -> stdio defaults to true.
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(cfg.server.stdio);
+
+        // Explicitly provided.
+        let cfg = Config::from_toml_str("[server]\nstdio = true\n").unwrap();
+        assert!(cfg.server.stdio);
+
+        // Unknown keys rejected (ServerConfig has no flatten, so deny_unknown_fields applies).
+        assert!(Config::from_toml_str("[server]\nbogus = 1\n").is_err());
     }
 }
