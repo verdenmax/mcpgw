@@ -48,16 +48,16 @@ transport = "http"                     # UpstreamTransport 新增变体
 url = "https://example.com/mcp"
 bearer_env = "SEARCH_BEARER"           # 可选 → Authorization: Bearer <env 值>
 call_timeout_ms = 30000                # 可选，默认 30s（沿用现有）
-[[upstream.header]]                    # 可选自定义头，0..N 个
-name = "X-Api-Version"
-env  = "SEARCH_API_VER"
+headers = { "X-Api-Version" = "SEARCH_API_VER" }   # 可选自定义头：头名 → env 变量名
 ```
+
+> headers 用内联表（头名→env 变量名）而非 `[[upstream.header]]` 数组表，以规避 `#[serde(flatten)]` + 内部标签枚举对数组表的解析限制（即本文档 §10 预留的回退选项，已在实现计划中采纳）。
 
 **配置规则：**
 - 启动时把每个 `env` 解析为实际密钥/头值；**任一被引用的 env 缺失 → fail-fast**，错误指明字段名与 env 变量名（不泄露值）。
 - `[server.http]` 的 `HttpConfig` 与 `ApiKeyConfig` 各自加 `#[serde(deny_unknown_fields)]`。
 - `UpstreamConfig` 因 `#[serde(flatten)]` 内部标签枚举，**不能**加 `deny_unknown_fields`（已有约定，不变）。
-- `UpstreamTransport` 现有 `Stdio` 变体不动，新增 `Http { url, bearer_env, headers }` 变体。`header` 数组进 `Http` 变体内。
+- `UpstreamTransport` 现有 `Stdio` 变体不动，新增 `Http { url, bearer_env, headers }` 变体。`headers` 为内联表 `HashMap<String,String>`（头名→env 变量名）。
 - **命名空间校验不变**：`upstream.name` 仍禁止含 `__`。
 - **密钥原则**：所有 key / token / header 值仅经 env 引用，绝不写进配置或日志。
 
@@ -84,7 +84,7 @@ env  = "SEARCH_API_VER"
 - 新增 `connect_http_upstream(name, url, bearer, headers, call_timeout, trigger)`：
   - 构造 reqwest client；组装 `StreamableHttpClientTransportConfig { uri: url, auth_header, custom_headers, ..Default }`。
   - **`bearer_env` → `auth_header` 映射**：`bearer_env` 指向的 env 持有**原始 token**，启动时构造 `auth_header = Some(format!("Bearer {token}"))`（即 rmcp `auth_header` 字段为完整 `Authorization` 头值）。未配 `bearer_env` → `auth_header = None`。
-  - `[[upstream.header]]` 列表 → `custom_headers: HashMap<HeaderName, HeaderValue>`，每项 `name` 为头名、`env` 指向的值为头值。
+  - `headers` 内联表（头名→env 变量名）→ `custom_headers: HashMap<HeaderName, HeaderValue>`，每个头的值从其 env 读取。
   - `StreamableHttpClientTransport::new(client, cfg)` 作为 transport，**复用现有泛型 `connect_with_trigger`**（同一 handshake 超时 + per-call 超时 + `list_changed` 管线）。这正是 M1-B.2 把签名泛化成 `IntoTransport<RoleClient, E, A>` 的收益。
 - `connect_all` 按 `transport` 分派 stdio / http；HTTP 上游连接失败同样**降级隔离**（计入 `ConnectSummary.skipped`，不 abort 整体启动）。
 
@@ -139,6 +139,6 @@ env  = "SEARCH_API_VER"
 ## 10. 开工前仍需在实现计划里固化的点
 
 - rmcp `StreamableHttpService` 挂载进 axum 的精确写法（`nest_service` vs `route_service`）、tower 鉴权层与 rmcp 服务的类型边界（计划首个相关 task 做最小 spike 固化）。
-- `UpstreamTransport::Http` 内嵌 `[[upstream.header]]` 数组在 `#[serde(flatten)]` 内部标签枚举下的 TOML 解析形状（需在 config task 用真实 TOML 验证；若 flatten + 序列不可行，退化为 `headers` inline 表或 `headers_env` 单一来源）。
+- `UpstreamTransport::Http` 内嵌 `headers` 内联表（`HashMap<String,String>`）在 `#[serde(flatten)]` 内部标签枚举下的 TOML 解析（需在 config task 用真实 TOML 验证；若仍不可行，回退为 `headers_env` 单一 env 持 JSON）。
 - mock HTTP 上游用 rmcp `StreamableHttpService` 起真实 axum 还是更轻量的内存桥（影响测试速度与真实度）。
 - 鉴权层用 `axum::middleware::from_fn` 还是自定义 `tower::Layer`（取决于读取已解析 keyset 的最简方式）。
