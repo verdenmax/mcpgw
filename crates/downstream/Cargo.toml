@@ -1,0 +1,20 @@
+[package]
+name = "downstream"
+version = "0.1.0"
+edition = { workspace = true }
+
+[dependencies]
+gateway = { path = "../gateway" }
+metatools = { path = "../metatools" }
+catalog = { path = "../catalog" }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+upstream = { path = "../upstream", features = ["testkit"] }
+retrieval = { path = "../retrieval" }
+rmcp = { workspace = true, features = ["client", "server", "transport-io"] }
+tokio = { workspace = true, features = ["full"] }
+serde_json = { workspace = true }

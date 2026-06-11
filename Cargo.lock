@@ -243,6 +243,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "downstream"
+version = "0.1.0"
+dependencies = [
+ "catalog",
+ "gateway",
+ "metatools",
+ "retrieval",
+ "rmcp",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "upstream",
+]
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
