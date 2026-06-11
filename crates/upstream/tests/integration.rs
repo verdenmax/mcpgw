@@ -228,3 +228,51 @@ async fn connect_stdio_upstream_smoke_spawns_real_child() {
 
     std::sync::Arc::new(handle); // drop cancels the child service
 }
+
+use upstream::testkit::RevealingMockUpstream;
+
+#[tokio::test]
+async fn revealing_mock_grows_its_tool_list_after_reveal() {
+    use rmcp::model::CallToolRequestParams;
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        RevealingMockUpstream::new()
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let client = ().serve(client_io).await.unwrap();
+
+    let before: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(before.contains(&"echo".to_string()));
+    assert!(before.contains(&"reveal".to_string()));
+    assert!(!before.contains(&"late_tool".to_string()));
+
+    client
+        .call_tool(CallToolRequestParams::new("reveal"))
+        .await
+        .unwrap();
+
+    let after: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(
+        after.contains(&"late_tool".to_string()),
+        "reveal must expose late_tool: {after:?}"
+    );
+
+    client.cancel().await.unwrap();
+}
