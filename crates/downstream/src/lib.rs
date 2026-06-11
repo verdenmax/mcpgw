@@ -12,6 +12,8 @@ use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 
 use gateway::GatewayState;
 
+pub mod http;
+
 /// The downstream MCP server. Holds shared gateway state plus the default `top_k`
 /// used when a `search_tools` call omits it (sourced from `[retrieval].top_k`).
 #[derive(Clone)]
