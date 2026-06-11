@@ -150,3 +150,37 @@ async fn call_tool_times_out_when_slower_than_call_timeout() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn connect_with_trigger_preserves_ingest_and_call() {
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        MockUpstream::new()
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let handle = UpstreamHandle::connect_with_trigger("mock", client_io, Some(tx))
+        .await
+        .unwrap();
+
+    let mut cat = Catalog::new();
+    handle.ingest_into(&mut cat).await.unwrap();
+    assert!(cat.get("mock__echo").is_some());
+
+    let r = handle
+        .call_tool(
+            "echo",
+            serde_json::json!({"text":"hi"}).as_object().cloned(),
+        )
+        .await
+        .unwrap();
+    assert!(r.content[0].as_text().unwrap().text.contains("hi"));
+
+    // No list_changed occurred, so the trigger channel must be empty.
+    assert!(rx.try_recv().is_err());
+}
