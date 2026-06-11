@@ -141,11 +141,13 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
 一致，只是多了 HTTP transport 与鉴权层。
 
 ```
-   远程 MCP 客户端 ──HTTP(Bearer)──► ┌──────── downstream::http ────────┐
-                                     │  StreamableHttpService(GatewayServer)│
-   本地 MCP 客户端 ──stdio──────────►│   nest_service 进 axum Router       │
-                                     │   + Bearer 鉴权层（常量时间比较/401）│
-                                     └──────────────────┬──────────────────┘
+   远程 MCP 客户端 ──HTTP──► ┌──────── downstream::http (axum) ────────┐
+                            │  StreamableHttpService + nest_service     │
+                            │  + Bearer 鉴权层（常量时间比较 / 401）    │
+                            └────────────────────┬─────────────────────┘
+                                                 ▼
+   本地 MCP 客户端 ──stdio──────────► GatewayServer（3 元工具 · rmcp ServerHandler）
+                                       （stdio 直连，不经 axum / 鉴权层）
    ┌──────────── mcpgw serve（并发装配，共享 Arc<GatewayState>）───────────▼──────────┐
    │  fail-fast 解析所有 env 引用的密钥 → 预绑定 HTTP listener →                        │
    │  tokio::select! over { stdio waiting() · axum::serve · ctrl_c } → 统一关闭         │
