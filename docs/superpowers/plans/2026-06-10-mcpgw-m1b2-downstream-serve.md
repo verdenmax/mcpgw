@@ -1602,7 +1602,11 @@ Expected: 全 PASS（CLI 解析 + prepare_state 烟测；既有 5 个 CLI 测试
 - [ ] **Step 6: 手动验证 serve 能起且随 stdin 关闭退出**
 
 Run: `printf '' | cargo run -q -p mcpgw -- serve`
-Expected: 进程启动（日志：connected=[] / 初始空快照），stdin EOF 后干净退出（exit 0），无 panic。
+Expected: 进程启动并在 **stderr** 打印日志（connected=[] / 初始空快照），不挂起、无 panic。
+注意：空 stdin（从不发送 `initialize`）会让 rmcp `serve(stdio())` 在握手前因连接关闭而返回错误，
+故此**退化用例退出码为 1**（打印 `error: connection closed: initialize request`）。这是 rmcp 的协议语义，
+不是接线缺陷——真实 MCP 客户端会先发 `initialize`，会话结束断开时 `waiting()` 返回 `Ok(QuitReason::Closed)`，
+`mcpgw serve` 干净退出（exit 0）。日志必须写 **stderr**（stdout 是 JSON-RPC 流，写 stdout 会污染协议）。
 
 - [ ] **Step 7: Commit**
 
