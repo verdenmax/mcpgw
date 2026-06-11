@@ -7,5 +7,18 @@ edition = { workspace = true }
 catalog = { path = "../catalog" }
 retrieval = { path = "../retrieval" }
 config = { path = "../config" }
+gateway = { path = "../gateway" }
+upstream = { path = "../upstream" }
+downstream = { path = "../downstream" }
 serde_json = { workspace = true }
 clap = { workspace = true }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+upstream = { path = "../upstream", features = ["testkit"] }
+metatools = { path = "../metatools" }
+rmcp = { workspace = true, features = ["client", "server", "transport-io"] }
+tokio = { workspace = true, features = ["full"] }
