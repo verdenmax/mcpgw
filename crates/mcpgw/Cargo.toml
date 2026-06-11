@@ -13,7 +13,8 @@ downstream = { path = "../downstream" }
 serde_json = { workspace = true }
 clap = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-io"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+axum = "0.8"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

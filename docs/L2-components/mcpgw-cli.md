@@ -19,8 +19,10 @@
 - `search <query> [--top-k N]` — 自然语言检索；打印 `[{name, description, score}]` 的美化 JSON 数组。
   `--top-k` 覆盖配置的 `top_k`。
 - `get-details <name>` — 按 qualified name 打印某工具的完整 JSON；不存在则报错并以非零码退出。
-- `serve` — 起活的 stdio MCP 网关：eager-connect 上游 → 初始重建快照 → list_changed 重建 worker →
-  `GatewayServer` over stdio 暴露 3 个元工具。日志走 **stderr**（stdout 留给 MCP 协议）。
+- `serve` — 起活的 MCP 网关，按配置**并发**跑 stdio 与/或 HTTP 两个下游 server（共享一个 `GatewayState`）：
+  eager-connect 上游 → 初始重建快照 → list_changed 重建 worker → `GatewayServer` 暴露 3 个元工具，
+  通过 `tokio::select!` over {stdio / HTTP / ctrl_c} 统一关闭。启动期 fail-fast 解析所有 env 密钥（缺失即中止）。
+  至少需启用一种传输（`[server].stdio` 或 `[server.http].enabled`）。日志走 **stderr**（stdout 留给 MCP 协议）。
 
 ### 退出码
 `0` 成功；`1` 失败（错误信息打到 stderr，前缀 `error:`）。
@@ -28,15 +30,16 @@
 ## 依赖
 
 - 内部：`catalog`、`retrieval`、`config`、`gateway`、`upstream`、`downstream`（`serve` 用）。
-- 外部：`clap`（derive）、`serde_json`、`tokio`（`serve` 运行时）、`rmcp`（stdio transport）、
-  `tracing-subscriber`（stderr 日志）。
+- 外部：`clap`（derive）、`serde_json`、`tokio`（`serve` 运行时，`net`/`signal` 用于 HTTP listener 与 ctrl_c）、
+  `rmcp`（stdio transport）、`axum`（HTTP `serve`）、`tracing-subscriber`（stderr 日志）。
 
 ## 行为流水
 
 `run()`：加载配置 → 按子命令分派。`search`/`get-details` 读 `--catalog` 后用 `build_strategy` + `index` +
-`search` 或 `catalog.get`；`serve` 起 tokio 运行时 `block_on(run_serve)`——`prepare_state`（`connect_all` →
-初始 `rebuild_snapshot`）→ spawn `run_rebuild_worker` → `GatewayServer::serve(stdio())` → `waiting()` →
-收尾 `shutdown` 上游。`main()` 把 `Result` 映射为 `ExitCode`。
+`search` 或 `catalog.get`；`serve` 起 tokio 运行时 `block_on(run_serve)`——fail-fast 解析 env 密钥 →
+`prepare_state`（`connect_all` → 初始 `rebuild_snapshot`）→ spawn `run_rebuild_worker` → `tokio::select!`
+并发跑 stdio（`serve(stdio())` → `waiting()`）/ HTTP（`axum::serve`）/ `ctrl_c` → 收尾 `shutdown` 上游。
+`main()` 把 `Result` 映射为 `ExitCode`。
 
 ## 向下导航
 
