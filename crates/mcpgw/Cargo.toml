@@ -21,5 +21,5 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 upstream = { path = "../upstream", features = ["testkit"] }
 metatools = { path = "../metatools" }
-rmcp = { workspace = true, features = ["client", "server", "transport-io"] }
+rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tokio = { workspace = true, features = ["full"] }
