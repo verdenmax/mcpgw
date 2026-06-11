@@ -16,10 +16,7 @@ use gateway::GatewayState;
 /// used when a `search_tools` call omits it (sourced from `[retrieval].top_k`).
 #[derive(Clone)]
 pub struct GatewayServer {
-    // Read by `call_tool` dispatch (added in Task 3); allow until then.
-    #[allow(dead_code)]
     state: Arc<GatewayState>,
-    #[allow(dead_code)]
     default_top_k: usize,
 }
 
@@ -98,13 +95,56 @@ impl ServerHandler for GatewayServer {
 
     async fn call_tool(
         &self,
-        _request: CallToolRequestParams,
+        request: CallToolRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Dispatch is implemented in a later task; placeholder so the skeleton compiles.
-        Ok(CallToolResult::error(vec![Content::text(
-            "not implemented",
-        )]))
+        let args = request.arguments.unwrap_or_default();
+        match request.name.as_ref() {
+            "search_tools" => {
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let top_k = args
+                    .get("top_k")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(self.default_top_k);
+                let snap = self.state.snapshot();
+                let hits = metatools::search_tools(&snap, query, top_k);
+                let json = serde_json::to_string(&hits)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            "get_tool_details" => {
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let snap = self.state.snapshot();
+                match metatools::get_tool_details(&snap, name) {
+                    Some(def) => {
+                        let json = serde_json::to_string(def)
+                            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                        Ok(CallToolResult::success(vec![Content::text(json)]))
+                    }
+                    None => Ok(CallToolResult::error(vec![Content::text(format!(
+                        "no such tool: {name}"
+                    ))])),
+                }
+            }
+            "call_tool" => {
+                let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "missing required 'name'",
+                    )]));
+                };
+                let inner = args.get("arguments").and_then(|v| v.as_object()).cloned();
+                let snap = self.state.snapshot();
+                match metatools::call_tool(&snap, self.state.registry(), name, inner).await {
+                    Ok(result) => Ok(result),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            other => Err(McpError::invalid_params(
+                format!("unknown tool: {other}"),
+                None,
+            )),
+        }
     }
 }
 
