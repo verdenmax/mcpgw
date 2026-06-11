@@ -11,7 +11,8 @@
 （一个加载工具目录、做 BM25 检索的库 + CLI），并为后续 M1（活 MCP I/O 层）打好接口地基。
 
 **M1 进行中**：上游 I/O 层 `upstream`（M1-A）已完成；网关元工具逻辑 `metatools` 与快照状态/重建层 `gateway`
-（**M1-B.1**）已完成。下游 MCP 服务与 eager-connect（M1-B.2）尚未实现。
+（**M1-B.1**）已完成；下游 MCP 服务 `downstream` 与 eager-connect/`serve`（**M1-B.2**）已完成——`mcpgw serve`
+现可起一个活的 stdio MCP 网关。
 
 > 完整里程碑路线见 `docs/superpowers/plans/2026-06-08-mcpgw-program-roadmap.md`。
 > 设计依据见 `docs/superpowers/specs/2026-06-08-mcpgw-progressive-discovery-design.md`。
@@ -95,8 +96,42 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
   `call_tool` **经 catalog 查 `(server, tool)` 路由**（绝不拆 `__`）。
 - `gateway` → 依赖 `metatools`/`catalog`/`retrieval`/`upstream` + `arc-swap`/`tokio`：用 `ArcSwap` 持有快照
   （读无锁），`rebuild_snapshot` 用 **build-then-swap** 重建并经 `tokio::sync::Mutex` 串行化（防陈旧快照、单上游失败隔离）。
-- 被下游 MCP 服务（**M1-B.2**）使用：把元工具暴露为 MCP 工具、做 eager-connect（`connect_all`/`serve`），尚未实现。
+- 被下游 MCP 服务（**M1-B.2**）使用：把元工具暴露为 MCP 工具、做 eager-connect（`connect_all`/`serve`）。
 - 接口/细节见 L2/L3/L4：[metatools](./L2-components/metatools.md) · [gateway](./L2-components/gateway.md)。
+
+## M1-B.2 新增 crate：`downstream` + 活网关装配（已完成）
+
+最后一块拼图：把元工具暴露为真正的 MCP 服务，并把上游 eager-connect、list_changed 热刷新接起来。
+
+```
+        MCP 客户端 ──stdio──► ┌──────────────── downstream ────────────────┐
+                              │  GatewayServer: rmcp ServerHandler          │
+                              │  list_tools = 固定 3 元工具（恒定）          │
+                              │  call_tool 分派 → metatools 三函数           │
+                              └──────────────────┬──────────────────────────┘
+                                                 │ 读快照 / 取注册表
+        ┌──────────────── mcpgw serve（装配） ───▼──────────────────────────┐
+        │  prepare_state: connect_all(上游, trigger) → 初始 rebuild_snapshot  │
+        │  spawn run_rebuild_worker(state, rx)  ◄── RebuildTrigger（mpsc）     │
+        │  GatewayServer.serve(stdio()) → waiting() → 收尾 shutdown 上游       │
+        └───────┬──────────────────────────────────────┬────────────────────┘
+                │ eager-connect / 转发                  │ list_changed 触发重建
+        ┌───────▼───────────┐               ┌──────────▼──────────────────────┐
+        │  upstream::connect │               │  gateway                         │
+        │  connect_all       │               │  rebuild_snapshot（并发摄取+超时）│
+        │  (降级启动+env白名单)│              │  run_rebuild_worker（合并突发）   │
+        └────────────────────┘               └──────────────────────────────────┘
+```
+
+- `downstream` → 依赖 `gateway`/`metatools`/`catalog`/`rmcp`：`GatewayServer` 实现 rmcp `ServerHandler`，
+  `list_tools` **恒返回 3 个元工具**（故 `get_info` 不声明 `list_changed`——元工具集合恒定），`call_tool` 分派到
+  `metatools`（`MetaError`→`isError`，未知名→`McpError`）。
+- **活网关链路**（`mcpgw serve`）：`upstream::connect::connect_all` eager-connect 所有上游（**降级启动**：连不上
+  只记录不阻断；env **allow-list**：子进程默认清空环境）→ 初始 `rebuild_snapshot` → spawn
+  `gateway::run_rebuild_worker`（上游 `tools/list_changed` → `RebuildTrigger` → 合并突发为单次重建）→
+  `GatewayServer` over stdio。**重建并发摄取 + per-ingest 超时**，hung/慢上游被隔离进 `skipped`，不拖死重建。
+- **日志走 stderr**（stdout 留给 MCP 协议帧）。
+- 接口/细节见 L2/L3/L4：[downstream](./L2-components/downstream.md)。
 
 ## 数据流（M0 CLI）
 
@@ -114,13 +149,17 @@ get-details 子命令：catalog.get(qualified_name) ──► 该工具完整 JS
 
 ```bash
 cargo build                 # 构建工作区（产出 target/debug/mcpgw）
-cargo test                  # 全部测试（52 个：catalog 4 / config 13 / retrieval 5 + golden 1 / mcpgw cli 5 /
-                            #   upstream 6 + 集成 6 / metatools 3 + call_tool 4 / gateway 1 + rebuild 4）
+cargo test --all-features   # 全部测试（68 个：catalog 4 / config 14 / retrieval 5 + golden 1 /
+                            #   mcpgw main 2 + cli 5 / upstream 7 + 集成 10 / metatools 3 + call_tool 4 /
+                            #   gateway 1 + rebuild 6 / downstream 1 + e2e 5）
+                            # 注：upstream 集成测试与 mock-stdio 二进制需 testkit feature，故用 --all-features
 cargo clippy --all-targets --all-features -- -D warnings   # 静态检查，零告警
 cargo fmt --all             # 格式化
-# 手动试用（需在工作区根目录运行，默认 --catalog tests/fixtures/tools.json）
+# 手动试用（search/get-details 需在工作区根目录运行，默认 --catalog tests/fixtures/tools.json）
 ./target/debug/mcpgw search "weather forecast"
 ./target/debug/mcpgw get-details github__create_issue
+# 起活的 stdio MCP 网关（日志走 stderr；stdout 是 MCP 协议帧）：
+./target/debug/mcpgw --config mcpgw.toml serve
 ```
 
 ## 当前状态
@@ -131,7 +170,11 @@ cargo fmt --all             # 格式化
     含 `testkit` 内存 mock 与门控集成测试。
   - **M1-B.1（`metatools` + `gateway`）✅ 已完成** —— 三个元工具函数 over 不可变 `GatewaySnapshot`、`ArcSwap`
     快照状态 + `rebuild_snapshot`（build-then-swap、`tokio::Mutex` 串行化、单上游失败隔离）。
-  - **M1-B.2（downstream MCP 服务 / eager-connect）/ M1-C** 待实现，见路线图。
+  - **M1-B.2（`downstream` MCP 服务 / eager-connect / `serve`）✅ 已完成** —— `GatewayServer`（rmcp
+    `ServerHandler`，暴露 3 个固定元工具）；`upstream::connect`（`connect_all` 降级启动 + env allow-list +
+    握手超时）；`gateway` 重建升级为**并发摄取 + per-ingest 超时**并加 `run_rebuild_worker`（合并 list_changed
+    突发）；`mcpgw serve` 把三者装配成活的 stdio 网关。
+  - **M1-C（HTTP transport 等）** 待实现，见路线图。
 
 ## 向下导航
 
@@ -139,4 +182,4 @@ cargo fmt --all             # 格式化
 [catalog](./L2-components/catalog.md) · [retrieval](./L2-components/retrieval.md) ·
 [config](./L2-components/config.md) · [mcpgw-cli](./L2-components/mcpgw-cli.md) ·
 [upstream](./L2-components/upstream.md) · [metatools](./L2-components/metatools.md) ·
-[gateway](./L2-components/gateway.md)
+[gateway](./L2-components/gateway.md) · [downstream](./L2-components/downstream.md)

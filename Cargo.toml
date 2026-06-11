@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/catalog", "crates/retrieval", "crates/config", "crates/mcpgw", "crates/upstream", "crates/metatools", "crates/gateway"]
+members = ["crates/catalog", "crates/retrieval", "crates/config", "crates/mcpgw", "crates/upstream", "crates/metatools", "crates/gateway", "crates/downstream"]
 
 [workspace.package]
 edition = "2021"
@@ -16,3 +16,4 @@ clap = { version = "4", features = ["derive"] }
 rmcp = { version = "1.7", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "process", "sync", "time"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

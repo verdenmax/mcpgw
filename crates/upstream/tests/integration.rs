@@ -150,3 +150,129 @@ async fn call_tool_times_out_when_slower_than_call_timeout() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn connect_with_trigger_preserves_ingest_and_call() {
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        MockUpstream::new()
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let handle = UpstreamHandle::connect_with_trigger("mock", client_io, Some(tx))
+        .await
+        .unwrap();
+
+    let mut cat = Catalog::new();
+    handle.ingest_into(&mut cat).await.unwrap();
+    assert!(cat.get("mock__echo").is_some());
+
+    let r = handle
+        .call_tool(
+            "echo",
+            serde_json::json!({"text":"hi"}).as_object().cloned(),
+        )
+        .await
+        .unwrap();
+    assert!(r.content[0].as_text().unwrap().text.contains("hi"));
+
+    // No list_changed occurred, so the trigger channel must be empty.
+    assert!(rx.try_recv().is_err());
+}
+
+use config::{UpstreamConfig, UpstreamTransport};
+use upstream::connect::{connect_all, connect_stdio_upstream};
+
+fn stdio_cfg(name: &str, command: &str, args: Vec<String>) -> UpstreamConfig {
+    UpstreamConfig {
+        name: name.to_string(),
+        call_timeout_ms: 5_000,
+        transport: UpstreamTransport::Stdio {
+            command: command.to_string(),
+            args,
+            env_passthrough: vec![],
+        },
+    }
+}
+
+#[tokio::test]
+async fn connect_all_degraded_start_isolates_bad_upstreams() {
+    let registry = UpstreamRegistry::new();
+    let (tx, _rx) = tokio::sync::mpsc::channel::<String>(8);
+    let cfgs = vec![
+        stdio_cfg("bad1", "definitely-not-a-real-binary-xyzzy", vec![]),
+        stdio_cfg("bad2", "definitely-not-a-real-binary-zzz", vec![]),
+    ];
+    let summary = connect_all(&registry, &cfgs, tx).await;
+    assert!(summary.connected.is_empty());
+    assert_eq!(summary.skipped.len(), 2);
+    assert!(registry.server_names().is_empty());
+}
+
+#[tokio::test]
+async fn connect_stdio_upstream_smoke_spawns_real_child() {
+    let exe = env!("CARGO_BIN_EXE_mock-stdio");
+    let cfg = stdio_cfg("child", exe, vec![]);
+    let handle = connect_stdio_upstream(&cfg, None)
+        .await
+        .expect("spawn + connect");
+
+    let mut cat = catalog::Catalog::new();
+    handle.ingest_into(&mut cat).await.unwrap();
+    assert!(cat.get("child__echo").is_some());
+
+    std::sync::Arc::new(handle); // drop cancels the child service
+}
+
+use upstream::testkit::RevealingMockUpstream;
+
+#[tokio::test]
+async fn revealing_mock_grows_its_tool_list_after_reveal() {
+    use rmcp::model::CallToolRequestParams;
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        RevealingMockUpstream::new()
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let client = ().serve(client_io).await.unwrap();
+
+    let before: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(before.contains(&"echo".to_string()));
+    assert!(before.contains(&"reveal".to_string()));
+    assert!(!before.contains(&"late_tool".to_string()));
+
+    client
+        .call_tool(CallToolRequestParams::new("reveal"))
+        .await
+        .unwrap();
+
+    let after: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(
+        after.contains(&"late_tool".to_string()),
+        "reveal must expose late_tool: {after:?}"
+    );
+
+    client.cancel().await.unwrap();
+}

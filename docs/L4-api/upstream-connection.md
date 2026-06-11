@@ -1,21 +1,55 @@
 # L4 — `crates/upstream/src/connection.rs` API
 
-源文件：`crates/upstream/src/connection.rs`。一条到单个上游 MCP 服务器的活连接。
+源文件：`crates/upstream/src/connection.rs`。一条到单个上游 MCP 服务器的活连接，外加 list_changed 转发用的
+client handler 与触发器类型。
+
+## `type RebuildTrigger`
+```rust
+pub type RebuildTrigger = tokio::sync::mpsc::Sender<String>;
+```
+网关用来排空、据以重建快照的有界 channel 的发送端。handler 在每次 `tools/list_changed` 时把上游名 `try_send`
+进去；channel 满也无妨（worker 会合并/coalesce 同一波触发）。
+
+## `struct UpstreamClientHandler`
+```rust
+#[derive(Clone)]
+pub struct UpstreamClientHandler { /* server: String, trigger: Option<RebuildTrigger>（私有） */ }
+```
+装在每条上游连接上的 rmcp `ClientHandler`。`on_tool_list_changed` 时，若 `trigger` 为 `Some` 则
+`tx.try_send(self.server.clone())`（忽略发送错误）；`trigger: None` 时为 no-op（内存测试用）。
 
 ## `struct UpstreamHandle`
 ```rust
-pub struct UpstreamHandle { /* server: String, client: RunningService<RoleClient, ()>, call_timeout: Duration（私有） */ }
+pub struct UpstreamHandle { /* server: String, client: RunningService<RoleClient, UpstreamClientHandler>, call_timeout: Duration（私有） */ }
 ```
-命名空间名 + 运行中的 rmcp client + 每次调用的超时。
+命名空间名 + 运行中的 rmcp client（带 `UpstreamClientHandler`）+ 每次调用的超时。
 
 ### `UpstreamHandle::connect`
 ```rust
-pub async fn connect<T>(server: &str, transport: T) -> Result<Self, UpstreamError>
+pub async fn connect<T, E, A>(server: &str, transport: T) -> Result<Self, UpstreamError>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    T: IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
 ```
-在任意 async-rw 传输（真实 stdio 子进程或内存 duplex）上 `().serve(transport)` 握手建连。`call_timeout` 初始化为
-默认 **30s**。失败返回 `UpstreamError::Connect { server, source }`。
+在任意 rmcp `IntoTransport`（真实 stdio 子进程或内存 duplex）上建连，**无 list_changed trigger**（内存测试用）。
+等价于 `connect_with_trigger(server, transport, None)`。失败返回 `UpstreamError::Connect { server, source }`。
+泛型 `IntoTransport` 签名（取代早期裸 `AsyncRead + AsyncWrite` 约束）让同一路径既吃 duplex、又吃 rmcp
+`TokioChildProcess`。
+
+### `UpstreamHandle::connect_with_trigger`
+```rust
+pub async fn connect_with_trigger<T, E, A>(
+    server: &str,
+    transport: T,
+    trigger: Option<RebuildTrigger>,
+) -> Result<Self, UpstreamError>
+where
+    T: IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+```
+建连并装上携带 `trigger` 的 `UpstreamClientHandler`：`handler.serve(transport).await` 握手。`call_timeout`
+初始化为默认 **30s**。失败返回 `UpstreamError::Connect { server, source }`。生产路径由
+`connect::connect_stdio_upstream` 调用并传入真实 trigger。
 
 ### `UpstreamHandle::with_call_timeout`
 ```rust
@@ -28,6 +62,12 @@ pub fn with_call_timeout(mut self, timeout: std::time::Duration) -> Self
 pub fn server(&self) -> &str
 ```
 返回该连接的命名空间名。无错误。
+
+### `UpstreamHandle::call_timeout`
+```rust
+pub fn call_timeout(&self) -> std::time::Duration
+```
+返回该 handle 配置的每调用超时。网关用它给每个 `ingest_into` 加界（并发 ingest 的 per-ingest 超时）。无错误。
 
 ### `UpstreamHandle::ingest_into`
 ```rust
@@ -77,4 +117,5 @@ pub enum UpstreamError {
 - `Timeout`：`call_tool` 超过 `call_timeout` 未应答（仅带 `server`，无 `source`）。
 - `Connect`/`Call` 都带 `server` 命名空间名，`source` 装箱以解耦 rmcp 具体错误类型。
 
+> 另见 L4：[connect](./upstream-connect.md)（eager-connect / 降级启动 / env allow-list / 握手超时）。
 > 详见 L3：[upstream](../L3-details/upstream.md)

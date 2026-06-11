@@ -9,9 +9,10 @@
   会先用 `Default::default()` 铺底，再覆盖出现的字段。
 - **未知字段 → `Parse`**：`[retrieval]` 内的拼写错误/多余键被 `deny_unknown_fields` 拒为
   `ConfigError::Parse`（而非静默接受）。
-- **未知顶层段**（如 `[server]`，留待 M1-B）同样被拒为 `Parse`。
-- 注：serde 已知的"`flatten` + `deny_unknown_fields`不兼容"在此**不适用**——`Config` 是 `default` +
-  `deny_unknown_fields`，二者兼容。
+- **`[server]` 段**（M1-B）：`ServerConfig { stdio: bool }`，容器级 `#[serde(default, deny_unknown_fields)]`，
+  `stdio` 默认 `true`。省略 `[server]` → `stdio = true`；段内未知键（无 flatten）→ `Parse`。
+- 注：serde 已知的"`flatten` + `deny_unknown_fields`不兼容"在此**不适用**——`Config` / `RetrievalConfig` /
+  `ServerConfig` 都不 flatten，故 `default` + `deny_unknown_fields` 兼容。
 
 ## `[[upstream]]` 的 serde 建模
 
@@ -24,6 +25,13 @@
   拼写错会被丢弃，到连接时才暴露）。`deny_unknown_fields` 只加在不 flatten 的顶层 `Config` 上。
 - **未知 transport 值**（如 `transport = "carrier-pigeon"`）→ `Parse`（内部标签枚举拒绝未知判别值）。
 - `args` / `env_passthrough` 省略时默认空；`call_timeout_ms` 省略时默认 `30_000`（经 flatten 路径仍正确）。
+
+## `env_passthrough` 的 allow-list 语义
+
+`env_passthrough` 不是「额外追加」而是「白名单」：`upstream::connect::build_command` 先 `c.env_clear()` 清空子进程
+环境，再仅把 `env_passthrough` 列出、且在 mcpgw 自身环境里存在的变量逐个注入。因此子进程默认**继承不到**父进程
+任何环境变量——这是有意的最小权限默认（避免凭据/路径意外泄漏给上游子进程）；需要 `PATH`/`HOME`/凭据变量的上游须
+在配置里显式列出。该行为由 `upstream` 的 `build_command_applies_env_allowlist` 单测锁定。
 
 ## 校验逻辑 `validate`（私有）
 
@@ -57,6 +65,7 @@
 - `parses_explicit_call_timeout_through_flatten`（锁定 flatten 数值路径）
 - `rejects_unknown_transport`（`Parse`）/ `rejects_upstream_name_with_double_underscore` /
   `rejects_blank_upstream_name` / `rejects_duplicate_upstream_names`（均 `Invalid`）
+- `server_section_parses_and_defaults_to_stdio`（`[server]` 缺省 `stdio = true`、显式解析、未知键 → 错误）
 
 ## 相关
 

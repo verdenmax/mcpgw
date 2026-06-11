@@ -13,12 +13,28 @@
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `connect` | `async (server: &str, transport: T) -> Result<Self, UpstreamError>`，`T: AsyncRead+AsyncWrite+Send+Unpin+'static` | 在任意 async-rw 传输上握手建连（真实 stdio 子进程或内存 duplex）；`call_timeout` 默认 30s |
+| `connect` | `async <T,E,A>(server: &str, transport: T) -> Result<Self, UpstreamError>`，`T: IntoTransport<RoleClient,E,A>` | 在任意 rmcp `IntoTransport`（真实 stdio 子进程或内存 duplex）上握手建连，**无 list_changed trigger**；`call_timeout` 默认 30s |
+| `connect_with_trigger` | `async <T,E,A>(server: &str, transport: T, trigger: Option<RebuildTrigger>) -> Result<Self, UpstreamError>` | 同上，但装上携带 `trigger` 的 `UpstreamClientHandler`（上游 `tools/list_changed` → 推动网关重建） |
 | `with_call_timeout` | `(self, timeout: Duration) -> Self` | builder：设定每次 `call_tool` 超时（`Arc` 共享前消费） |
 | `server` | `(&self) -> &str` | 该连接的命名空间名 |
+| `call_timeout` | `(&self) -> Duration` | 该 handle 的每调用超时（网关用它给每个并发 `ingest_into` 加界） |
 | `ingest_into` | `async (&self, &mut Catalog) -> Result<usize, UpstreamError>` | 拉取该 server 工具，命名空间化后摄取进 catalog；返回跳过的重复数 |
 | `call_tool` | `async (&self, tool: &str, args: Option<serde_json::Map<String, Value>>) -> Result<CallToolResult, UpstreamError>` | 转发调用（带 `call_timeout` 超时）；`tool` 是**原始**（未命名空间化）名 |
 | `shutdown` | `async (self)` | 取消底层 rmcp 服务 |
+
+### list_changed 转发：`RebuildTrigger` / `UpstreamClientHandler`（`connection.rs`）
+- `RebuildTrigger = tokio::sync::mpsc::Sender<String>`：网关排空、据以重建快照的有界 channel 发送端。
+- `UpstreamClientHandler`：装在每条连接上的 rmcp `ClientHandler`；`on_tool_list_changed` 时把上游名 `try_send`
+  进 trigger（`trigger: None` 时为 no-op，内存测试用）。channel 满也无妨——worker 会合并同一波触发。
+
+### eager-connect：`connect_all` / `connect_stdio_upstream` / `ConnectSummary`（`connect.rs`）
+按配置 eager-connect 所有上游（真实 stdio 子进程），**降级启动**：单上游连不上只被记录、不阻断其余。
+
+| 项 | 签名 | 说明 |
+|----|------|------|
+| `connect_all` | `async (&UpstreamRegistry, &[UpstreamConfig], RebuildTrigger) -> ConnectSummary` | 逐个连接：成功 `insert` 进注册表并记入 `connected`，失败 `warn!`+记入 `skipped`（不 `Err`） |
+| `connect_stdio_upstream` | `async (&UpstreamConfig, Option<RebuildTrigger>) -> Result<UpstreamHandle, UpstreamError>` | spawn 子进程并连接，**握手受 `call_timeout_ms` 超时约束**，并施加 env allow-list |
+| `ConnectSummary` | `{ connected: Vec<String>, skipped: Vec<(String, String)> }` | 哪些上游连上 / 跳过（含原因） |
 
 ### 错误 `UpstreamError`（`connection.rs`）
 `#[derive(thiserror::Error)]` 枚举：
@@ -48,19 +64,29 @@
 | `tool_to_def` | `(server: &str, tool: &rmcp::model::Tool) -> ToolDef` | 单工具 → 命名空间化 `ToolDef` |
 | `ingest_tools` | `(catalog: &mut Catalog, server: &str, tools: &[Tool]) -> usize` | 批量摄取（intra-server first-dupe-wins，warn），返回被跳过的重复名计数 |
 
-### 测试件 `testkit::MockUpstream`（`testkit.rs`，`testkit` feature）
-内存 mock MCP 服务器，暴露 `echo`、`greet`、`slow` 三个工具（`slow` 故意 sleep，用于触发 per-call 超时）。
-供本 crate 单测与集成测试使用，并可经 `testkit` feature 被其它 crate 复用。
+### 测试件 `testkit`（`testkit.rs`，`testkit` feature）
+- `MockUpstream`：内存 mock MCP 服务器，暴露**固定** `echo`、`greet`、`slow` 三个工具（`slow` 故意 sleep，
+  用于触发 per-call 超时）。
+- `RevealingMockUpstream`：**运行期变更工具列表**的 mock——初始暴露 `echo` + `reveal`，调用 `reveal` 后才冒出
+  `late_tool` 并向客户端发 `tools/list_changed`，用于端到端驱动网关的 list_changed 重建路径。
+- testkit-only 二进制 `mock-stdio`（`src/bin/mock-stdio.rs`，`required-features = ["testkit"]`）：把
+  `MockUpstream` 跑在真实 stdio 上，供冒烟验证子进程 connect 路径（`connect_stdio_upstream`）对接真实子进程。
+
+供本 crate 单测/集成测试使用，并可经 `testkit` feature 被其它 crate（如 `downstream` 的 e2e）复用。
 
 ## 依赖
 
-- 外部：`rmcp`（1.7，client/server/macros/transport）、`tokio`、`thiserror`、`tracing`、`serde_json`、`schemars`。
-- 内部：`catalog`（摄取目标类型 `ToolDef` / `Catalog`）。
+- 外部：`rmcp`（1.7，client/server/macros/transport-child-process/transport-io）、`tokio`、`thiserror`、
+  `tracing`、`serde_json`、`schemars`。
+- 内部：`catalog`（摄取目标类型 `ToolDef` / `Catalog`）、`config`（`connect` 层读 `UpstreamConfig` /
+  `UpstreamTransport`）。
 
 ## 被谁使用
 
-- `gateway`（M1-B）：装配 `UpstreamRegistry`，把上游工具摄取进 catalog，并经元工具 `call_tool` 路由到对应
+- `gateway`（M1-B.1）：装配 `UpstreamRegistry`，把上游工具摄取进 catalog，并经元工具 `call_tool` 路由到对应
   `UpstreamHandle`。
+- `mcpgw serve`（M1-B.2）：`connect::connect_all` eager-connect 所有上游、填充注册表，并把 `RebuildTrigger`
+  接到 `gateway::run_rebuild_worker`。
 
 ## 关键不变量
 
@@ -72,4 +98,4 @@
 
 - 内部细节见 L3：[upstream](../L3-details/upstream.md)
 - 逐文件 API 见 L4：[mapping](../L4-api/upstream-mapping.md) · [connection](../L4-api/upstream-connection.md) ·
-  [registry](../L4-api/upstream-registry.md)
+  [connect](../L4-api/upstream-connect.md) · [registry](../L4-api/upstream-registry.md)

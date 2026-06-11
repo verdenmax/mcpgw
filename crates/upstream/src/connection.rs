@@ -2,9 +2,9 @@
 
 use catalog::Catalog;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::service::{RoleClient, RunningService};
-use rmcp::ServiceExt;
-use tokio::io::{AsyncRead, AsyncWrite};
+use rmcp::service::{NotificationContext, RoleClient, RunningService};
+use rmcp::transport::IntoTransport;
+use rmcp::{ClientHandler, ServiceExt};
 
 use crate::mapping::ingest_tools;
 
@@ -27,26 +27,64 @@ pub enum UpstreamError {
     Timeout { server: String },
 }
 
+/// A bounded channel the gateway drains to rebuild its snapshot. The handler sends the
+/// upstream's name on each `tools/list_changed`; a full channel is fine (worker coalesces).
+pub type RebuildTrigger = tokio::sync::mpsc::Sender<String>;
+
+/// rmcp client handler installed on every upstream connection. On `tools/list_changed`
+/// it nudges the rebuild trigger; with `trigger: None` it is a no-op (used by in-memory tests).
+#[derive(Clone)]
+pub struct UpstreamClientHandler {
+    server: String,
+    trigger: Option<RebuildTrigger>,
+}
+
+impl ClientHandler for UpstreamClientHandler {
+    async fn on_tool_list_changed(&self, _ctx: NotificationContext<RoleClient>) {
+        if let Some(tx) = &self.trigger {
+            let _ = tx.try_send(self.server.clone());
+        }
+    }
+}
+
 /// A connected upstream MCP server: its namespace name + the running rmcp client.
 pub struct UpstreamHandle {
     server: String,
-    client: RunningService<RoleClient, ()>,
+    client: RunningService<RoleClient, UpstreamClientHandler>,
     call_timeout: std::time::Duration,
 }
 
 impl UpstreamHandle {
-    /// Connect over any async-rw transport (a real stdio child or an in-memory duplex).
-    pub async fn connect<T>(server: &str, transport: T) -> Result<Self, UpstreamError>
+    /// Connect over any transport with NO list_changed trigger (in-memory tests).
+    pub async fn connect<T, E, A>(server: &str, transport: T) -> Result<Self, UpstreamError>
     where
-        T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        T: IntoTransport<RoleClient, E, A>,
+        E: std::error::Error + Send + Sync + 'static,
     {
-        let client =
-            ().serve(transport)
-                .await
-                .map_err(|e| UpstreamError::Connect {
-                    server: server.to_string(),
-                    source: Box::new(e),
-                })?;
+        Self::connect_with_trigger(server, transport, None).await
+    }
+
+    /// Connect and install an `UpstreamClientHandler` carrying `trigger`.
+    pub async fn connect_with_trigger<T, E, A>(
+        server: &str,
+        transport: T,
+        trigger: Option<RebuildTrigger>,
+    ) -> Result<Self, UpstreamError>
+    where
+        T: IntoTransport<RoleClient, E, A>,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        let handler = UpstreamClientHandler {
+            server: server.to_string(),
+            trigger,
+        };
+        let client = handler
+            .serve(transport)
+            .await
+            .map_err(|e| UpstreamError::Connect {
+                server: server.to_string(),
+                source: Box::new(e),
+            })?;
         Ok(Self {
             server: server.to_string(),
             client,
@@ -62,6 +100,11 @@ impl UpstreamHandle {
 
     pub fn server(&self) -> &str {
         &self.server
+    }
+
+    /// The per-call timeout configured for this handle (used by the gateway to bound ingest).
+    pub fn call_timeout(&self) -> std::time::Duration {
+        self.call_timeout
     }
 
     /// Fetch this server's tools and ingest them (namespaced) into `catalog`.
