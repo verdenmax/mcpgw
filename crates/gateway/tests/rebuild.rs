@@ -142,3 +142,51 @@ async fn rebuild_isolates_an_upstream_that_hangs_during_ingest() {
     assert_eq!(summary.skipped.len(), 1);
     assert_eq!(summary.skipped[0].0, "hung");
 }
+
+#[tokio::test]
+async fn rebuild_worker_rebuilds_when_triggered() {
+    use std::time::Duration;
+    let state = gateway::GatewayState::new("bm25").unwrap();
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let worker = tokio::spawn(gateway::run_rebuild_worker(state.clone(), rx));
+
+    // Attach a mock upstream (but don't trigger a rebuild yet).
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        MockUpstream::new()
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let handle = UpstreamHandle::connect("mock", client_io).await.unwrap();
+    state.registry().insert(std::sync::Arc::new(handle));
+
+    // Before triggering: snapshot is empty (search finds nothing).
+    assert!(metatools::search_tools(&state.snapshot(), "echo", 5).is_empty());
+
+    // Trigger one rebuild.
+    tx.send("mock".to_string()).await.unwrap();
+
+    // Poll until the snapshot reflects the mock's tools.
+    let mut found = false;
+    for _ in 0..100 {
+        if metatools::search_tools(&state.snapshot(), "echo", 5)
+            .iter()
+            .any(|s| s.name == "mock__echo")
+        {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        found,
+        "worker should rebuild snapshot to include mock__echo"
+    );
+
+    drop(tx); // close channel -> worker exits
+    let _ = worker.await;
+}

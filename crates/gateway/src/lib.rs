@@ -110,6 +110,23 @@ impl GatewayState {
     }
 }
 
+/// Drain `rx` and rebuild the snapshot once per burst (coalescing consecutive triggers).
+/// Exits when the channel closes (all `RebuildTrigger` senders dropped). `serve` spawns this.
+pub async fn run_rebuild_worker(state: GatewayState, mut rx: tokio::sync::mpsc::Receiver<String>) {
+    while rx.recv().await.is_some() {
+        // Coalesce any other pending triggers so a burst yields a single rebuild.
+        while rx.try_recv().is_ok() {}
+        match state.rebuild_snapshot().await {
+            Ok(s) => tracing::info!(
+                ingested = ?s.ingested,
+                skipped = ?s.skipped,
+                "snapshot rebuilt (list_changed)"
+            ),
+            Err(e) => tracing::warn!(error = %e, "rebuild failed"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// `GatewayState` exists to be shared across async tasks (B.2's downstream server +
