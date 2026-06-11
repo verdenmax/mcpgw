@@ -74,6 +74,9 @@ pub enum UpstreamTransport {
         command: String,
         #[serde(default)]
         args: Vec<String>,
+        /// Allow-list of environment variable names passed through to the child. The child's
+        /// environment is otherwise CLEARED, so only these vars (when present in mcpgw's own
+        /// environment) reach the upstream process. Add e.g. "PATH"/"HOME" if the child needs them.
         #[serde(default)]
         env_passthrough: Vec<String>,
     },

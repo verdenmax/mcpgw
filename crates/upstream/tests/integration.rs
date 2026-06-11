@@ -184,3 +184,47 @@ async fn connect_with_trigger_preserves_ingest_and_call() {
     // No list_changed occurred, so the trigger channel must be empty.
     assert!(rx.try_recv().is_err());
 }
+
+use config::{UpstreamConfig, UpstreamTransport};
+use upstream::connect::{connect_all, connect_stdio_upstream};
+
+fn stdio_cfg(name: &str, command: &str, args: Vec<String>) -> UpstreamConfig {
+    UpstreamConfig {
+        name: name.to_string(),
+        call_timeout_ms: 5_000,
+        transport: UpstreamTransport::Stdio {
+            command: command.to_string(),
+            args,
+            env_passthrough: vec![],
+        },
+    }
+}
+
+#[tokio::test]
+async fn connect_all_degraded_start_isolates_bad_upstreams() {
+    let registry = UpstreamRegistry::new();
+    let (tx, _rx) = tokio::sync::mpsc::channel::<String>(8);
+    let cfgs = vec![
+        stdio_cfg("bad1", "definitely-not-a-real-binary-xyzzy", vec![]),
+        stdio_cfg("bad2", "definitely-not-a-real-binary-zzz", vec![]),
+    ];
+    let summary = connect_all(&registry, &cfgs, tx).await;
+    assert!(summary.connected.is_empty());
+    assert_eq!(summary.skipped.len(), 2);
+    assert!(registry.server_names().is_empty());
+}
+
+#[tokio::test]
+async fn connect_stdio_upstream_smoke_spawns_real_child() {
+    let exe = env!("CARGO_BIN_EXE_mock-stdio");
+    let cfg = stdio_cfg("child", exe, vec![]);
+    let handle = connect_stdio_upstream(&cfg, None)
+        .await
+        .expect("spawn + connect");
+
+    let mut cat = catalog::Catalog::new();
+    handle.ingest_into(&mut cat).await.unwrap();
+    assert!(cat.get("child__echo").is_some());
+
+    std::sync::Arc::new(handle); // drop cancels the child service
+}

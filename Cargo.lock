@@ -1032,6 +1032,7 @@ name = "upstream"
 version = "0.1.0"
 dependencies = [
  "catalog",
+ "config",
  "rmcp",
  "schemars",
  "serde",

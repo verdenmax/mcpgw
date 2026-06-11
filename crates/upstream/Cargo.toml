@@ -8,6 +8,7 @@ testkit = []
 
 [dependencies]
 catalog = { path = "../catalog" }
+config = { path = "../config" }
 rmcp = { workspace = true, features = ["client", "server", "macros", "transport-child-process", "transport-io"] }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -24,4 +25,8 @@ tokio = { workspace = true, features = ["full"] }
 # rather than fail to compile.
 [[test]]
 name = "integration"
+required-features = ["testkit"]
+
+[[bin]]
+name = "mock-stdio"
 required-features = ["testkit"]
