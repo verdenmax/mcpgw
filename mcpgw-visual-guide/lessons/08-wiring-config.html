@@ -247,10 +247,6 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
 .legend { display:flex; gap:1.2rem; flex-wrap:wrap; margin-top:1rem; font-size:.8rem; color:var(--muted); }
 .legend span { display:flex; align-items:center; gap:.4rem; }
 .legend i { width:12px; height:12px; border-radius:3px; display:inline-block; }
-.pdf-btn { display:inline-flex; align-items:center; gap:.4rem; padding:.55rem 1.1rem;
-  background:var(--accent); color:#fff; border-radius:10px; font-size:.9rem; font-weight:650;
-  box-shadow:var(--shadow); transition:.15s; }
-.pdf-btn:hover { background:var(--accent-ink); transform:translateY(-1px); }
 </style>
 </head><body>
 <div class="topbar">
@@ -377,8 +373,10 @@ api_key_env = <span class="st">"OPENAI_API_KEY"</span></pre>
     <li><strong><span class="inline">batch_size</span> 当前是预留 / 未启用字段</strong>：<span class="inline">OpenAiEmbedder</span>
       会把<strong>全部输入一次性发出</strong>，<strong>不做分块</strong>。别以为填了它就会自动批处理——它目前对行为<strong>毫无影响</strong>。</li>
     <li><strong><span class="inline">strategy = "vector"</span> 只在 <span class="inline">serve</span>（活网关）下生效</strong>：
-      离线的 <span class="inline">search</span> / <span class="inline">get-details</span> CLI <strong>不会注入 embedder</strong>，
-      因此那条路径下向量策略形同未配置。</li>
+      离线的 <span class="inline">search</span> / <span class="inline">get-details</span> CLI <strong>不会注入 embedder</strong>——
+      <span class="inline">search</span> 分支调用 <span class="inline">build_strategy(&amp;cfg.retrieval.strategy, None)</span>，
+      于是会<strong>直接报错 <span class="inline">StrategyError::EmbedderRequired</span></strong>，
+      <strong>不是</strong>静默退回 BM25、也不是“形同未配置”。</li>
     <li><strong><span class="inline">validate()</span> 在 <span class="inline">strategy == "vector"</span> 时强制要求</strong>存在
       <span class="inline">[retrieval.vector]</span> 段（且 <span class="inline">base_url</span> / <span class="inline">model</span> / <span class="inline">api_key_env</span> 非空），缺段直接报配置错误。</li>
   </ul>

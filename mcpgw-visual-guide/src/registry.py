@@ -30,3 +30,6 @@ CONTENT = {
     "14-config.html": p3.LESSON_14,
     "15-hybrid-rrf.html": p4.LESSON_15,
 }
+
+_known = {fname for fname, _t, _p in shell.PAGES}
+assert set(CONTENT) <= _known, f"registry has unknown page keys: {set(CONTENT) - _known}"

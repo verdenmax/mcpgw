@@ -46,7 +46,7 @@ LESSON_12 = placeholder.build(
     [
         "<code>GatewayServer</code> 实现 rmcp <code>ServerHandler</code>，<code>list_tools</code> 恒返回 3 元工具（<code>crates/downstream/src/lib.rs</code>）",
         "HTTP：<code>StreamableHttpService</code> + <code>nest_service</code> 进 axum + Bearer 鉴权层",
-        "<code>serve</code> 并发 stdio + HTTP（<code>tokio::select!</code> 统一关闭）",
+        "<code>serve</code>：<code>crates/mcpgw/src/main.rs</code> 用 <code>tokio::select!</code> 并发 stdio + HTTP 并统一关闭（downstream 仅提供 <code>GatewayServer</code> 与 <code>build_router</code>）",
     ],
     [
         ("02-architecture.html", "02 · 整体架构全景（下游传输能力一览）"),

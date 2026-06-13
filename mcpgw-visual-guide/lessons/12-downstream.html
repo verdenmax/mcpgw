@@ -247,10 +247,6 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
 .legend { display:flex; gap:1.2rem; flex-wrap:wrap; margin-top:1rem; font-size:.8rem; color:var(--muted); }
 .legend span { display:flex; align-items:center; gap:.4rem; }
 .legend i { width:12px; height:12px; border-radius:3px; display:inline-block; }
-.pdf-btn { display:inline-flex; align-items:center; gap:.4rem; padding:.55rem 1.1rem;
-  background:var(--accent); color:#fff; border-radius:10px; font-size:.9rem; font-weight:650;
-  box-shadow:var(--shadow); transition:.15s; }
-.pdf-btn:hover { background:var(--accent-ink); transform:translateY(-1px); }
 </style>
 </head><body>
 <div class="topbar">
@@ -276,7 +272,7 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
 <ul>
 <li><code>GatewayServer</code> 实现 rmcp <code>ServerHandler</code>，<code>list_tools</code> 恒返回 3 元工具（<code>crates/downstream/src/lib.rs</code>）</li>
 <li>HTTP：<code>StreamableHttpService</code> + <code>nest_service</code> 进 axum + Bearer 鉴权层</li>
-<li><code>serve</code> 并发 stdio + HTTP（<code>tokio::select!</code> 统一关闭）</li>
+<li><code>serve</code>：<code>crates/mcpgw/src/main.rs</code> 用 <code>tokio::select!</code> 并发 stdio + HTTP 并统一关闭（downstream 仅提供 <code>GatewayServer</code> 与 <code>build_router</code>）</li>
 </ul>
 
 <div class="card key">
