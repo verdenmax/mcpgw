@@ -27,3 +27,7 @@ required-features = ["testkit"]
 [[test]]
 name = "vector"
 required-features = ["testkit"]
+
+[[test]]
+name = "hybrid"
+required-features = ["testkit"]
