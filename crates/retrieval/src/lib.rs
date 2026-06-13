@@ -183,7 +183,7 @@ pub enum StrategyError {
     EmbedderRequired(String),
 }
 
-/// Construct a retrieval strategy by name. "vector" requires `embedder`; "hybrid" is M2-B.
+/// Construct a retrieval strategy by name. "vector" and "hybrid" both require an `embedder`.
 ///
 /// Takes a plain `&str` (not a config type) so this crate stays free of any
 /// dependency on `config` — callers pass `cfg.retrieval.strategy.as_str()`.

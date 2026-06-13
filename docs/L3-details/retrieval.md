@@ -1,4 +1,4 @@
-# L3 — `retrieval` 细节（BM25 算法）
+# L3 — `retrieval` 细节（BM25 / 向量 / 混合）
 
 ## 分词 `tokenize`
 
@@ -120,6 +120,22 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
      `tracing::warn!` 记录、清空 `vectors`、置 `degraded = true`，此后所有查询走 BM25。
   2. **per-query（查询期）**：未降级时每次查询先嵌入 query，若该次嵌入失败则**仅本次**回退 BM25
      （不改变 `degraded` 状态）；若 `degraded` 或 `vectors` 为空也直接走 BM25。
+
+## 混合策略 `HybridStrategy`（RRF）
+
+`HybridStrategy`（`crates/retrieval/src/hybrid.rs`）用 **Reciprocal Rank Fusion** 融合 `Bm25Strategy`
+（词法）与 `VectorStrategy`（语义）两份排名：
+
+- **全深度子检索**：`search` 以 `doc_count`（索引时 = `catalog.iter().count()`）为 `top_k` 调用两个子策略，
+  确保 RRF 看到每个文档在各列表中的**真实名次**；若先各自截到 `top_k` 再融合，会丢掉「一边名次低、另一边名次
+  高」的单边命中。
+- **RRF 公式**：`fused(doc) = Σ_L 1/(60 + rank_L(doc))`，`k=60` **固定**（不暴露配置）。按「融合分降序 +
+  `qualified_name` 升序」排序后截 `top_k`。融合分量级很小，**不可跨策略比较**。
+- **不对称性（有意）**：BM25 子表只含命中词项的文档（`score>0` 过滤）；向量子表含**全部**文档。故仅语义相关、
+  无词法命中的工具仍能经向量表进入融合（hybrid 相对纯 BM25 的召回增益）；反之，对任意非空 query，含 embedding
+  的 hybrid 总能返回最多 `top_k` 个语义最近结果（不同于纯 BM25「无命中即空」）。
+- **降级自愈**：embedding 失败时（索引期或查询期），`VectorStrategy` 返回内部 BM25 排名 → 两份子表≈同一 BM25
+  排名 → RRF 融合后名次单调一致 → hybrid 退化≈纯 BM25。**无需额外 degraded 标志**。
 
 ## 相关
 

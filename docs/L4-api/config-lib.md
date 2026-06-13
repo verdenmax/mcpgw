@@ -21,7 +21,7 @@ pub struct Config {
 | `default_from_empty` | `pub fn default_from_empty() -> Self` | 全默认配置（解析空串，恒成功） |
 
 > 私有 `fn validate(&self) -> Result<(), ConfigError>`：校验 `strategy ∈ {bm25,vector,hybrid}`、
-> `top_k > 0`、`strategy="vector"` 时必须有 `[retrieval.vector]` 段且其 `base_url`/`model`/`api_key_env`
+> `top_k > 0`、`strategy ∈ {vector,hybrid}` 时必须有 `[retrieval.vector]` 段且其 `base_url`/`model`/`api_key_env`
 > 非空白，以及每个 upstream 的 `name` 非空白、不含 `__`、不重复（否则 `Invalid`）。
 
 ## `struct UpstreamConfig`
@@ -113,7 +113,7 @@ pub struct ApiKeyConfig {
 pub struct RetrievalConfig {
     pub strategy: String,             // 默认 "bm25"
     pub top_k: usize,                 // 默认 8
-    pub vector: Option<VectorConfig>, // 默认 None；strategy="vector" 时必填
+    pub vector: Option<VectorConfig>, // 默认 None；strategy ∈ {vector,hybrid} 时必填
 }
 ```
 实现 `Default`（`strategy="bm25"`、`top_k=8`、`vector=None`）。
@@ -147,6 +147,6 @@ pub enum ConfigError {
 }
 ```
 - `Parse`：TOML 语法错误或未知字段。
-- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy="vector"` 缺 `[retrieval.vector]` 段或其字段空白、upstream `name` 空白/含 `__`/重复）。
+- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、upstream `name` 空白/含 `__`/重复）。
 
 > 行为细节见 L3：[config](../L3-details/config.md)
