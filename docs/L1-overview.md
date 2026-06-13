@@ -186,7 +186,7 @@ M2-B 新增 **hybrid**（RRF 融合 BM25 + 向量）路径，opt-in（需 embedd
 
 ```
    ┌──────────────────────────── mcpgw serve（装配） ────────────────────────────┐
-   │  build_embedder(cfg): strategy=="vector" 时读 api_key_env（fail-fast，                │
+   │  build_embedder(cfg): strategy=="vector"/"hybrid" 时读 api_key_env（fail-fast，       │
    │    只报 env 变量名、绝不泄露值）→ OpenAiEmbedder → 包一层 CachingEmbedder（只建一次，  │
    │    缓存跨快照重建持续）→ Some(Arc<dyn Embedder>)；否则 None                            │
    │  prepare_state: 有 embedder → GatewayState::with_embedder(..)；否则 ::new(..)         │
@@ -198,7 +198,7 @@ M2-B 新增 **hybrid**（RRF 融合 BM25 + 向量）路径，opt-in（需 embedd
    │  build_strategy(name, embedder?)             │◄─────│   bearer 鉴权、按 index 排序、     │
    │   bm25 → Bm25Strategy（无需 embedder）        │ impl │   count/连续性/dim 校验、非2xx 截断 │
    │   vector → VectorStrategy（需 embedder）      │Embedder│  实现 retrieval::Embedder        │
-   │   hybrid/未知 → StrategyError                 │      └────────────────────────────────────┘
+   │   hybrid → HybridStrategy（需 embedder）      │      └────────────────────────────────────┘
    │  Embedder trait · EmbedError · CachingEmbedder（FNV-1a 记忆，仅嵌未命中）              │
    └───────┬──────────────────────────────────────────────────────────────────────────────┘
            │ VectorStrategy = 暴力余弦 over 归一化向量 + 内置 Bm25Strategy（降级目标）
@@ -217,7 +217,7 @@ M2-B 新增 **hybrid**（RRF 融合 BM25 + 向量）路径，opt-in（需 embedd
   （目录小，线性扫描足够），内置 `Bm25Strategy` 作**双重透明降级**（索引期嵌入失败 → `degraded`；查询期单次嵌入
   失败 → 仅本次回退），零范数守卫、不产生 NaN。
 - **`build_strategy(name, embedder: Option<&Arc<dyn Embedder>>)`**：`"bm25"` 无需 embedder；`"vector"` 要求 embedder
-  否则 `StrategyError::EmbedderRequired`；`"hybrid"`（延后 M2-B）/未知名 → `StrategyError::NotImplemented`。
+  否则 `StrategyError::EmbedderRequired`；`"hybrid"` 同样要求 embedder（否则 `EmbedderRequired`）；未知名 → `StrategyError::NotImplemented`。
 - **`embedder` crate**（**唯一 HTTP 依赖**，`reqwest 0.13` + `rustls`）：`OpenAiEmbedder::new(base_url, model, api_key,
   dim: Option<usize>, timeout: Option<Duration>)` POST `{base_url}/embeddings`（bearer 鉴权），按响应 `index` 排序、校验数量/连续性/维度，非 2xx
   附**截断**的 body 片段，空输入短路返回。
@@ -288,10 +288,11 @@ cargo fmt --all             # 格式化
     并发跑 stdio + HTTP 共享 `Arc<GatewayState>`，`tokio::select!` 统一关闭，启动期 env fail-fast。
 - **M2-A（异步可插拔检索 + 向量策略）✅ 已完成** —— `RetrievalStrategy` 改为 `#[async_trait]`（`index`/`search`
   异步）；新增 `Embedder` trait + `EmbedError` + `CachingEmbedder`（FNV-1a 记忆，跨重建复用）；`VectorStrategy`
-  在云端嵌入上做暴力余弦、内置 BM25 双重透明降级；`build_strategy(name, embedder?)`（`"vector"` 要求 embedder、
-  `"hybrid"` 延后 M2-B）；新增**唯一带 HTTP 依赖**的 `embedder` crate 承载 `OpenAiEmbedder`；配置 `[retrieval.vector]`
+  在云端嵌入上做暴力余弦、内置 BM25 双重透明降级；`build_strategy(name, embedder?)`（`"vector"`/`"hybrid"` 要求 embedder）；
+  新增**唯一带 HTTP 依赖**的 `embedder` crate 承载 `OpenAiEmbedder`；配置 `[retrieval.vector]`
   + 启动期装配（`build_embedder` fail-fast、`GatewayState::with_embedder`）。**默认策略仍是 `bm25`**。
-- **后续里程碑**：Hybrid 检索（M2-B）、完整 OAuth/DCR/反向代理（M3）、运行时热吊销 API-Key（M4）、超时主动
+- **M2-B（混合检索 RRF）✅ 已完成** —— 新增 `HybridStrategy`：用 Reciprocal Rank Fusion（`k=60` 固定）融合 `Bm25Strategy` 词法排名与 `VectorStrategy` 语义排名（两份**全深度**子排名）；`build_strategy("hybrid", …)` 需 embedder（否则 `EmbedderRequired`），`config`/`build_embedder` 将 `[retrieval.vector]` 要求扩到 hybrid；embedding 失败时经 `VectorStrategy` 内置降级自愈≈纯 BM25。**opt-in；默认仍是 `bm25`**。
+- **后续里程碑**：完整 OAuth/DCR/反向代理（M3）、运行时热吊销 API-Key（M4）、超时主动
   `notifications/cancelled`（继续延后）见路线图。
 
 ## 向下导航

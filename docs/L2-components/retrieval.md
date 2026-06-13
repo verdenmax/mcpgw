@@ -7,7 +7,7 @@ M0 的默认实现自研 **BM25**（`Bm25Strategy`）、M2-A 新增的 **`Vector
 内置 BM25 透明降级），以及 M2-B 新增的 **`HybridStrategy`**（RRF 融合 BM25 + 向量）。同时定义 `Embedder`
 抽象与 `CachingEmbedder` 装饰器（真实 HTTP 后端在独立 `embedder` crate）。只了解 `catalog` 的类型；不了解配置文件或 CLI。
 
-> **默认策略仍是 `bm25`**：仅当配置 `strategy = "vector"` 且提供 `[retrieval.vector]` 时才走向量路径。
+> **默认策略仍是 `bm25`**：仅当配置 `strategy = "vector"` 或 `"hybrid"` 且提供 `[retrieval.vector]` 时才走向量/混合路径。
 
 ## 公开接口
 
