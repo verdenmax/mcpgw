@@ -177,16 +177,24 @@ use thiserror::Error;
 pub enum StrategyError {
     #[error("retrieval strategy {0:?} is not implemented in this version")]
     NotImplemented(String),
+    #[error("retrieval strategy {0:?} requires an embedder but none was configured")]
+    EmbedderRequired(String),
 }
 
-/// Construct a retrieval strategy by name. Only "bm25" is implemented in v1;
-/// "vector" and "hybrid" are reserved for P2 and return `NotImplemented`.
+/// Construct a retrieval strategy by name. "vector" requires `embedder`; "hybrid" is M2-B.
 ///
 /// Takes a plain `&str` (not a config type) so this crate stays free of any
 /// dependency on `config` — callers pass `cfg.retrieval.strategy.as_str()`.
-pub fn build_strategy(strategy: &str) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
-    match strategy {
+pub fn build_strategy(
+    name: &str,
+    embedder: Option<&std::sync::Arc<dyn Embedder>>,
+) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
+    match name {
         "bm25" => Ok(Box::new(Bm25Strategy::new())),
+        "vector" => match embedder {
+            Some(e) => Ok(Box::new(VectorStrategy::new(e.clone()))),
+            None => Err(StrategyError::EmbedderRequired(name.to_string())),
+        },
         other => Err(StrategyError::NotImplemented(other.to_string())),
     }
 }
@@ -276,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_strategy_returns_bm25_and_indexes() {
-        let mut strat = build_strategy("bm25").expect("bm25 is supported");
+        let mut strat = build_strategy("bm25", None).expect("bm25 is supported");
         strat.index(&sample_catalog()).await;
         let hits = strat.search("forecast", 8).await;
         assert_eq!(
@@ -286,12 +294,14 @@ mod tests {
     }
 
     #[test]
-    fn build_strategy_errors_on_unimplemented_strategies() {
-        for s in ["vector", "hybrid"] {
-            assert!(matches!(
-                build_strategy(s),
-                Err(StrategyError::NotImplemented(_))
-            ));
-        }
+    fn build_strategy_errors_appropriately() {
+        assert!(matches!(
+            build_strategy("hybrid", None),
+            Err(StrategyError::NotImplemented(_))
+        ));
+        assert!(matches!(
+            build_strategy("vector", None),
+            Err(StrategyError::EmbedderRequired(_))
+        ));
     }
 }

@@ -62,7 +62,8 @@ fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Command::Search { query, top_k } => {
             let catalog = load_catalog(&cli.catalog)?;
-            let mut strat = build_strategy(&cfg.retrieval.strategy).map_err(|e| e.to_string())?;
+            let mut strat =
+                build_strategy(&cfg.retrieval.strategy, None).map_err(|e| e.to_string())?;
             let k = top_k.unwrap_or(cfg.retrieval.top_k);
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

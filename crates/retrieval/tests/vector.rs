@@ -58,3 +58,12 @@ async fn degrades_to_bm25_when_index_embedding_fails() {
     let hits = s.search("forecast", 5).await; // served by the built-in BM25
     assert_eq!(hits[0].qualified_name, "weather__get_forecast");
 }
+
+#[tokio::test]
+async fn build_strategy_vector_with_embedder_works() {
+    use retrieval::{build_strategy, Embedder};
+    let e: std::sync::Arc<dyn Embedder> = std::sync::Arc::new(MockEmbedder::new(32));
+    let mut strat = build_strategy("vector", Some(&e)).expect("vector with embedder");
+    strat.index(&catalog()).await;
+    assert!(!strat.search("forecast", 5).await.is_empty());
+}

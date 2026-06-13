@@ -132,12 +132,15 @@ fn unimplemented_strategy_in_config_fails() {
         .expect("run mcpgw");
     let _ = std::fs::remove_file(&cfg);
 
-    // "vector" is a config-valid but not-yet-implemented strategy; it must surface
-    // as a runtime error (non-zero exit) through the binary.
+    // "vector" is config-valid but the offline `search` CLI builds no embedder, so it must
+    // surface as a runtime error (non-zero exit) through the binary.
     assert!(
         !out.status.success(),
-        "expected failure for unimplemented strategy"
+        "expected failure for strategy requiring an embedder"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not implemented"), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("requires an embedder"),
+        "stderr was: {stderr}"
+    );
 }

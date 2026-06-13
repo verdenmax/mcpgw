@@ -30,18 +30,27 @@ pub struct GatewayState {
     snapshot: Arc<ArcSwap<GatewaySnapshot>>,   // 私有
     registry: UpstreamRegistry,                // 私有
     strategy_name: Arc<str>,                   // 私有
+    embedder: Option<Arc<dyn Embedder>>,       // 私有，vector/hybrid 策略所需，跨 rebuild 持有（保留缓存）
     rebuild_lock: Arc<Mutex<()>>,              // 私有，串行化重建
 }
 ```
-可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 重建锁。`Clone` 仅克隆内部 `Arc`，
+可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 可选 embedder + 重建锁。`Clone` 仅克隆内部 `Arc`，
 所有克隆共享同一份状态。
 
 ### `GatewayState::new`
 ```rust
 pub fn new(strategy_name: &str) -> Result<Self, GatewayError>
 ```
-建空状态：用 `build_strategy(strategy_name)` 新建策略、对空 `Catalog` `index`，装入
-`ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))`；注册表与重建锁均为空/新建。策略名未实现时返回
+建空状态：用 `build_strategy(strategy_name, None)` 新建策略、对空 `Catalog` `index`，装入
+`ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))`；`embedder` 为 `None`，注册表与重建锁均为空/新建。策略名未实现（或需要
+embedder 却未提供）时返回 `Err(GatewayError::Strategy)`。
+
+### `GatewayState::with_embedder`
+```rust
+pub fn with_embedder(strategy_name: &str, embedder: Arc<dyn Embedder>) -> Result<Self, GatewayError>
+```
+同 `new`，但用 `build_strategy(strategy_name, Some(&embedder))` 构建策略，并把 `embedder` 持有进 `Some(..)`，供 "vector"/"hybrid"
+策略在每次 `rebuild_snapshot` 时复用（若是 `CachingEmbedder` 则缓存跨 rebuild 保留，仅嵌入新增工具）。策略构建失败返回
 `Err(GatewayError::Strategy)`。
 
 ### `GatewayState::registry`
@@ -67,7 +76,8 @@ pub async fn rebuild_snapshot(&self) -> Result<RebuildSummary, GatewayError>
    `tokio::time::timeout(handle.call_timeout(), handle.ingest_into(&mut local)).await`。
 3. `join_next` 收集：超时 → `skipped("ingest timed out")`；调用错误 → `skipped(err)`；成功 → 把 `local` 工具
    `upsert` 进最终 catalog 并记 `ingested`。两表均排序。
-4. `build_strategy(&self.strategy_name)?`（未实现则 `Err(GatewayError::Strategy)`）→ `strat.index(&catalog)`。
+4. `build_strategy(&self.strategy_name, self.embedder.as_ref())?`（未实现/缺 embedder 则 `Err(GatewayError::Strategy)`）→
+   `strat.index(&catalog)`。复用 state 持有的 embedder，故 `CachingEmbedder` 的缓存跨 rebuild 保留。
 5. `self.snapshot.store(Arc::new(GatewaySnapshot::new(catalog, strat)))` **原子换入**（build-then-swap），返回
    `RebuildSummary`。
 

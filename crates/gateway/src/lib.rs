@@ -7,6 +7,7 @@ use arc_swap::ArcSwap;
 use catalog::Catalog;
 use metatools::GatewaySnapshot;
 use retrieval::build_strategy;
+use retrieval::Embedder;
 use tokio::sync::Mutex;
 use upstream::registry::UpstreamRegistry;
 
@@ -32,6 +33,9 @@ pub struct GatewayState {
     snapshot: Arc<ArcSwap<GatewaySnapshot>>,
     registry: UpstreamRegistry,
     strategy_name: Arc<str>,
+    /// Optional embedder backing "vector"/"hybrid" strategies. Held across rebuilds so a
+    /// `CachingEmbedder` keeps its cache (only newly-added tools are embedded each rebuild).
+    embedder: Option<Arc<dyn Embedder>>,
     /// Serializes rebuilds so concurrent triggers can't commit a stale snapshot
     /// (last-store-wins). Readers never touch this — they only load the `ArcSwap`.
     rebuild_lock: Arc<Mutex<()>>,
@@ -41,13 +45,31 @@ impl GatewayState {
     /// Create empty state (no upstreams, empty catalog) using `strategy_name` (e.g. "bm25").
     /// Returns an error if the strategy is not implemented.
     pub fn new(strategy_name: &str) -> Result<Self, GatewayError> {
-        let strat =
-            build_strategy(strategy_name).map_err(|e| GatewayError::Strategy(e.to_string()))?;
+        let strat = build_strategy(strategy_name, None)
+            .map_err(|e| GatewayError::Strategy(e.to_string()))?;
         let empty = Catalog::new();
         Ok(Self {
             snapshot: Arc::new(ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))),
             registry: UpstreamRegistry::new(),
             strategy_name: Arc::from(strategy_name),
+            embedder: None,
+            rebuild_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    /// Create state whose retrieval strategy is backed by `embedder` (for "vector"/"hybrid").
+    pub fn with_embedder(
+        strategy_name: &str,
+        embedder: Arc<dyn Embedder>,
+    ) -> Result<Self, GatewayError> {
+        let strat = build_strategy(strategy_name, Some(&embedder))
+            .map_err(|e| GatewayError::Strategy(e.to_string()))?;
+        let empty = Catalog::new();
+        Ok(Self {
+            snapshot: Arc::new(ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))),
+            registry: UpstreamRegistry::new(),
+            strategy_name: Arc::from(strategy_name),
+            embedder: Some(embedder),
             rebuild_lock: Arc::new(Mutex::new(())),
         })
     }
@@ -100,7 +122,7 @@ impl GatewayState {
         summary.ingested.sort();
         summary.skipped.sort();
 
-        let mut strat = build_strategy(&self.strategy_name)
+        let mut strat = build_strategy(&self.strategy_name, self.embedder.as_ref())
             .map_err(|e| GatewayError::Strategy(e.to_string()))?;
         strat.index(&catalog).await;
         self.snapshot
@@ -134,5 +156,19 @@ mod tests {
     fn gateway_state_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<super::GatewayState>();
+    }
+
+    #[tokio::test]
+    async fn with_embedder_rebuild_builds_vector_snapshot_no_upstreams() {
+        let state = super::GatewayState::with_embedder(
+            "vector",
+            std::sync::Arc::new(retrieval::MockEmbedder::new(16)),
+        )
+        .expect("vector state");
+        // No upstreams -> empty catalog; rebuild must succeed (embed of [] is fine).
+        state.rebuild_snapshot().await.expect("rebuild ok");
+        assert!(metatools::search_tools(&state.snapshot(), "anything", 5)
+            .await
+            .is_empty());
     }
 }
