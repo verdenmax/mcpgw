@@ -190,12 +190,13 @@ impl Config {
         if self.retrieval.top_k == 0 {
             return Err(ConfigError::Invalid("retrieval.top_k must be > 0".into()));
         }
-        if self.retrieval.strategy == "vector" {
+        if matches!(self.retrieval.strategy.as_str(), "vector" | "hybrid") {
             match &self.retrieval.vector {
                 None => {
-                    return Err(ConfigError::Invalid(
-                        "strategy=\"vector\" requires a [retrieval.vector] section".into(),
-                    ))
+                    return Err(ConfigError::Invalid(format!(
+                        "strategy={:?} requires a [retrieval.vector] section",
+                        self.retrieval.strategy
+                    )))
                 }
                 Some(v) => {
                     if v.base_url.trim().is_empty()
@@ -260,6 +261,9 @@ mod tests {
             [retrieval]
             strategy = "hybrid"
             top_k = 5
+            [retrieval.vector]
+            model = "m"
+            api_key_env = "K"
             "#,
         )
         .unwrap();
@@ -516,6 +520,12 @@ mod tests {
     #[test]
     fn vector_strategy_requires_vector_section() {
         let err = Config::from_toml_str("[retrieval]\nstrategy = \"vector\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn hybrid_strategy_requires_vector_section() {
+        let err = Config::from_toml_str("[retrieval]\nstrategy = \"hybrid\"\n").unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
     }
 
