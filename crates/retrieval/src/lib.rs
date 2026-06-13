@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use catalog::Catalog;
 
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.
@@ -9,11 +10,12 @@ pub struct ScoredTool {
 }
 
 /// A pluggable tool-retrieval strategy (BM25, vector, hybrid, ...).
+#[async_trait]
 pub trait RetrievalStrategy: Send + Sync {
     /// (Re)build internal indices from the current catalog.
-    fn index(&mut self, catalog: &Catalog);
+    async fn index(&mut self, catalog: &Catalog);
     /// Return up to `top_k` tools relevant to `query`, best first.
-    fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool>;
+    async fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool>;
 }
 
 /// Lowercase, split on any non-alphanumeric boundary (this also splits `_`), drop empties.
@@ -75,8 +77,9 @@ impl Default for Bm25Strategy {
     }
 }
 
+#[async_trait]
 impl RetrievalStrategy for Bm25Strategy {
-    fn index(&mut self, catalog: &Catalog) {
+    async fn index(&mut self, catalog: &Catalog) {
         let mut docs = Vec::new();
         let mut doc_freq: HashMap<String, u32> = HashMap::new();
         let mut total_len = 0usize;
@@ -114,7 +117,7 @@ impl RetrievalStrategy for Bm25Strategy {
         self.docs = docs;
     }
 
-    fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool> {
+    async fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool> {
         if self.n == 0 || self.avgdl == 0.0 {
             return Vec::new();
         }
@@ -230,12 +233,12 @@ mod tests {
         ])
     }
 
-    #[test]
-    fn bm25_ranks_relevant_tool_first() {
+    #[tokio::test]
+    async fn bm25_ranks_relevant_tool_first() {
         let mut s = Bm25Strategy::new();
-        s.index(&sample_catalog());
+        s.index(&sample_catalog()).await;
 
-        let hits = s.search("create github issue", 3);
+        let hits = s.search("create github issue", 3).await;
         assert!(!hits.is_empty());
         assert_eq!(hits[0].qualified_name, "github__create_issue");
         // scores are sorted descending
@@ -244,29 +247,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bm25_respects_top_k_and_filters_zero_score() {
+    #[tokio::test]
+    async fn bm25_respects_top_k_and_filters_zero_score() {
         let mut s = Bm25Strategy::new();
-        s.index(&sample_catalog());
+        s.index(&sample_catalog()).await;
 
         // Only weather matches; top_k larger than match count returns just the match.
-        let hits = s.search("forecast", 10);
+        let hits = s.search("forecast", 10).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].qualified_name, "weather__get_forecast");
 
         // No term matches -> empty.
-        assert!(s.search("zzzzz nonexistent", 10).is_empty());
+        assert!(s.search("zzzzz nonexistent", 10).await.is_empty());
 
         // top_k caps the result count.
-        let capped = s.search("repository", 1);
+        let capped = s.search("repository", 1).await;
         assert_eq!(capped.len(), 1);
     }
 
-    #[test]
-    fn build_strategy_returns_bm25_and_indexes() {
+    #[tokio::test]
+    async fn build_strategy_returns_bm25_and_indexes() {
         let mut strat = build_strategy("bm25").expect("bm25 is supported");
-        strat.index(&sample_catalog());
-        let hits = strat.search("forecast", 8);
+        strat.index(&sample_catalog()).await;
+        let hits = strat.search("forecast", 8).await;
         assert_eq!(
             hits.first().map(|h| h.qualified_name.as_str()),
             Some("weather__get_forecast")

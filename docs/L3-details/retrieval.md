@@ -75,6 +75,18 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
 - `build_strategy_returns_bm25_and_indexes` / `build_strategy_errors_on_unimplemented_strategies`
 - 集成 golden 测试：`crates/retrieval/tests/golden.rs`（4 个查询的 top-1 期望，3 个为真正的排序判别）。
 
+## 异步化（M2-A T1）
+
+为支持 M2-A 的云端向量嵌入（索引/检索期需异步网络调用），`RetrievalStrategy` trait 已整体异步化：
+
+- 借助 `async-trait`（`#[async_trait]`）把 `index`/`search` 改为 `async fn`，同时保持 `Box<dyn RetrievalStrategy>`
+  对象安全；`async-trait` 默认把方法 future 装箱为 `Send`，可继续跨 `.await` 持有 `Arc<GatewaySnapshot>`。
+- `Bm25Strategy` 的方法体逐字不变，仅签名加 `async`——本次为纯机械重构，不新增任何检索功能。
+- `GatewayState::new` 不再在构造期 `index`（构造函数保持同步）：空目录检索结果本就为空，**首个真实快照由异步
+  `rebuild_snapshot` 建立**。
+- 全链路 `await`：`metatools::search_tools` → `strategy.search` 全部 `.await`；`downstream` 的 `search_tools`
+  臂、`mcpgw` CLI 的 `search` 子命令（用 current-thread runtime `block_on`）均已贯通。
+
 ## 相关
 
 - 接口见 L2：[retrieval](../L2-components/retrieval.md)；逐文件 API 见 L4：[retrieval/lib.rs](../L4-api/retrieval-lib.md)

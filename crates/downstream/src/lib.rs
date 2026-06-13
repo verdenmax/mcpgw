@@ -110,7 +110,7 @@ impl ServerHandler for GatewayServer {
                     .map(|n| n as usize)
                     .unwrap_or(self.default_top_k);
                 let snap = self.state.snapshot();
-                let hits = metatools::search_tools(&snap, query, top_k);
+                let hits = metatools::search_tools(&snap, query, top_k).await;
                 let json = serde_json::to_string(&hits)
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))

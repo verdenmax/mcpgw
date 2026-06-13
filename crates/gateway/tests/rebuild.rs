@@ -21,14 +21,14 @@ async fn rebuild_snapshot_ingests_registered_upstreams() {
     let state = GatewayState::new("bm25").unwrap();
 
     // Empty before any upstream.
-    assert!(search_tools(&state.snapshot(), "echo", 5).is_empty());
+    assert!(search_tools(&state.snapshot(), "echo", 5).await.is_empty());
 
     let (handle, join) = connect_mock("mock").await;
     state.registry().insert(Arc::new(handle));
     state.rebuild_snapshot().await.unwrap();
 
     // After rebuild, the mock's namespaced tools are searchable.
-    let hits = search_tools(&state.snapshot(), "echo", 5);
+    let hits = search_tools(&state.snapshot(), "echo", 5).await;
     assert!(
         hits.iter().any(|s| s.name == "mock__echo"),
         "hits: {hits:?}"
@@ -47,9 +47,9 @@ async fn old_snapshot_reader_is_unaffected_by_rebuild() {
     state.rebuild_snapshot().await.unwrap();
 
     // The previously-loaded snapshot still works and still reflects the OLD (empty) state.
-    assert!(search_tools(&old, "echo", 5).is_empty());
+    assert!(search_tools(&old, "echo", 5).await.is_empty());
     // A freshly-loaded snapshot reflects the new state.
-    assert!(!search_tools(&state.snapshot(), "echo", 5).is_empty());
+    assert!(!search_tools(&state.snapshot(), "echo", 5).await.is_empty());
 
     join.abort();
 }
@@ -78,7 +78,7 @@ async fn rebuild_isolates_a_failed_upstream() {
     state.registry().insert(Arc::new(broken));
     state.rebuild_snapshot().await.unwrap(); // must not error despite the broken upstream
 
-    let hits = search_tools(&state.snapshot(), "echo", 10);
+    let hits = search_tools(&state.snapshot(), "echo", 10).await;
     assert!(
         hits.iter().any(|s| s.name == "good__echo"),
         "hits: {hits:?}"
@@ -165,7 +165,9 @@ async fn rebuild_worker_rebuilds_when_triggered() {
     state.registry().insert(std::sync::Arc::new(handle));
 
     // Before triggering: snapshot is empty (search finds nothing).
-    assert!(metatools::search_tools(&state.snapshot(), "echo", 5).is_empty());
+    assert!(metatools::search_tools(&state.snapshot(), "echo", 5)
+        .await
+        .is_empty());
 
     // Trigger one rebuild.
     tx.send("mock".to_string()).await.unwrap();
@@ -174,6 +176,7 @@ async fn rebuild_worker_rebuilds_when_triggered() {
     let mut found = false;
     for _ in 0..100 {
         if metatools::search_tools(&state.snapshot(), "echo", 5)
+            .await
             .iter()
             .any(|s| s.name == "mock__echo")
         {

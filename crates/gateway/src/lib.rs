@@ -41,10 +41,9 @@ impl GatewayState {
     /// Create empty state (no upstreams, empty catalog) using `strategy_name` (e.g. "bm25").
     /// Returns an error if the strategy is not implemented.
     pub fn new(strategy_name: &str) -> Result<Self, GatewayError> {
-        let mut strat =
+        let strat =
             build_strategy(strategy_name).map_err(|e| GatewayError::Strategy(e.to_string()))?;
         let empty = Catalog::new();
-        strat.index(&empty);
         Ok(Self {
             snapshot: Arc::new(ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))),
             registry: UpstreamRegistry::new(),
@@ -103,7 +102,7 @@ impl GatewayState {
 
         let mut strat = build_strategy(&self.strategy_name)
             .map_err(|e| GatewayError::Strategy(e.to_string()))?;
-        strat.index(&catalog);
+        strat.index(&catalog).await;
         self.snapshot
             .store(Arc::new(GatewaySnapshot::new(catalog, strat)));
         Ok(summary)

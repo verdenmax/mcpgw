@@ -63,9 +63,15 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Search { query, top_k } => {
             let catalog = load_catalog(&cli.catalog)?;
             let mut strat = build_strategy(&cfg.retrieval.strategy).map_err(|e| e.to_string())?;
-            strat.index(&catalog);
             let k = top_k.unwrap_or(cfg.retrieval.top_k);
-            let hits = strat.search(&query, k);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            let hits = rt.block_on(async {
+                strat.index(&catalog).await;
+                strat.search(&query, k).await
+            });
             let out: Vec<_> = hits
                 .iter()
                 .map(|h| {
@@ -269,7 +275,9 @@ mod tests {
         // a usable (empty) snapshot.
         let cfg = config::Config::default_from_empty();
         let (state, _rx) = prepare_state(&cfg).await.expect("prepare ok");
-        assert!(metatools::search_tools(&state.snapshot(), "anything", 5).is_empty());
+        assert!(metatools::search_tools(&state.snapshot(), "anything", 5)
+            .await
+            .is_empty());
     }
 
     #[test]
