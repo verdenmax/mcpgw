@@ -439,3 +439,142 @@ LESSON_07 = r"""
   对上层而言它就只是一个普通的 <span class="inline">RetrievalStrategy</span>——调用方既不用判断嵌入服务是否健在，也不用自己拼装兜底逻辑。
 </div>
 """
+
+# ---------------------------------------------------------------------------
+LESSON_08 = r"""
+<p class="lead">
+本课把前几课的零件<strong>接成一台机器</strong>：当配置选 <span class="inline">strategy = "vector"</span> 时，
+启动期如何<strong>构造 embedder</strong>、把它<strong>注入 gateway</strong>，并在<strong>缺凭证时立刻失败</strong>（fail-fast）——
+而不是等到第一次查询才崩。配置层负责<strong>声明意图</strong>，装配层负责<strong>一次性兑现可靠性约束</strong>。
+</p>
+
+<h2>build_strategy：按名字造策略</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">build_strategy</span> 只认一个<strong>字符串名字</strong>和一个<strong>可选 embedder</strong>，
+  返回一个装箱的 <span class="inline">RetrievalStrategy</span>：</p>
+  <ul>
+    <li><span class="inline">"bm25"</span> —— <strong>无需 embedder</strong>，直接造 <span class="inline">Bm25Strategy</span>。</li>
+    <li><span class="inline">"vector"</span> —— <strong>必须有</strong> embedder；没有就返回 <span class="inline">StrategyError::EmbedderRequired</span>。</li>
+    <li><span class="inline">"hybrid"</span> / 其它未知名字 —— <span class="inline">StrategyError::NotImplemented</span>（留给 M2-B）。</li>
+  </ul>
+  <p>它故意只收 <span class="inline">&amp;str</span>（不依赖 <span class="inline">config</span> 类型），所以 <span class="inline">retrieval</span> 这个 crate 不必反向依赖配置层。
+  另外提醒：<strong>默认策略仍是 <span class="inline">bm25</span></strong>，向量是显式选择项。</p>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/src/lib.rs · build_strategy</span></div>
+<pre><span class="kw">pub fn</span> <span class="fn">build_strategy</span>(
+    name: &amp;<span class="kw">str</span>,
+    embedder: Option&lt;&amp;Arc&lt;dyn Embedder&gt;&gt;,
+) -&gt; Result&lt;Box&lt;dyn RetrievalStrategy&gt;, StrategyError&gt; {
+    <span class="kw">match</span> name {
+        <span class="st">"bm25"</span> =&gt; Ok(Box::new(Bm25Strategy::new())),
+        <span class="st">"vector"</span> =&gt; <span class="kw">match</span> embedder {
+            Some(e) =&gt; Ok(Box::new(VectorStrategy::new(e.clone()))),
+            None =&gt; Err(StrategyError::EmbedderRequired(name.to_string())),
+        },
+        other =&gt; Err(StrategyError::NotImplemented(other.to_string())),
+    }
+}</pre>
+  </div>
+</div>
+
+<h2>build_embedder：只有 vector 才造，且只造一次</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">build_embedder</span> 在启动期跑一次。当且仅当 <span class="inline">strategy == "vector"</span> 时：</p>
+  <ul>
+    <li>读 <span class="inline">[retrieval.vector]</span> 段（缺段直接报错）。</li>
+    <li>从 <span class="inline">api_key_env</span> 命名的环境变量取密钥——<strong>fail-fast</strong>，
+      取不到立刻报错，且<strong>错误信息只提变量名、绝不打印密钥值</strong>。</li>
+    <li>用配置构造 <span class="inline">OpenAiEmbedder</span>，再<strong>包一层 <span class="inline">CachingEmbedder</span></strong>
+      （第 06 课的缓存层），最终返回 <span class="inline">Some(Arc&lt;dyn Embedder&gt;)</span>。</li>
+    <li>其它策略一律返回 <span class="inline">None</span>。</li>
+  </ul>
+  <p>因为这个 <span class="inline">Arc</span> <strong>只构造一次</strong>并被 gateway 一直持有，所以<strong>缓存能跨 rebuild 持久存活</strong>——
+  目录重建不会丢掉已经算好的嵌入。</p>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/mcpgw/src/main.rs · build_embedder</span></div>
+<pre><span class="kw">fn</span> <span class="fn">build_embedder</span>(cfg: &amp;config::Config)
+  -&gt; Result&lt;Option&lt;Arc&lt;dyn retrieval::Embedder&gt;&gt;, String&gt; {
+    <span class="kw">match</span> cfg.retrieval.strategy.as_str() {
+        <span class="st">"vector"</span> =&gt; {
+            <span class="kw">let</span> v = cfg.retrieval.vector.as_ref()
+                .ok_or(<span class="st">"strategy=\"vector\" requires [retrieval.vector]"</span>)?;
+            <span class="cm">// fail-fast：错误只提变量名，不含密钥值</span>
+            <span class="kw">let</span> api_key = std::env::<span class="fn">var</span>(&amp;v.api_key_env)
+                .<span class="fn">map_err</span>(|_| <span class="fn">format!</span>(<span class="st">"[retrieval.vector]: env {:?} is not set"</span>, v.api_key_env))?;
+            <span class="kw">let</span> openai = embedder::OpenAiEmbedder::new(
+                v.base_url.clone(), v.model.clone(), api_key,
+                v.dim, v.timeout_ms.map(Duration::from_millis),
+            );
+            <span class="cm">// 只造一次 → 缓存跨 rebuild 持久</span>
+            Ok(Some(Arc::new(retrieval::CachingEmbedder::new(Arc::new(openai)))))
+        }
+        _ =&gt; Ok(None),
+    }
+}</pre>
+  </div>
+  <p><span class="inline">prepare_state</span> 据此分支：拿到 <span class="inline">Some(embedder)</span> 走
+  <span class="inline">GatewayState::with_embedder(&amp;cfg.retrieval.strategy, embedder)</span>；
+  拿到 <span class="inline">None</span> 走 <span class="inline">GatewayState::new(&amp;cfg.retrieval.strategy)</span>。
+  注意名字仍是原样传进去，由 <span class="inline">build_strategy</span> 再做一次校验。</p>
+</div>
+
+<h2>VectorConfig：把意图写进配置</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">[retrieval.vector]</span> 对应 <span class="inline">VectorConfig</span>（带 <span class="inline">deny_unknown_fields</span>，写错键名会被拒）。字段：</p>
+  <table class="t">
+    <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="mono">base_url</td><td class="mono">String</td><td>嵌入服务地址，默认 OpenAI <span class="inline">https://api.openai.com/v1</span></td></tr>
+    <tr><td class="mono">model</td><td class="mono">String</td><td>嵌入模型名（必填）</td></tr>
+    <tr><td class="mono">api_key_env</td><td class="mono">String</td><td>存放密钥的<strong>环境变量名</strong>（必填）——配置里只放变量名，不放密钥本身</td></tr>
+    <tr><td class="mono">dim</td><td class="mono">Option&lt;usize&gt;</td><td>期望维度（可选，用于校验返回向量长度）</td></tr>
+    <tr><td class="mono">timeout_ms</td><td class="mono">Option&lt;u64&gt;</td><td>单次请求超时（可选）</td></tr>
+    <tr><td class="mono">batch_size</td><td class="mono">Option&lt;usize&gt;</td><td><strong>预留 / 未启用</strong>（见下方易错点）</td></tr>
+  </table>
+  <p>一份最小可用配置：</p>
+<pre class="code"><span class="cm">[retrieval]</span>
+strategy = <span class="st">"vector"</span>
+
+<span class="cm">[retrieval.vector]</span>
+base_url = <span class="st">"https://api.openai.com/v1"</span>
+model = <span class="st">"text-embedding-3-small"</span>
+api_key_env = <span class="st">"OPENAI_API_KEY"</span></pre>
+</div>
+
+<div class="card warn">
+  <div class="tag">⚠️ 三个易错点</div>
+  <ul>
+    <li><strong><span class="inline">batch_size</span> 当前是预留 / 未启用字段</strong>：<span class="inline">OpenAiEmbedder</span>
+      会把<strong>全部输入一次性发出</strong>，<strong>不做分块</strong>。别以为填了它就会自动批处理——它目前对行为<strong>毫无影响</strong>。</li>
+    <li><strong><span class="inline">strategy = "vector"</span> 只在 <span class="inline">serve</span>（活网关）下生效</strong>：
+      离线的 <span class="inline">search</span> / <span class="inline">get-details</span> CLI <strong>不会注入 embedder</strong>，
+      因此那条路径下向量策略形同未配置。</li>
+    <li><strong><span class="inline">validate()</span> 在 <span class="inline">strategy == "vector"</span> 时强制要求</strong>存在
+      <span class="inline">[retrieval.vector]</span> 段（且 <span class="inline">base_url</span> / <span class="inline">model</span> / <span class="inline">api_key_env</span> 非空），缺段直接报配置错误。</li>
+  </ul>
+</div>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li><strong>fail-fast</strong>：缺凭证在<strong>启动期</strong>立刻报错，不拖到查询时。</li>
+    <li><strong>缓存只建一次</strong>：<span class="inline">CachingEmbedder</span> 随 <span class="inline">Arc</span> 长存，跨 rebuild 不丢。</li>
+    <li><strong>默认 bm25</strong>：向量是显式选择，未选时走零依赖的字面检索。</li>
+    <li><strong>密钥只存 env 名</strong>：配置文件里只有 <span class="inline">api_key_env</span>，绝不落盘真实密钥。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  配置层把「<strong>要不要向量、向量打到哪、用哪个 key</strong>」声明化成一段 TOML；
+  装配层（<span class="inline">build_embedder</span> → <span class="inline">prepare_state</span> → <span class="inline">build_strategy</span>）则在<strong>启动期一次性</strong>
+  把这些声明兑现成可靠性约束——缺 key 立刻失败、缓存只建一次、名字与 embedder 的匹配性被强校验。意图与装配彻底分离。
+</div>
+
+<p>向量检索专章到此结束。下一步——<strong>Hybrid 检索与 RRF 融合</strong>——见第四部分的占位章节（待 M2-B 落地后写满）。</p>
+"""
