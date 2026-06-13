@@ -35,7 +35,7 @@
 | `api_key_env` | `String` | （必填） | 持有 API key 的 env 变量名（不含明文） |
 | `dim` | `Option<usize>` | `None` | 期望向量维度（可选，传给 provider） |
 | `timeout_ms` | `Option<u64>` | `None` | 单次请求超时（毫秒） |
-| `batch_size` | `Option<usize>` | `None` | 批量 embedding 大小 |
+| `batch_size` | `Option<usize>` | `None` | **预留 / 未启用**：当前不做分块，所有输入一次性请求（保留给 M2-B） |
 
 ### 类型 `UpstreamConfig` / `UpstreamTransport`
 `[[upstream]]` 数组。每项含 `name`（命名空间前缀，非空白、禁含 `__`）、`call_timeout_ms`（默认 `30_000`）、

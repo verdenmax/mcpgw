@@ -52,6 +52,9 @@ Unicode 感知（`char::is_alphanumeric` + `to_lowercase`）。
 **接受 `&str` 而非配置类型**，使本 crate 不依赖 `config`（调用方传 `cfg.retrieval.strategy.as_str()`）。
 embedder 以 `Option<&Arc<dyn Embedder>>` 注入，使本 crate 仍不引入任何 HTTP 依赖。
 
+> `strategy = "vector"` 仅在 `serve`（在线网关，注入 embedder）下生效；离线的 `search`/`get-details` CLI
+> **不注入 embedder**，故 `build_strategy("vector", None)` 返回 `EmbedderRequired`。
+
 ### Embedder 抽象（HTTP 实现在独立 embedder crate）
 
 把文本转成向量的可插拔抽象。本 crate **只**定义 trait、错误与确定性 mock；

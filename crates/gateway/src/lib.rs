@@ -42,19 +42,28 @@ pub struct GatewayState {
 }
 
 impl GatewayState {
-    /// Create empty state (no upstreams, empty catalog) using `strategy_name` (e.g. "bm25").
-    /// Returns an error if the strategy is not implemented.
-    pub fn new(strategy_name: &str) -> Result<Self, GatewayError> {
-        let strat = build_strategy(strategy_name, None)
+    /// Assemble state for `strategy_name`, optionally backed by `embedder`. Shared by
+    /// `new`/`with_embedder` so the assembly logic lives in one place (no drift).
+    fn build(
+        strategy_name: &str,
+        embedder: Option<Arc<dyn Embedder>>,
+    ) -> Result<Self, GatewayError> {
+        let strat = build_strategy(strategy_name, embedder.as_ref())
             .map_err(|e| GatewayError::Strategy(e.to_string()))?;
         let empty = Catalog::new();
         Ok(Self {
             snapshot: Arc::new(ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))),
             registry: UpstreamRegistry::new(),
             strategy_name: Arc::from(strategy_name),
-            embedder: None,
+            embedder,
             rebuild_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Create empty state (no upstreams, empty catalog) using `strategy_name` (e.g. "bm25").
+    /// Returns an error if the strategy is not implemented.
+    pub fn new(strategy_name: &str) -> Result<Self, GatewayError> {
+        Self::build(strategy_name, None)
     }
 
     /// Create state whose retrieval strategy is backed by `embedder` (for "vector"/"hybrid").
@@ -62,16 +71,7 @@ impl GatewayState {
         strategy_name: &str,
         embedder: Arc<dyn Embedder>,
     ) -> Result<Self, GatewayError> {
-        let strat = build_strategy(strategy_name, Some(&embedder))
-            .map_err(|e| GatewayError::Strategy(e.to_string()))?;
-        let empty = Catalog::new();
-        Ok(Self {
-            snapshot: Arc::new(ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))),
-            registry: UpstreamRegistry::new(),
-            strategy_name: Arc::from(strategy_name),
-            embedder: Some(embedder),
-            rebuild_lock: Arc::new(Mutex::new(())),
-        })
+        Self::build(strategy_name, Some(embedder))
     }
 
     /// The upstream registry (B.2's eager-connect populates it; tests inject mock handles).

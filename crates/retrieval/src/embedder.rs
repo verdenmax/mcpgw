@@ -39,6 +39,10 @@ mod mock {
 
     impl MockEmbedder {
         pub fn new(dim: usize) -> Self {
+            debug_assert!(
+                dim > 0,
+                "MockEmbedder dim must be > 0 (zero yields degenerate vectors)"
+            );
             Self {
                 dim,
                 fail: false,
@@ -62,7 +66,9 @@ mod mock {
                     h ^= *b as u64;
                     h = h.wrapping_mul(0x100000001b3);
                 }
-                v[(h as usize) % self.dim] += 1.0;
+                // Do the modulo in u64 before the `as usize` cast so the bucket is identical
+                // on 32- and 64-bit targets (width-independent).
+                v[(h % self.dim as u64) as usize] += 1.0;
             }
             v
         }

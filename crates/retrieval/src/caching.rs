@@ -58,7 +58,10 @@ impl Embedder for CachingEmbedder {
             }
         }
 
-        // Reassemble in original input order.
+        // Reassemble in original input order. The `.expect()` is safe under the cache's
+        // insert-only invariant: every cache-miss above was just inserted and the cache is
+        // never evicted/removed-from, so every key is guaranteed present here. A future
+        // eviction/TTL/LRU policy would break this and must re-handle the miss at this step.
         let cache = self.cache.lock().unwrap();
         Ok(hashes
             .iter()

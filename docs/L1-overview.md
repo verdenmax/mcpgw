@@ -218,7 +218,7 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
 - **`build_strategy(name, embedder: Option<&Arc<dyn Embedder>>)`**：`"bm25"` 无需 embedder；`"vector"` 要求 embedder
   否则 `StrategyError::EmbedderRequired`；`"hybrid"`（延后 M2-B）/未知名 → `StrategyError::NotImplemented`。
 - **`embedder` crate**（**唯一 HTTP 依赖**，`reqwest 0.13` + `rustls`）：`OpenAiEmbedder::new(base_url, model, api_key,
-  dim?, timeout_ms?)` POST `{base_url}/embeddings`（bearer 鉴权），按响应 `index` 排序、校验数量/连续性/维度，非 2xx
+  dim: Option<usize>, timeout: Option<Duration>)` POST `{base_url}/embeddings`（bearer 鉴权），按响应 `index` 排序、校验数量/连续性/维度，非 2xx
   附**截断**的 body 片段，空输入短路返回。
 - **配置**：`[retrieval.vector]`（`base_url` 默认 OpenAI、`model`、`api_key_env`、`dim?`、`timeout_ms?`、
   `batch_size?`，`deny_unknown_fields`）；`strategy == "vector"` 时 `validate()` 要求该段存在。**`batch_size` 目前为

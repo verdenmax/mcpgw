@@ -60,13 +60,33 @@ impl RetrievalStrategy for VectorStrategy {
         let tools: Vec<&catalog::ToolDef> = catalog.iter().collect();
         let texts: Vec<String> = tools.iter().map(|t| tool_text(t)).collect();
         match self.embedder.embed(&texts).await {
-            Ok(vecs) => {
+            Ok(vecs) if vecs.len() == tools.len() => {
                 self.vectors = tools
                     .iter()
                     .zip(vecs)
                     .map(|(t, v)| (t.qualified_name(), t.description.clone(), normalize(v)))
                     .collect();
                 self.degraded = false;
+            }
+            Ok(vecs) => {
+                // The embedder contract is all-or-nothing and order-preserving: one vector
+                // per input text, same order. A count mismatch violates that, so zipping
+                // would silently misalign vectors with tools. Treat it as an embed failure
+                // and degrade to BM25 rather than build a corrupt index.
+                debug_assert_eq!(
+                    vecs.len(),
+                    tools.len(),
+                    "embedder returned {} vectors for {} tools (contract violation)",
+                    vecs.len(),
+                    tools.len()
+                );
+                tracing::warn!(
+                    got = vecs.len(),
+                    expected = tools.len(),
+                    "vector index embedding returned wrong count; degrading to BM25"
+                );
+                self.vectors.clear();
+                self.degraded = true;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "vector index embedding failed; degrading to BM25");

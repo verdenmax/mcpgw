@@ -119,7 +119,7 @@ fn search_uses_top_k_from_config_file() {
 }
 
 #[test]
-fn unimplemented_strategy_in_config_fails() {
+fn vector_strategy_without_embedder_fails_in_search_cli() {
     let cfg = write_temp_config(
         "vector",
         "[retrieval]\nstrategy = \"vector\"\n[retrieval.vector]\nmodel = \"m\"\napi_key_env = \"OPENAI_API_KEY\"\n",

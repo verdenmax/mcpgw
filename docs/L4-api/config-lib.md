@@ -129,11 +129,12 @@ pub struct VectorConfig {
     pub api_key_env: String,          // 必填；持有 key 的 env 变量名（只引用名，不含明文）
     #[serde(default)] pub dim: Option<usize>,
     #[serde(default)] pub timeout_ms: Option<u64>,
-    #[serde(default)] pub batch_size: Option<usize>,
+    #[serde(default)] pub batch_size: Option<usize>, // 预留/未启用：当前不分块（M2-B）
 }
 ```
 `[retrieval.vector]`：OpenAI 兼容 embedding 提供方。密钥**只经 env 变量名引用**（`api_key_env`），
-配置里不出现明文。无 flatten，故 `deny_unknown_fields` 生效（未知字段 → `Parse`）。
+配置里不出现明文。无 flatten，故 `deny_unknown_fields` 生效（未知字段 → `Parse`）。`batch_size`
+为**预留字段、当前未启用**：`OpenAiEmbedder` 一次请求发送全部输入，不做分块（留待 M2-B）。
 
 ## `enum ConfigError`
 ```rust
