@@ -108,7 +108,9 @@ mod tests {
         let l2 = vec![hit("a", 0.9), hit("b", 0.8)];
         let out = rrf_fuse(&[l1, l2], 10);
         assert_eq!(
-            out.iter().map(|h| h.qualified_name.as_str()).collect::<Vec<_>>(),
+            out.iter()
+                .map(|h| h.qualified_name.as_str())
+                .collect::<Vec<_>>(),
             ["a", "b"]
         );
         assert!((out[0].score - 2.0 / 61.0).abs() < 1e-6);
@@ -120,7 +122,9 @@ mod tests {
         // "b" rank1 in list1 only; "a" rank1 in list2 only -> equal 1/61 -> name asc.
         let out = rrf_fuse(&[vec![hit("b", 1.0)], vec![hit("a", 1.0)]], 10);
         assert_eq!(
-            out.iter().map(|h| h.qualified_name.as_str()).collect::<Vec<_>>(),
+            out.iter()
+                .map(|h| h.qualified_name.as_str())
+                .collect::<Vec<_>>(),
             ["a", "b"]
         );
         assert!((out[0].score - 1.0 / 61.0).abs() < 1e-6);
@@ -129,9 +133,14 @@ mod tests {
     #[test]
     fn rrf_includes_doc_present_in_only_one_list() {
         // a: 1/61 + 1/61 ; c: 1/62 -> a first, c present.
-        let out = rrf_fuse(&[vec![hit("a", 1.0)], vec![hit("a", 1.0), hit("c", 0.5)]], 10);
+        let out = rrf_fuse(
+            &[vec![hit("a", 1.0)], vec![hit("a", 1.0), hit("c", 0.5)]],
+            10,
+        );
         assert_eq!(
-            out.iter().map(|h| h.qualified_name.as_str()).collect::<Vec<_>>(),
+            out.iter()
+                .map(|h| h.qualified_name.as_str())
+                .collect::<Vec<_>>(),
             ["a", "c"]
         );
     }

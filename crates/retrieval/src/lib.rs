@@ -6,10 +6,10 @@ mod embedder;
 mod hybrid;
 mod vector;
 pub use caching::CachingEmbedder;
-pub use hybrid::HybridStrategy;
 #[cfg(feature = "testkit")]
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
+pub use hybrid::HybridStrategy;
 pub use vector::VectorStrategy;
 
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.

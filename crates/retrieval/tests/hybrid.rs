@@ -2,7 +2,9 @@
 use std::sync::Arc;
 
 use catalog::{Catalog, ToolDef};
-use retrieval::{build_strategy, Bm25Strategy, Embedder, HybridStrategy, MockEmbedder, RetrievalStrategy};
+use retrieval::{
+    build_strategy, Bm25Strategy, Embedder, HybridStrategy, MockEmbedder, RetrievalStrategy,
+};
 use serde_json::Value;
 
 fn tool(server: &str, name: &str, desc: &str) -> ToolDef {
@@ -16,10 +18,26 @@ fn tool(server: &str, name: &str, desc: &str) -> ToolDef {
 
 fn sample() -> Catalog {
     Catalog::from_tooldefs(vec![
-        tool("github", "create_issue", "Create a new issue in a GitHub repository"),
-        tool("github", "list_pull_requests", "List pull requests for a repository"),
-        tool("slack", "post_message", "Send a chat message to a Slack channel"),
-        tool("weather", "get_forecast", "Get the weather forecast for a location"),
+        tool(
+            "github",
+            "create_issue",
+            "Create a new issue in a GitHub repository",
+        ),
+        tool(
+            "github",
+            "list_pull_requests",
+            "List pull requests for a repository",
+        ),
+        tool(
+            "slack",
+            "post_message",
+            "Send a chat message to a Slack channel",
+        ),
+        tool(
+            "weather",
+            "get_forecast",
+            "Get the weather forecast for a location",
+        ),
     ])
 }
 
@@ -44,10 +62,23 @@ async fn hybrid_degrades_to_bm25_order_when_embedder_fails() {
     h.index(&cat).await;
     let mut b = Bm25Strategy::new();
     b.index(&cat).await;
-    let hq: Vec<String> = h.search("repository", 10).await.into_iter().map(|x| x.qualified_name).collect();
-    let bq: Vec<String> = b.search("repository", 10).await.into_iter().map(|x| x.qualified_name).collect();
+    let hq: Vec<String> = h
+        .search("repository", 10)
+        .await
+        .into_iter()
+        .map(|x| x.qualified_name)
+        .collect();
+    let bq: Vec<String> = b
+        .search("repository", 10)
+        .await
+        .into_iter()
+        .map(|x| x.qualified_name)
+        .collect();
     assert_eq!(hq, bq);
-    assert!(!hq.is_empty(), "query 'repository' matches at least one tool");
+    assert!(
+        !hq.is_empty(),
+        "query 'repository' matches at least one tool"
+    );
 }
 
 #[tokio::test]
