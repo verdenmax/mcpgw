@@ -1,9 +1,11 @@
 //! Hybrid (RRF) integration tests over the deterministic MockEmbedder.
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use catalog::{Catalog, ToolDef};
 use retrieval::{
-    build_strategy, Bm25Strategy, Embedder, HybridStrategy, MockEmbedder, RetrievalStrategy,
+    build_strategy, Bm25Strategy, EmbedError, Embedder, HybridStrategy, MockEmbedder,
+    RetrievalStrategy,
 };
 use serde_json::Value;
 
@@ -111,4 +113,63 @@ async fn build_strategy_hybrid_with_embedder_indexes_and_searches() {
         hits.first().map(|h| h.qualified_name.as_str()),
         Some("weather__get_forecast")
     );
+}
+
+/// Deterministic embedder: maps each tool to a fixed 2-D unit vector by an angle marker in its
+/// text, and the query (no marker) to angle 0. cosine(query, tool) = cos(angle), so the vector
+/// ranking is fully controlled and independent of BM25: gamma @10° > alpha @20° > beta @30°.
+struct RankingEmbedder;
+
+#[async_trait]
+impl Embedder for RankingEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        fn unit(deg: f32) -> Vec<f32> {
+            let r = deg.to_radians();
+            vec![r.cos(), r.sin()]
+        }
+        Ok(texts
+            .iter()
+            .map(|t| {
+                if t.contains("gamma") {
+                    unit(10.0)
+                } else if t.contains("alpha") {
+                    unit(20.0)
+                } else if t.contains("beta") {
+                    unit(30.0)
+                } else {
+                    unit(0.0) // the query
+                }
+            })
+            .collect())
+    }
+    fn dim(&self) -> usize {
+        2
+    }
+}
+
+#[tokio::test]
+async fn hybrid_fuses_at_full_depth_not_top_k() {
+    // Regression guard: `search` must run each sub-strategy at full catalog depth (doc_count),
+    // NOT pre-truncated to top_k, before fusing. See module-level scenario in the test body.
+    //
+    // query "apple banana", top_k=2:
+    //   BM25:   alpha (both terms) > beta (one term); gamma unmatched.
+    //   Vector: gamma(1) > alpha(2) > beta(3)  (RankingEmbedder).
+    // Full-depth fusion: alpha = 1/61+1/62, beta = 1/62+1/63, gamma = 1/61  -> [alpha, beta].
+    // If sub-searches were truncated to top_k=2, vector = [gamma, alpha] (beta dropped) and the
+    // result would be [alpha, gamma]. So this assertion fails under that regression.
+    let cat = Catalog::from_tooldefs(vec![
+        tool("ns", "alpha", "apple banana"),
+        tool("ns", "beta", "apple"),
+        tool("ns", "gamma", "cherry"),
+    ]);
+    let mut h = HybridStrategy::new(Arc::new(RankingEmbedder));
+    h.index(&cat).await;
+    let names: Vec<String> = h
+        .search("apple banana", 2)
+        .await
+        .into_iter()
+        .map(|x| x.qualified_name)
+        .collect();
+    assert_eq!(names, vec!["ns__alpha", "ns__beta"]);
 }
