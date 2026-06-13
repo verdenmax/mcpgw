@@ -21,8 +21,21 @@
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `strategy` | `String` | `"bm25"` | `bm25` \| `vector` \| `hybrid`（M0 仅实现 bm25） |
+| `strategy` | `String` | `"bm25"` | `bm25` \| `vector` \| `hybrid`（默认 bm25；vector 经 config opt-in） |
 | `top_k` | `usize` | `8` | `search_tools` 返回条数 |
+| `vector` | `Option<VectorConfig>` | `None` | `[retrieval.vector]` 段；`strategy="vector"` 时必填 |
+
+### 类型 `VectorConfig`
+`[retrieval.vector]` 段。`#[serde(deny_unknown_fields)]`：OpenAI 兼容 embedding 提供方。密钥**只经 env 变量名引用**。
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `base_url` | `String` | `"https://api.openai.com/v1"` | embedding endpoint 基址 |
+| `model` | `String` | （必填） | embedding 模型名 |
+| `api_key_env` | `String` | （必填） | 持有 API key 的 env 变量名（不含明文） |
+| `dim` | `Option<usize>` | `None` | 期望向量维度（可选，传给 provider） |
+| `timeout_ms` | `Option<u64>` | `None` | 单次请求超时（毫秒） |
+| `batch_size` | `Option<usize>` | `None` | 批量 embedding 大小 |
 
 ### 类型 `UpstreamConfig` / `UpstreamTransport`
 `[[upstream]]` 数组。每项含 `name`（命名空间前缀，非空白、禁含 `__`）、`call_timeout_ms`（默认 `30_000`）、
@@ -59,7 +72,7 @@
 ### 错误 `ConfigError`
 `enum ConfigError { Parse(toml::de::Error), Invalid(String) }`（`thiserror`，`Parse` 带 `#[from]`）。
 - `Parse`：TOML 语法错误或未知字段（`deny_unknown_fields`）。
-- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；upstream `name` 空白/含 `__`/重复；http 上游 `url` 空白）。
+- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；`strategy="vector"` 缺 `[retrieval.vector]` 段或其 `base_url`/`model`/`api_key_env` 空白；upstream `name` 空白/含 `__`/重复；http 上游 `url` 空白）。
 
 ## 依赖
 
@@ -70,7 +83,9 @@
 
 - `mcpgw`：`load_config` 读取/默认配置；`search`/`get-details` 用 `cfg.retrieval`，`serve` 用 `cfg.upstreams`
   （eager-connect）、`cfg.server.stdio` 与 `cfg.server.http`（并发选择 stdio/HTTP 传输、解析 API-Key env）、
-  `cfg.retrieval.top_k`（下游默认 top_k）。**密钥/头值的 env 引用在 `serve` 启动时 fail-fast 解析**（缺失即报错、
+  `cfg.retrieval.top_k`（下游默认 top_k）；`serve` 还按 `cfg.retrieval.vector` 经 `build_embedder` 建
+  `OpenAiEmbedder → CachingEmbedder` 并注入 `GatewayState::with_embedder`（启动期 fail-fast 读 `api_key_env`）。
+  **密钥/头值的 env 引用在 `serve` 启动时 fail-fast 解析**（缺失即报错、
   仅含字段/env 名），config 自身只校验结构、不读取 env 值。
 - `upstream::connect`：读 `UpstreamConfig` / `UpstreamTransport` 起 stdio 子进程上游或连接 http 上游。
 

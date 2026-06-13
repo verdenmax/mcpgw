@@ -149,6 +149,34 @@ fn validate_upstream_http_env(cfg: &config::Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Build the retrieval embedder from config (vector/hybrid). Returns `None` for bm25.
+/// Reads the API key from its env var (fail-fast) and wraps the provider in a content-hash
+/// cache shared across snapshot rebuilds.
+fn build_embedder(cfg: &config::Config) -> Result<Option<Arc<dyn retrieval::Embedder>>, String> {
+    match cfg.retrieval.strategy.as_str() {
+        "vector" => {
+            let v = cfg
+                .retrieval
+                .vector
+                .as_ref()
+                .ok_or("strategy=\"vector\" requires [retrieval.vector]")?;
+            let api_key = std::env::var(&v.api_key_env)
+                .map_err(|_| format!("[retrieval.vector]: env {:?} is not set", v.api_key_env))?;
+            let openai = embedder::OpenAiEmbedder::new(
+                v.base_url.clone(),
+                v.model.clone(),
+                api_key,
+                v.dim,
+                v.timeout_ms.map(std::time::Duration::from_millis),
+            );
+            Ok(Some(Arc::new(retrieval::CachingEmbedder::new(Arc::new(
+                openai,
+            )))))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Build gateway state, connect upstreams, build the initial snapshot, and return the
 /// state plus the rebuild-trigger receiver for the worker. Split out so it is unit-testable.
 async fn prepare_state(
@@ -160,8 +188,15 @@ async fn prepare_state(
     ),
     String,
 > {
-    let state =
-        Arc::new(gateway::GatewayState::new(&cfg.retrieval.strategy).map_err(|e| e.to_string())?);
+    let state = match build_embedder(cfg)? {
+        Some(embedder) => Arc::new(
+            gateway::GatewayState::with_embedder(&cfg.retrieval.strategy, embedder)
+                .map_err(|e| e.to_string())?,
+        ),
+        None => Arc::new(
+            gateway::GatewayState::new(&cfg.retrieval.strategy).map_err(|e| e.to_string())?,
+        ),
+    };
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     let csum = upstream::connect::connect_all(state.registry(), &cfg.upstreams, tx).await;
     tracing::info!(connected = ?csum.connected, skipped = ?csum.skipped, "upstreams connected");
@@ -319,5 +354,30 @@ mod tests {
         )
         .unwrap();
         assert!(validate_upstream_http_env(&cfg).is_err());
+    }
+
+    #[test]
+    fn build_embedder_none_for_bm25() {
+        let cfg = config::Config::default_from_empty();
+        assert!(build_embedder(&cfg).unwrap().is_none());
+    }
+
+    #[test]
+    fn build_embedder_fails_fast_on_missing_key() {
+        let cfg = config::Config::from_toml_str(
+            "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2_NO_KEY\"\n",
+        )
+        .unwrap();
+        assert!(build_embedder(&cfg).is_err());
+    }
+
+    #[test]
+    fn build_embedder_some_for_vector_with_key() {
+        std::env::set_var("MCPGW_M2_KEY", "sk-x");
+        let cfg = config::Config::from_toml_str(
+            "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2_KEY\"\n",
+        )
+        .unwrap();
+        assert!(build_embedder(&cfg).unwrap().is_some());
     }
 }

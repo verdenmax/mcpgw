@@ -21,7 +21,8 @@ pub struct Config {
 | `default_from_empty` | `pub fn default_from_empty() -> Self` | 全默认配置（解析空串，恒成功） |
 
 > 私有 `fn validate(&self) -> Result<(), ConfigError>`：校验 `strategy ∈ {bm25,vector,hybrid}`、
-> `top_k > 0`，以及每个 upstream 的 `name` 非空白、不含 `__`、不重复（否则 `Invalid`）。
+> `top_k > 0`、`strategy="vector"` 时必须有 `[retrieval.vector]` 段且其 `base_url`/`model`/`api_key_env`
+> 非空白，以及每个 upstream 的 `name` 非空白、不含 `__`、不重复（否则 `Invalid`）。
 
 ## `struct UpstreamConfig`
 ```rust
@@ -110,11 +111,29 @@ pub struct ApiKeyConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetrievalConfig {
-    pub strategy: String,   // 默认 "bm25"
-    pub top_k: usize,       // 默认 8
+    pub strategy: String,             // 默认 "bm25"
+    pub top_k: usize,                 // 默认 8
+    pub vector: Option<VectorConfig>, // 默认 None；strategy="vector" 时必填
 }
 ```
-实现 `Default`（`strategy="bm25"`、`top_k=8`）。
+实现 `Default`（`strategy="bm25"`、`top_k=8`、`vector=None`）。
+
+## `struct VectorConfig`
+```rust
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorConfig {
+    #[serde(default = "default_vector_base_url")]
+    pub base_url: String,             // 默认 "https://api.openai.com/v1"
+    pub model: String,                // 必填
+    pub api_key_env: String,          // 必填；持有 key 的 env 变量名（只引用名，不含明文）
+    #[serde(default)] pub dim: Option<usize>,
+    #[serde(default)] pub timeout_ms: Option<u64>,
+    #[serde(default)] pub batch_size: Option<usize>,
+}
+```
+`[retrieval.vector]`：OpenAI 兼容 embedding 提供方。密钥**只经 env 变量名引用**（`api_key_env`），
+配置里不出现明文。无 flatten，故 `deny_unknown_fields` 生效（未知字段 → `Parse`）。
 
 ## `enum ConfigError`
 ```rust
@@ -127,6 +146,6 @@ pub enum ConfigError {
 }
 ```
 - `Parse`：TOML 语法错误或未知字段。
-- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、upstream `name` 空白/含 `__`/重复）。
+- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy="vector"` 缺 `[retrieval.vector]` 段或其字段空白、upstream `name` 空白/含 `__`/重复）。
 
 > 行为细节见 L3：[config](../L3-details/config.md)

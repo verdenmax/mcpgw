@@ -6,6 +6,7 @@ edition = { workspace = true }
 [dependencies]
 catalog = { path = "../catalog" }
 retrieval = { path = "../retrieval" }
+embedder = { path = "../embedder" }
 config = { path = "../config" }
 gateway = { path = "../gateway" }
 upstream = { path = "../upstream" }
