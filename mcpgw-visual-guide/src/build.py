@@ -1,0 +1,41 @@
+"""Build the mcpgw visual guide as a standalone static site.
+
+    index.html           entry point (table of contents)
+    lessons/NN-*.html    lesson pages
+
+Pages use relative links so the site works via file:// or any static server.
+
+Usage:
+    cd mcpgw-visual-guide/src && python build.py
+"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))  # project root
+LESSONS_DIR = os.path.join(ROOT, "lessons")
+sys.path.insert(0, HERE)
+
+import shell  # noqa: E402
+from registry import CONTENT  # noqa: E402
+
+
+def build():
+    os.makedirs(LESSONS_DIR, exist_ok=True)
+    written = []
+    for fname, _title, _part in shell.PAGES:
+        html = shell.page(fname, CONTENT[fname], standalone=True, home_href="../index.html")
+        with open(os.path.join(LESSONS_DIR, fname), "w", encoding="utf-8") as f:
+            f.write(html)
+        written.append(os.path.join("lessons", fname))
+    with open(os.path.join(ROOT, shell.INDEX_FILE), "w", encoding="utf-8") as f:
+        f.write(shell.index_page(standalone=True, lesson_prefix="lessons/"))
+    written.append(shell.INDEX_FILE)
+    return written
+
+
+if __name__ == "__main__":
+    done = build()
+    print("Wrote", len(done), "files under", ROOT)
+    for f in done:
+        print("  -", f)
