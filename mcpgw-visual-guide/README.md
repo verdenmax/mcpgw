@@ -2,6 +2,8 @@
 
 mcpgw 的图解教程：**中文、自包含 HTML、零依赖**——直接用浏览器打开就能读，配真实代码对应、折叠深挖与设计亮点。
 
+> 🌐 **在线阅读**：<https://verdenmax.github.io/mcpgw/>（推送到 `master` 时由 GitHub Actions 自动构建并部署）
+
 ## 如何阅读
 
 - **最简单**：双击 / 用浏览器打开 `index.html`（`file://` 协议即可，无需任何服务器）。
@@ -76,7 +78,7 @@ mcpgw-visual-guide/
 - 补全第三部分各 crate 内部（9–14）。
 - M2-B 落地后写透 Hybrid / RRF（15）。
 - 加 PDF 导出（`build_print.py`）。
-- 加 GitHub Pages / CI 自动发布（参考 `../langchain-visual-guide`）。
+- ~~加 GitHub Pages / CI 自动发布~~ ✅ 已配 `.github/workflows/pages.yml`（推送即构建 + 校验无漂移 + 死链检查 + 部署 Pages）。
 
 ## 内容来源
 

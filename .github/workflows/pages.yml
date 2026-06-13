@@ -1,0 +1,79 @@
+name: Deploy visual guide to Pages
+
+# Builds mcpgw-visual-guide/ (a dependency-free Python static-site generator) and
+# publishes it to GitHub Pages. Only runs when the guide (or this workflow) changes.
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'mcpgw-visual-guide/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Least privilege needed to deploy to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Regenerate the HTML from src/ and fail if the committed output drifted.
+      - name: Build site (HTML)
+        working-directory: mcpgw-visual-guide/src
+        run: python build.py
+
+      - name: Verify committed HTML is up to date
+        run: |
+          if ! git diff --quiet -- mcpgw-visual-guide; then
+            echo "::error::Generated HTML differs from committed output. Run 'cd mcpgw-visual-guide/src && python build.py' and commit."
+            git --no-pager diff --stat -- mcpgw-visual-guide
+            exit 1
+          fi
+
+      - name: Check internal links
+        working-directory: mcpgw-visual-guide/src
+        run: python check_links.py
+
+      # Assemble the publishable site (index.html + lessons/) into _site.
+      - name: Assemble _site
+        run: |
+          mkdir -p _site
+          cp mcpgw-visual-guide/index.html _site/
+          cp -r mcpgw-visual-guide/lessons _site/
+          touch _site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      # Requires Pages to be enabled once in repo Settings (Source: GitHub Actions);
+      # the GITHUB_TOKEN cannot create the Pages site itself.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
