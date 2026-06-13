@@ -66,14 +66,25 @@ struct EmbeddingsResponse { data: Vec<EmbeddingData> }
 | 情形 | 映射 |
 |------|------|
 | 网络/发送失败 (`send`) | `EmbedError::Provider("request failed: {e}")` |
-| 非 2xx 状态 | `EmbedError::Provider("HTTP {code} from embeddings endpoint")` |
+| 非 2xx 状态 | `EmbedError::Provider("HTTP {code} from embeddings endpoint: {snippet}")` |
 | 响应解码失败 (`json`) | `EmbedError::Provider("decode failed: {e}")` |
-| 返回条数 ≠ 输入条数 | `EmbedError::Provider("expected {n} embeddings, got {m}")` |
+| 返回条数 ≠ 输入条数，或 `index` 非 `0..n` 连续 | `EmbedError::Provider("embeddings response did not match {n} inputs by index")` |
 | 维度不符 | `EmbedError::Dimension { expected, got }` |
+
+非 2xx 时会读取响应体并截断（≤500 字符）拼入错误信息，保留 OpenAI 兼容服务器返回的可操作错误
+详情（如 `{"error":{"message":"bad model xyz"}}`）。响应体不含请求的 `Authorization` 头，**不会
+泄露 api_key**。
+
+`index` 排序后还会校验排序后的下标恰为 `0..n` 连续序列；重复或缺失下标（如 `[0,0]`）会被拒绝，
+避免静默错配。
+
+## 空输入短路
+`texts` 为空时直接返回 `Ok(Vec::new())`，不发起任何 HTTP 请求，避免无谓的往返与提供方 400。
 
 每次调用 **all-or-nothing**：要么整批成功并保序返回，要么返回 `Err`。
 
 ## 测试
 `crates/embedder/tests/openai.rs` 用本地 **axum stub** 做 mock-HTTP 单测（无需真实 API key）：
-stub 故意乱序返回以验证 `index` 排序，并断言请求体携带 `model` 与 `input[]`；另一个用例用期望维度
-99 触发 `Dimension` 错误。
+stub 故意乱序返回以验证 `index` 排序，断言请求体携带 `model` 与 `input[]`，并捕获请求头断言服务器
+收到 `authorization: Bearer sk-test`；另有用例覆盖期望维度 99 触发 `Dimension` 错误、非 2xx 错误体
+片段拼接、空输入短路（指向不可路由地址）、以及非连续 `index` 被拒绝。

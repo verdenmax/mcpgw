@@ -54,6 +54,9 @@ impl OpenAiEmbedder {
 #[async_trait]
 impl Embedder for OpenAiEmbedder {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
         let url = format!("{}/embeddings", self.base_url);
         let resp = self
             .client
@@ -65,8 +68,10 @@ impl Embedder for OpenAiEmbedder {
             .map_err(|e| EmbedError::Provider(format!("request failed: {e}")))?;
         if !resp.status().is_success() {
             let code = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(500).collect();
             return Err(EmbedError::Provider(format!(
-                "HTTP {code} from embeddings endpoint"
+                "HTTP {code} from embeddings endpoint: {snippet}"
             )));
         }
         let parsed: EmbeddingsResponse = resp
@@ -77,11 +82,10 @@ impl Embedder for OpenAiEmbedder {
         // Sort by `index` so output order matches input order regardless of server ordering.
         let mut data = parsed.data;
         data.sort_by_key(|d| d.index);
-        if data.len() != texts.len() {
+        if data.len() != texts.len() || data.iter().enumerate().any(|(i, d)| d.index != i) {
             return Err(EmbedError::Provider(format!(
-                "expected {} embeddings, got {}",
-                texts.len(),
-                data.len()
+                "embeddings response did not match {} inputs by index",
+                texts.len()
             )));
         }
         if let Some(expected) = self.dim {
