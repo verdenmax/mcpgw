@@ -18,3 +18,7 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 [[test]]
 name = "embedder"
 required-features = ["testkit"]
+
+[[test]]
+name = "caching"
+required-features = ["testkit"]

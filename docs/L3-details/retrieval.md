@@ -87,6 +87,20 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
 - 全链路 `await`：`metatools::search_tools` → `strategy.search` 全部 `.await`；`downstream` 的 `search_tools`
   臂、`mcpgw` CLI 的 `search` 子命令（用 current-thread runtime `block_on`）均已贯通。
 
+## 嵌入缓存（M2-A T3）
+
+`CachingEmbedder`（`crates/retrieval/src/caching.rs`）是 `Embedder` 装饰器，包装任意 `Arc<dyn Embedder>`：
+
+- **缓存键 = 文本内容哈希**（FNV-1a）：相同文本内容映射到同一缓存项，与位置无关。
+- **跨 rebuild 复用**：后续 `GatewayState` 持有 `Arc<CachingEmbedder>`，缓存在多次快照重建间持续存在；
+  **`list_changed` 时只对新增工具文本调用内层 embedder**，未变工具直接命中缓存。
+- **仅嵌未命中 + 保序**：单次 `embed` 内先按哈希去重收集未命中文本（首见顺序），只把这些转发给内层，
+  再按原始输入顺序还原向量；批内重复文本只嵌一次。
+- **全命中跳过内层**：整批命中时完全不发起内层调用，省去网络往返。
+- **错误不缓存**：内层返回 `Err` 时原样传播，不写入任何部分结果。
+- **锁纪律**：内层 `.await` 处于两段独立 `cache.lock()` 之间，绝不跨 `.await` 持锁
+  （避免 `clippy::await_holding_lock` 与死锁风险）。
+
 ## 相关
 
 - 接口见 L2：[retrieval](../L2-components/retrieval.md)；逐文件 API 见 L4：[retrieval/lib.rs](../L4-api/retrieval-lib.md)

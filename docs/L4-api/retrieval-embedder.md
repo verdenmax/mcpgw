@@ -53,3 +53,41 @@ pub struct MockEmbedder {
   缓存任务用它断言内层 embedder 只对**新文本**被调用。
 
 > `vec_for` 为私有辅助方法，不属于公开 API。
+
+## `struct CachingEmbedder`
+
+源文件：`crates/retrieval/src/caching.rs`。
+
+```rust
+pub struct CachingEmbedder {
+    inner: Arc<dyn Embedder>,
+    cache: Mutex<HashMap<u64, Arc<[f32]>>>,
+}
+
+impl CachingEmbedder {
+    pub fn new(inner: Arc<dyn Embedder>) -> Self;
+}
+
+#[async_trait]
+impl Embedder for CachingEmbedder { /* embed + dim */ }
+```
+
+包装任意 `Arc<dyn Embedder>` 的 **`Embedder` 装饰器**，按文本内容哈希记忆向量，使重复/未变的工具文本
+只被嵌入一次（跨快照重建复用）。
+
+- `pub fn new(inner: Arc<dyn Embedder>) -> Self`：以空缓存包装内层 embedder。
+- `dim()`：直接透传 `inner.dim()`。
+
+**缓存语义**（`embed`）：
+- **缓存键 = 文本内容哈希**（FNV-1a，`hash_text`）；相同内容 → 同一缓存项。
+- **仅嵌未命中**：先按内容哈希在缓存中查找，只把**唯一的未命中文本**（按首次出现顺序去重）转发给 `inner`，
+  命中文本不再调用内层。
+- **保序还原**：最终结果按**原始输入顺序**重组（含重复项），同一文本得到同一向量。
+- **全命中跳过内层**：若整批都命中缓存，则**完全不调用** `inner.embed`（节省一次网络往返）。
+- **错误不缓存**：`inner.embed` 返回 `Err` 时直接向上传播，缓存保持不变（不写入任何部分结果）。
+
+**锁纪律**：内层 `inner.embed().await` 发生在**两段独立的 `cache.lock()` 作用域之间**——绝不跨 `.await`
+持有 std `Mutex` guard（既是 `clippy::await_holding_lock` 错误，也是正确性隐患）。
+
+> 后续任务令 `GatewayState` 持有 `Arc<CachingEmbedder>`，使缓存跨快照重建持续存在：每次 `list_changed`
+> 只嵌入新增的工具文本。

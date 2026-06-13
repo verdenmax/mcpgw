@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use catalog::Catalog;
 
+mod caching;
 mod embedder;
+pub use caching::CachingEmbedder;
 #[cfg(feature = "testkit")]
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
