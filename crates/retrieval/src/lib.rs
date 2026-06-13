@@ -197,6 +197,10 @@ pub fn build_strategy(
             Some(e) => Ok(Box::new(VectorStrategy::new(e.clone()))),
             None => Err(StrategyError::EmbedderRequired(name.to_string())),
         },
+        "hybrid" => match embedder {
+            Some(e) => Ok(Box::new(HybridStrategy::new(e.clone()))),
+            None => Err(StrategyError::EmbedderRequired(name.to_string())),
+        },
         other => Err(StrategyError::NotImplemented(other.to_string())),
     }
 }
@@ -297,13 +301,19 @@ mod tests {
 
     #[test]
     fn build_strategy_errors_appropriately() {
+        // hybrid without an embedder now errors as EmbedderRequired (was NotImplemented pre-M2-B).
         assert!(matches!(
             build_strategy("hybrid", None),
-            Err(StrategyError::NotImplemented(_))
+            Err(StrategyError::EmbedderRequired(_))
         ));
         assert!(matches!(
             build_strategy("vector", None),
             Err(StrategyError::EmbedderRequired(_))
+        ));
+        // A genuinely unknown name is still NotImplemented.
+        assert!(matches!(
+            build_strategy("nope", None),
+            Err(StrategyError::NotImplemented(_))
         ));
     }
 }
