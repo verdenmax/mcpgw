@@ -1,1 +1,5 @@
 /target
+
+# Python bytecode (e.g. from scripts/embed_check.py via py_compile)
+__pycache__/
+*.pyc
