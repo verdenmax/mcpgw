@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · 向量检索总览 — mcpgw 图解教程</title>
+<meta name="description" content="第二部分 · 检索深入 · 向量检索｜向量检索总览：面向新手的 mcpgw 图解教程，配真实源码对应、折叠深挖与设计亮点。">
+<meta name="theme-color" content="#1a7f64">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzFhN2Y2NCcvPjx0ZXh0IHg9JzE2JyB5PScyMycgZm9udC1mYW1pbHk9J3N5c3RlbS11aSxzYW5zLXNlcmlmJyBmb250LXNpemU9JzIwJyBmb250LXdlaWdodD0nNzAwJyBmaWxsPScjZmZmJyB0ZXh0LWFuY2hvcj0nbWlkZGxlJz5NPC90ZXh0Pjwvc3ZnPg==">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="mcpgw 图解教程">
+<meta property="og:title" content="04 · 向量检索总览 — mcpgw 图解教程">
+<meta property="og:description" content="第二部分 · 检索深入 · 向量检索｜向量检索总览：面向新手的 mcpgw 图解教程，配真实源码对应、折叠深挖与设计亮点。">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="04 · 向量检索总览 — mcpgw 图解教程">
+<meta name="twitter:description" content="第二部分 · 检索深入 · 向量检索｜向量检索总览：面向新手的 mcpgw 图解教程，配真实源码对应、折叠深挖与设计亮点。">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --ink: #1d2129;
+  --muted: #5b6470; --faint: #8a939f; --line: #e1e5ea;
+  --accent: #1a7f64; --accent-soft: #e4f3ee; --accent-ink: #0f5c48;
+  --blue: #2563eb; --blue-soft: #e7efff; --amber: #b4690e; --amber-soft: #fdf1dd;
+  --purple: #7c3aed; --purple-soft: #f0e9ff; --red: #d23f3f; --red-soft: #fbe6e6;
+  --code-bg: #0f172a; --code-ink: #e2e8f0; --code-line: #1e293b;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.06);
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel-2: #1c232c; --ink: #e6edf3;
+    --muted: #9aa6b2; --faint: #6e7a86; --line: #2a323c;
+    --accent: #3fb892; --accent-soft: #14302a; --accent-ink: #8ee0c6;
+    --blue: #6ea8fe; --blue-soft: #16243f; --amber: #e0a44a; --amber-soft: #33270f;
+    --purple: #b794f6; --purple-soft: #271a40; --red: #f08080; --red-soft: #3a1a1a;
+    --code-bg: #0a0f1a; --code-ink: #d8e2f0; --code-line: #14202f;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+  }
+}
+html { scroll-behavior: smooth; overflow-x: hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+    "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg); color: var(--ink); line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+code, .mono { font-family: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace; overflow-wrap: break-word; }
+
+/* ---- top progress bar ---- */
+.topbar {
+  position: sticky; top: 0; z-index: 50; background: var(--panel);
+  border-bottom: 1px solid var(--line); backdrop-filter: blur(8px);
+}
+.topbar-inner {
+  max-width: 960px; margin: 0 auto; padding: .7rem 1.25rem;
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+}
+.topbar .home { font-size: .82rem; color: var(--muted); font-weight: 600; display:flex; gap:.5rem; align-items:center; }
+.topbar .home b { color: var(--accent); }
+.topbar .pill { font-size: .72rem; color: var(--muted); background: var(--panel-2);
+  padding: .2rem .6rem; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+.progress { height: 3px; background: var(--panel-2); }
+.progress > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--blue)); }
+
+.wrap { max-width: 820px; margin: 0 auto; padding: 2.4rem 1.25rem 5rem; }
+
+/* ---- hero ---- */
+.hero { margin-bottom: 2rem; }
+.hero .part { font-size: .76rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent); font-weight: 700; margin-bottom: .55rem; }
+.hero h1 { font-size: 2.05rem; line-height: 1.2; letter-spacing: -.01em; font-weight: 750; }
+.hero .lead { margin-top: .9rem; font-size: 1.06rem; color: var(--muted); }
+
+h2 { font-size: 1.32rem; margin: 2.4rem 0 .9rem; letter-spacing: -.01em;
+  display: flex; align-items: center; gap: .55rem; }
+h2::before { content: ""; width: 4px; height: 1.05em; background: var(--accent); border-radius: 3px; display: inline-block; }
+h3 { font-size: 1.05rem; margin: 1.4rem 0 .5rem; }
+p { margin: .7rem 0; }
+ul, ol { margin: .6rem 0 .6rem 1.3rem; }
+li { margin: .3rem 0; }
+strong { color: var(--ink); font-weight: 680; }
+.inline { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: .08em .4em; font-size: .9em; color: var(--accent-ink); }
+
+/* ---- callout cards ---- */
+.card { border-radius: var(--radius); padding: 1.05rem 1.2rem; margin: 1.2rem 0;
+  border: 1px solid var(--line); background: var(--panel); box-shadow: var(--shadow); }
+.card .tag { font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: .4rem; margin-bottom: .5rem; }
+.card.macro { border-left: 4px solid var(--blue); }
+.card.macro .tag { color: var(--blue); }
+.card.detail { border-left: 4px solid var(--purple); }
+.card.detail .tag { color: var(--purple); }
+.card.analogy { border-left: 4px solid var(--amber); background: var(--amber-soft); }
+.card.analogy .tag { color: var(--amber); }
+.card.key { border-left: 4px solid var(--accent); background: var(--accent-soft); }
+.card.key .tag { color: var(--accent-ink); }
+.card.warn { border-left: 4px solid var(--red); background: var(--red-soft); }
+.card.warn .tag { color: var(--red); }
+.card.spark { border-left: 4px solid #e0a000;
+  background: linear-gradient(100deg, rgba(224,160,0,.12), transparent 70%); }
+.card.spark .tag { color: #c98a00; }
+@media (prefers-color-scheme: dark) { .card.spark .tag { color: #f0c050; } }
+
+/* ---- code file callout ---- */
+.codefile { margin: 1.2rem 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
+  box-shadow: var(--shadow); }
+.codefile .cf-head { display: flex; align-items: center; gap: .55rem; padding: .5rem .85rem;
+  background: var(--panel-2); border-bottom: 1px solid var(--line); font-size: .8rem; }
+.codefile .cf-head .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex-shrink:0; }
+.codefile .cf-head .path { font-family: ui-monospace, monospace; color: var(--ink); font-weight: 600; }
+.codefile .cf-head .ln { margin-left: auto; color: var(--faint); font-size: .72rem; }
+.codefile pre { background: var(--code-bg); color: var(--code-ink); padding: .9rem 1rem;
+  overflow-x: auto; font-size: .82rem; line-height: 1.6; }
+.codefile pre .cm { color: #7d8aa3; }
+.codefile pre .kw { color: #c792ea; }
+.codefile pre .fn { color: #82aaff; }
+.codefile pre .st { color: #c3e88d; }
+.codefile pre .nb { color: #f78c6c; }
+
+pre.code { background: var(--code-bg); color: var(--code-ink); padding: .9rem 1rem; border-radius: 12px;
+  overflow-x: auto; font-size: .83rem; line-height: 1.6; margin: 1.1rem 0; box-shadow: var(--shadow); }
+pre.code .cm { color: #7d8aa3; } pre.code .kw { color: #c792ea; }
+pre.code .fn { color: #82aaff; } pre.code .st { color: #c3e88d; } pre.code .nb { color: #f78c6c; }
+
+/* ---- collapsible accordion (details/summary) ---- */
+.accordion { border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+  margin: .7rem 0; box-shadow: var(--shadow); overflow: hidden; }
+.accordion > summary { cursor: pointer; padding: .85rem 1.1rem; font-weight: 650; font-size: .96rem;
+  list-style: none; display: flex; align-items: center; gap: .6rem; user-select: none; }
+.accordion > summary::-webkit-details-marker { display: none; }
+.accordion > summary::after { content: "▶"; font-size: .68rem; color: var(--accent);
+  margin-left: auto; transition: transform .15s ease; }
+.accordion[open] > summary::after { transform: rotate(90deg); }
+.accordion > summary:hover { background: var(--panel-2); }
+.accordion[open] > summary { border-bottom: 1px solid var(--line); }
+.accordion .badge-num { background: var(--accent-soft); color: var(--accent-ink);
+  width: 1.6rem; height: 1.6rem; border-radius: 7px; display: inline-flex; align-items: center;
+  justify-content: center; font-size: .82rem; font-weight: 700; flex-shrink: 0; }
+.accordion .hint { font-size: .72rem; color: var(--faint); font-weight: 400; }
+.acc-body { padding: .9rem 1.1rem 1.1rem; }
+.acc-intro { color: var(--muted); font-size: .9rem; margin: .2rem 0 .4rem; }
+.qa { margin: 1rem 0; }
+.qa:first-child { margin-top: .3rem; }
+.qa .q { font-weight: 680; font-size: .9rem; display: flex; gap: .45rem; align-items: center; margin-bottom: .3rem; }
+.qa .a { color: var(--muted); font-size: .9rem; }
+.qa .a strong { color: var(--ink); }
+.qa pre.code { margin: .5rem 0 0; font-size: .78rem; }
+
+/* ---- flow diagram ---- */
+.flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin: 1.3rem 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 1.2rem 1rem; box-shadow: var(--shadow); }
+.flow .node { flex: 1 1 0; min-width: 110px; text-align: center; padding: .7rem .5rem;
+  border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+.flow .node .nt { font-weight: 700; font-size: .92rem; }
+.flow .node .nd { font-size: .76rem; color: var(--muted); margin-top: .2rem; }
+.flow .node.hl { background: var(--accent-soft); border-color: var(--accent); }
+.flow .arrow { align-self: center; color: var(--faint); font-size: 1.3rem; padding: 0 .35rem; }
+
+/* vertical flow */
+.vflow { margin: 1.3rem 0; }
+.vflow .step { display: flex; gap: .9rem; position: relative; padding-bottom: 1.1rem; }
+.vflow .step:not(:last-child)::before { content:""; position:absolute; left: 15px; top: 34px; bottom: -2px;
+  width: 2px; background: var(--line); }
+.vflow .num { width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .85rem; flex-shrink: 0; z-index:1; }
+.vflow .sc h4 { margin: .25rem 0 .2rem; font-size: 1rem; }
+.vflow .sc p { margin: .15rem 0; font-size: .92rem; color: var(--muted); }
+.vflow .sc .mono { font-size: .8rem; color: var(--accent-ink); }
+
+/* layered architecture */
+.layers { margin: 1.3rem 0; display: flex; flex-direction: column; gap: .55rem; }
+.layer { border-radius: 12px; padding: .85rem 1.1rem; border: 1px solid var(--line); background: var(--panel);
+  box-shadow: var(--shadow); }
+.layer .lh { display: flex; align-items: center; gap: .6rem; }
+.layer .lh .badge { font-size: .7rem; font-weight: 700; padding: .12rem .5rem; border-radius: 999px; }
+.layer .lh .name { font-weight: 700; font-family: ui-monospace, monospace; }
+.layer .ld { font-size: .85rem; color: var(--muted); margin-top: .35rem; }
+.layer.l-core { border-left: 4px solid var(--accent); } .layer.l-core .badge { background: var(--accent-soft); color: var(--accent-ink); }
+.layer.l-main { border-left: 4px solid var(--blue); } .layer.l-main .badge { background: var(--blue-soft); color: var(--blue); }
+.layer.l-part { border-left: 4px solid var(--purple); } .layer.l-part .badge { background: var(--purple-soft); color: var(--purple); }
+.layer.l-app { border-left: 4px solid var(--amber); } .layer.l-app .badge { background: var(--amber-soft); color: var(--amber); }
+
+/* two-column compare */
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.2rem 0; }
+@media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+.col { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; box-shadow: var(--shadow); min-width: 0; }
+.col h4 { margin: 0 0 .4rem; font-size: .95rem; }
+
+table.t { width: 100%; border-collapse: collapse; margin: 1.1rem 0; font-size: .9rem;
+  background: var(--panel); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+table.t th, table.t td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid var(--line); }
+table.t th { background: var(--panel-2); font-size: .8rem; letter-spacing: .02em; }
+table.t tr:last-child td { border-bottom: none; }
+table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-size: .82rem; color: var(--accent-ink); }
+@media (max-width: 640px) {
+  /* Wide multi-column tables: scroll within their own box instead of
+     forcing page-level horizontal overflow (which clipped right columns). */
+  table.t { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table.t th, table.t td { padding: .5rem .6rem; }
+}
+.selftest { margin: 2.2rem 0 0; border-top: 2px dashed var(--line); padding-top: 1.2rem; }
+.selftest > h2 { margin-top: .2rem; }
+.quiz { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--blue);
+  border-radius: 12px; padding: .9rem 1.1rem; margin: 1rem 0; box-shadow: var(--shadow); }
+.quiz .qn { font-weight: 650; }
+.quiz ol.opts { list-style: upper-alpha; margin: .55rem 0 .6rem 1.5rem; padding: 0; }
+.quiz ol.opts li { margin: .3rem 0; padding-left: .15rem; }
+.quiz details.accordion { margin: .5rem 0 0; }
+.selftest code { font-family: ui-monospace, monospace; font-size: .9em; color: var(--accent-ink);
+  background: var(--accent-soft); padding: 0 .28em; border-radius: 4px; }
+
+/* footer nav */
+.footnav { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem;
+  padding-top: 1.4rem; border-top: 1px solid var(--line); }
+.footnav a { flex: 1; padding: .85rem 1.1rem; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--panel); box-shadow: var(--shadow); transition: .15s; }
+.footnav a:hover { border-color: var(--accent); transform: translateY(-1px); }
+.footnav a.next { text-align: right; }
+.footnav .dir { font-size: .72rem; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
+.footnav .ttl { font-weight: 700; color: var(--ink); margin-top: .15rem; }
+.footnav a.disabled { opacity: .35; pointer-events: none; }
+
+/* index page */
+.toc { display: grid; gap: .7rem; margin-top: 1.6rem; }
+.toc-part { font-size: .78rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--accent); margin: 1.4rem 0 .2rem; }
+.toc a { display: flex; align-items: center; gap: .9rem; padding: .85rem 1.05rem; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); transition: .15s; }
+.toc a:hover { border-color: var(--accent); transform: translateX(3px); }
+.toc .n { width: 30px; height: 30px; border-radius: 8px; background: var(--accent-soft); color: var(--accent-ink);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .85rem; flex-shrink: 0; }
+.toc .tt { font-weight: 650; color: var(--ink); }
+.toc .ts { font-size: .8rem; color: var(--muted); margin-left: auto; text-align: right; }
+.toc-search { position: relative; margin: 1.6rem 0 -.4rem; }
+.toc-search input { width: 100%; box-sizing: border-box; padding: .75rem 2.8rem .75rem 1rem;
+  border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  font-size: .98rem; box-shadow: var(--shadow); }
+.toc-search input:focus { outline: none; border-color: var(--accent); }
+.toc-search .qcount { position: absolute; right: 1rem; top: 50%; transform: translateY(-50%);
+  color: var(--faint); font-size: .8rem; pointer-events: none; }
+.toc a.hide, .toc .toc-part.hide { display: none; }
+.toc-empty { display: none; color: var(--muted); padding: 1rem; text-align: center; }
+.toc-empty.show { display: block; }
+.hero.index h1 { font-size: 2.3rem; }
+.legend { display:flex; gap:1.2rem; flex-wrap:wrap; margin-top:1rem; font-size:.8rem; color:var(--muted); }
+.legend span { display:flex; align-items:center; gap:.4rem; }
+.legend i { width:12px; height:12px; border-radius:3px; display:inline-block; }
+</style>
+</head><body>
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="home" href="../index.html">📘 mcpgw 图解教程 · <b>目录</b></a>
+    <span class="pill">第二部分 · 检索深入 · 向量检索</span>
+    <span class="pill">04 / 15</span>
+  </div>
+  <div class="progress"><span style="width:26%"></span></div>
+</div>
+<div class="wrap">
+  <div class="hero">
+    <div class="part">第二部分 · 检索深入 · 向量检索</div>
+    <h1>向量检索总览</h1>
+  </div>
+  
+<p class="lead">
+上一部分我们见过 <strong>BM25</strong>：它是<strong>字面匹配</strong>——查询和工具描述<strong>共享词</strong>才会命中。
+但人说话千变万化：「联系我的团队」和工具描述里的 <span class="inline">post message</span> 一个共享词都没有，BM25 就召回为空。
+<strong>向量检索</strong>解决的正是这件事：把文本变成向量，<strong>意思相近</strong>就命中，哪怕一个字都不重合。
+mcpgw 把检索做成<strong>可插拔策略</strong>，而向量策略<strong>内置 BM25 作透明降级</strong>——嵌入服务坏了也不会硬失败。
+</p>
+
+<div class="card analogy">
+  <div class="tag">🔌 生活类比</div>
+  <strong>BM25</strong> 像「按书名里的关键词找书」：你说的词必须正好印在书名上，才找得到。
+  <strong>向量检索</strong>像「告诉图书管理员你想干什么，他凭<strong>理解</strong>给你推荐」——
+  你说「我想给团队发个通知」，他自然递来《如何用 Slack 发消息》，哪怕书名里根本没有「通知」二字。
+</div>
+
+<h2>两种检索机制的对比</h2>
+
+<div class="cols">
+  <div class="col">
+    <h4>BM25（字面 / 稀疏）</h4>
+    <ul>
+      <li><strong>命中机制</strong>：查询词与文档<strong>共享 token</strong> 才有分。</li>
+      <li><strong>同义/改写鲁棒性</strong>：弱——换个说法就可能<strong>完全召回不到</strong>。</li>
+      <li><strong>外部服务</strong>：不需要，纯本地算词频。</li>
+      <li><strong>离线可用</strong>：✅ 永远可用，无网络依赖。</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h4>向量（语义 / 稠密）</h4>
+    <ul>
+      <li><strong>命中机制</strong>：靠<strong>余弦相似度</strong>，意思接近就高分。</li>
+      <li><strong>同义/改写鲁棒性</strong>：强——换说法、近义词依然能命中。</li>
+      <li><strong>外部服务</strong>：需要一个 <strong>embedding 服务</strong>把文本转成向量。</li>
+      <li><strong>离线可用</strong>：⚠️ 取决于服务可达；不可达时就要降级。</li>
+    </ul>
+  </div>
+</div>
+
+<h2>关键设计：透明降级</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">VectorStrategy</span> 并不是「纯向量」——它同时持有一个 <span class="inline">embedder</span>、
+  一个<strong>内置的 <span class="inline">Bm25Strategy</span></strong>，以及一个 <span class="inline">degraded</span> 标志：</p>
+  <ul>
+    <li><strong>index</strong>：<strong>总是先把 BM25 索引建好</strong>，再尝试对整个工具目录做一次批量嵌入；
+      嵌入失败（或返回向量数量不对）就清空向量、把 <span class="inline">degraded</span> 置 <span class="inline">true</span>。</li>
+    <li><strong>search</strong>：当 <span class="inline">degraded</span>、<strong>没有任何向量</strong>、或<strong>单次查询嵌入失败</strong>时，
+      直接回落到 BM25 的结果。</li>
+  </ul>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/src/vector.rs · VectorStrategy::{index,search}</span></div>
+<pre><span class="kw">async fn</span> <span class="fn">index</span>(&amp;<span class="kw">mut</span> self, catalog: &amp;Catalog) {
+    <span class="cm">// 无论如何先把 BM25 兜底索引建好</span>
+    self.bm25 = Bm25Strategy::new();
+    self.bm25.<span class="fn">index</span>(catalog).<span class="kw">await</span>;
+
+    <span class="kw">match</span> self.embedder.<span class="fn">embed</span>(&amp;texts).<span class="kw">await</span> {
+        Ok(vecs) <span class="kw">if</span> vecs.len() == tools.len() =&gt; { <span class="cm">/* 存归一化向量 */</span> self.degraded = <span class="kw">false</span>; }
+        _ =&gt; { self.vectors.<span class="fn">clear</span>(); self.degraded = <span class="kw">true</span>; } <span class="cm">// 失败/数量不符 → 降级</span>
+    }
+}
+
+<span class="kw">async fn</span> <span class="fn">search</span>(&amp;self, query: &amp;<span class="kw">str</span>, top_k: <span class="kw">usize</span>) -&gt; Vec&lt;ScoredTool&gt; {
+    <span class="kw">if</span> self.degraded || self.vectors.<span class="fn">is_empty</span>() {
+        <span class="kw">return</span> self.bm25.<span class="fn">search</span>(query, top_k).<span class="kw">await</span>; <span class="cm">// 透明回落 BM25</span>
+    }
+    <span class="kw">let</span> qv = <span class="kw">match</span> self.embedder.<span class="fn">embed</span>(&amp;[query.<span class="fn">to_string</span>()]).<span class="kw">await</span> {
+        Ok(<span class="kw">mut</span> v) =&gt; <span class="fn">normalize</span>(v.<span class="fn">remove</span>(0)),
+        Err(_) =&gt; <span class="kw">return</span> self.bm25.<span class="fn">search</span>(query, top_k).<span class="kw">await</span>, <span class="cm">// 单次查询嵌入失败也回落</span>
+    };
+    <span class="cm">// …对每个工具向量算 dot(qv, v) 余弦打分、排序、截断 top_k…</span>
+}</pre>
+  </div>
+</div>
+
+<h2>语义增益：一个 BM25 救不了的查询</h2>
+<p>这是真实的门控冒烟用例（<span class="inline">crates/mcpgw/tests/smoke_vector_real.rs</span>）。查询
+<span class="inline">"communicate with my team"</span> 与<strong>任何</strong>工具描述都<strong>没有共享词</strong>：</p>
+
+<div class="flow">
+  <div class="node"><div class="nt">查询 "communicate with my team"</div><div class="nd">和所有工具描述零共享词</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">BM25</div><div class="nd">召回为空（没有命中词）</div></div>
+  <div class="arrow">→</div>
+  <div class="node hl"><div class="nt">向量检索</div><div class="nd">把 slack__post_message 排第一</div></div>
+</div>
+
+<table class="t">
+  <tr><th>检索策略</th><th>对 "communicate with my team" 的结果</th></tr>
+  <tr><td><strong>BM25（字面）</strong></td><td>空——没有任何共享词可命中</td></tr>
+  <tr><td><strong>Vector（语义）</strong></td><td><span class="inline">slack__post_message</span> 排在第一</td></tr>
+</table>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li>检索是<strong>可插拔策略</strong>：默认仍是 <span class="inline">bm25</span>，按需切换到 <span class="inline">vector</span>。</li>
+    <li>向量检索<strong>语义匹配</strong>：意思相近即命中，能召回 BM25 完全漏掉的工具。</li>
+    <li>向量策略<strong>永不「硬失败」</strong>：embedder 一坏，就退回内置 BM25 的结果。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  降级是<strong>透明</strong>的——调用方拿到的永远是「尽力而为的最佳排序」：
+  能嵌入就给语义结果，不能嵌入就给 BM25 结果，<strong>无需自己处理 embedder 故障</strong>，也无需关心当前到底走了哪条路。
+</div>
+
+  <div class="footnav"><a class="prev" href="03-call-lifecycle.html"><div class="dir">← 上一课</div><div class="ttl">一次工具调用的生命周期</div></a><a class="next" href="05-embedder.html"><div class="dir">下一课 →</div><div class="ttl">Embedder 抽象 & OpenAiEmbedder</div></a></div>
+</div>
+
+</body></html>
