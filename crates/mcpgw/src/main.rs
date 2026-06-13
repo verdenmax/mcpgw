@@ -154,12 +154,13 @@ fn validate_upstream_http_env(cfg: &config::Config) -> Result<(), String> {
 /// cache shared across snapshot rebuilds.
 fn build_embedder(cfg: &config::Config) -> Result<Option<Arc<dyn retrieval::Embedder>>, String> {
     match cfg.retrieval.strategy.as_str() {
-        "vector" => {
-            let v = cfg
-                .retrieval
-                .vector
-                .as_ref()
-                .ok_or("strategy=\"vector\" requires [retrieval.vector]")?;
+        "vector" | "hybrid" => {
+            let v = cfg.retrieval.vector.as_ref().ok_or_else(|| {
+                format!(
+                    "strategy={:?} requires [retrieval.vector]",
+                    cfg.retrieval.strategy
+                )
+            })?;
             let api_key = std::env::var(&v.api_key_env)
                 .map_err(|_| format!("[retrieval.vector]: env {:?} is not set", v.api_key_env))?;
             let openai = embedder::OpenAiEmbedder::new(
@@ -376,6 +377,16 @@ mod tests {
         std::env::set_var("MCPGW_M2_KEY", "sk-x");
         let cfg = config::Config::from_toml_str(
             "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2_KEY\"\n",
+        )
+        .unwrap();
+        assert!(build_embedder(&cfg).unwrap().is_some());
+    }
+
+    #[test]
+    fn build_embedder_some_for_hybrid_with_key() {
+        std::env::set_var("MCPGW_M2B_KEY", "sk-x");
+        let cfg = config::Config::from_toml_str(
+            "[retrieval]\nstrategy=\"hybrid\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2B_KEY\"\n",
         )
         .unwrap();
         assert!(build_embedder(&cfg).unwrap().is_some());
