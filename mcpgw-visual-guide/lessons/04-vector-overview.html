@@ -266,7 +266,115 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第二部分 · 检索深入 · 向量检索</div>
     <h1>向量检索总览</h1>
   </div>
-  <p>（待填充：向量检索总览）</p>
+  
+<p class="lead">
+上一部分我们见过 <strong>BM25</strong>：它是<strong>字面匹配</strong>——查询和工具描述<strong>共享词</strong>才会命中。
+但人说话千变万化：「联系我的团队」和工具描述里的 <span class="inline">post message</span> 一个共享词都没有，BM25 就召回为空。
+<strong>向量检索</strong>解决的正是这件事：把文本变成向量，<strong>意思相近</strong>就命中，哪怕一个字都不重合。
+mcpgw 把检索做成<strong>可插拔策略</strong>，而向量策略<strong>内置 BM25 作透明降级</strong>——嵌入服务坏了也不会硬失败。
+</p>
+
+<div class="card analogy">
+  <div class="tag">🔌 生活类比</div>
+  <strong>BM25</strong> 像「按书名里的关键词找书」：你说的词必须正好印在书名上，才找得到。
+  <strong>向量检索</strong>像「告诉图书管理员你想干什么，他凭<strong>理解</strong>给你推荐」——
+  你说「我想给团队发个通知」，他自然递来《如何用 Slack 发消息》，哪怕书名里根本没有「通知」二字。
+</div>
+
+<h2>两种检索机制的对比</h2>
+
+<div class="cols">
+  <div class="col">
+    <h4>BM25（字面 / 稀疏）</h4>
+    <ul>
+      <li><strong>命中机制</strong>：查询词与文档<strong>共享 token</strong> 才有分。</li>
+      <li><strong>同义/改写鲁棒性</strong>：弱——换个说法就可能<strong>完全召回不到</strong>。</li>
+      <li><strong>外部服务</strong>：不需要，纯本地算词频。</li>
+      <li><strong>离线可用</strong>：✅ 永远可用，无网络依赖。</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h4>向量（语义 / 稠密）</h4>
+    <ul>
+      <li><strong>命中机制</strong>：靠<strong>余弦相似度</strong>，意思接近就高分。</li>
+      <li><strong>同义/改写鲁棒性</strong>：强——换说法、近义词依然能命中。</li>
+      <li><strong>外部服务</strong>：需要一个 <strong>embedding 服务</strong>把文本转成向量。</li>
+      <li><strong>离线可用</strong>：⚠️ 取决于服务可达；不可达时就要降级。</li>
+    </ul>
+  </div>
+</div>
+
+<h2>关键设计：透明降级</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">VectorStrategy</span> 并不是「纯向量」——它同时持有一个 <span class="inline">embedder</span>、
+  一个<strong>内置的 <span class="inline">Bm25Strategy</span></strong>，以及一个 <span class="inline">degraded</span> 标志：</p>
+  <ul>
+    <li><strong>index</strong>：<strong>总是先把 BM25 索引建好</strong>，再尝试对整个工具目录做一次批量嵌入；
+      嵌入失败（或返回向量数量不对）就清空向量、把 <span class="inline">degraded</span> 置 <span class="inline">true</span>。</li>
+    <li><strong>search</strong>：当 <span class="inline">degraded</span>、<strong>没有任何向量</strong>、或<strong>单次查询嵌入失败</strong>时，
+      直接回落到 BM25 的结果。</li>
+  </ul>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/src/vector.rs · VectorStrategy::{index,search}</span></div>
+<pre><span class="kw">async fn</span> <span class="fn">index</span>(&amp;<span class="kw">mut</span> self, catalog: &amp;Catalog) {
+    <span class="cm">// 无论如何先把 BM25 兜底索引建好</span>
+    self.bm25 = Bm25Strategy::new();
+    self.bm25.<span class="fn">index</span>(catalog).<span class="kw">await</span>;
+
+    <span class="kw">match</span> self.embedder.<span class="fn">embed</span>(&amp;texts).<span class="kw">await</span> {
+        Ok(vecs) <span class="kw">if</span> vecs.len() == tools.len() =&gt; { <span class="cm">/* 存归一化向量 */</span> self.degraded = <span class="kw">false</span>; }
+        _ =&gt; { self.vectors.<span class="fn">clear</span>(); self.degraded = <span class="kw">true</span>; } <span class="cm">// 失败/数量不符 → 降级</span>
+    }
+}
+
+<span class="kw">async fn</span> <span class="fn">search</span>(&amp;self, query: &amp;<span class="kw">str</span>, top_k: <span class="kw">usize</span>) -&gt; Vec&lt;ScoredTool&gt; {
+    <span class="kw">if</span> self.degraded || self.vectors.<span class="fn">is_empty</span>() {
+        <span class="kw">return</span> self.bm25.<span class="fn">search</span>(query, top_k).<span class="kw">await</span>; <span class="cm">// 透明回落 BM25</span>
+    }
+    <span class="kw">let</span> qv = <span class="kw">match</span> self.embedder.<span class="fn">embed</span>(&amp;[query.<span class="fn">to_string</span>()]).<span class="kw">await</span> {
+        Ok(<span class="kw">mut</span> v) =&gt; <span class="fn">normalize</span>(v.<span class="fn">remove</span>(0)),
+        Err(_) =&gt; <span class="kw">return</span> self.bm25.<span class="fn">search</span>(query, top_k).<span class="kw">await</span>, <span class="cm">// 单次查询嵌入失败也回落</span>
+    };
+    <span class="cm">// …对每个工具向量算 dot(qv, v) 余弦打分、排序、截断 top_k…</span>
+}</pre>
+  </div>
+</div>
+
+<h2>语义增益：一个 BM25 救不了的查询</h2>
+<p>这是真实的门控冒烟用例（<span class="inline">crates/mcpgw/tests/smoke_vector_real.rs</span>）。查询
+<span class="inline">"communicate with my team"</span> 与<strong>任何</strong>工具描述都<strong>没有共享词</strong>：</p>
+
+<div class="flow">
+  <div class="node"><div class="nt">查询 "communicate with my team"</div><div class="nd">和所有工具描述零共享词</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">BM25</div><div class="nd">召回为空（没有命中词）</div></div>
+  <div class="arrow">→</div>
+  <div class="node hl"><div class="nt">向量检索</div><div class="nd">把 slack__post_message 排第一</div></div>
+</div>
+
+<table class="t">
+  <tr><th>检索策略</th><th>对 "communicate with my team" 的结果</th></tr>
+  <tr><td><strong>BM25（字面）</strong></td><td>空——没有任何共享词可命中</td></tr>
+  <tr><td><strong>Vector（语义）</strong></td><td><span class="inline">slack__post_message</span> 排在第一</td></tr>
+</table>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li>检索是<strong>可插拔策略</strong>：默认仍是 <span class="inline">bm25</span>，按需切换到 <span class="inline">vector</span>。</li>
+    <li>向量检索<strong>语义匹配</strong>：意思相近即命中，能召回 BM25 完全漏掉的工具。</li>
+    <li>向量策略<strong>永不「硬失败」</strong>：embedder 一坏，就退回内置 BM25 的结果。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  降级是<strong>透明</strong>的——调用方拿到的永远是「尽力而为的最佳排序」：
+  能嵌入就给语义结果，不能嵌入就给 BM25 结果，<strong>无需自己处理 embedder 故障</strong>，也无需关心当前到底走了哪条路。
+</div>
+
   <div class="footnav"><a class="prev" href="03-call-lifecycle.html"><div class="dir">← 上一课</div><div class="ttl">一次工具调用的生命周期</div></a><a class="next" href="05-embedder.html"><div class="dir">下一课 →</div><div class="ttl">Embedder 抽象 & OpenAiEmbedder</div></a></div>
 </div>
 

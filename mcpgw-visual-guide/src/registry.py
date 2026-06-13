@@ -4,6 +4,7 @@ build.py imports this so the lesson set stays in sync with shell.PAGES.
 """
 import shell
 import part1_macro as p1
+import part2_vector as p2
 import part3_internals as p3
 import part4_next as p4
 
@@ -16,6 +17,8 @@ CONTENT = {
     "01-what-is-mcpgw.html": p1.LESSON_01,
     "02-architecture.html": p1.LESSON_02,
     "03-call-lifecycle.html": p1.LESSON_03,
+    "04-vector-overview.html": p2.LESSON_04,
+    "05-embedder.html": p2.LESSON_05,
     "09-catalog.html": p3.LESSON_09,
     "10-upstream.html": p3.LESSON_10,
     "11-gateway-metatools.html": p3.LESSON_11,
