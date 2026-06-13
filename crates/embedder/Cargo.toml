@@ -1,0 +1,15 @@
+[package]
+name = "embedder"
+version = "0.1.0"
+edition = { workspace = true }
+
+[dependencies]
+retrieval = { path = "../retrieval" }
+async-trait = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true }
