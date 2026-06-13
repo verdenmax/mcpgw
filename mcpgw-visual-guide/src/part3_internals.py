@@ -2,7 +2,7 @@
 import placeholder
 
 LESSON_09 = placeholder.build(
-    "catalog 是工具目录与命名空间层：把 N 个上游的工具收进 `{server}__{name}` 命名空间，供检索与路由使用。",
+    "catalog 是工具目录与命名空间层：把 N 个上游的工具收进 <code>{server}__{name}</code> 命名空间，供检索与路由使用。",
     [
         "<code>ToolDef</code> / <code>Catalog</code> 数据结构与命名空间（<code>crates/catalog/src/lib.rs</code>）",
         "<code>from_json_str</code> / <code>from_tooldefs</code> 两种装载路径",

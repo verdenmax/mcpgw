@@ -290,7 +290,7 @@ mcpgw 是一个 <strong>Cargo 虚拟工作区（virtual workspace）</strong>，
   </div>
   <div class="layer l-part">
     <div class="lh"><span class="badge">检索</span><span class="name">retrieval + embedder</span></div>
-    <div class="ld">检索策略（BM25 / Vector）+ 云端嵌入的 HTTP 后端（仅 embedder 带 HTTP）。</div>
+    <div class="ld">检索策略（BM25 / Vector）+ 云端嵌入的 HTTP 后端（检索栈里只有 embedder 直连 HTTP）。</div>
   </div>
   <div class="layer l-core">
     <div class="lh"><span class="badge">内核</span><span class="name">catalog + config</span></div>
@@ -305,8 +305,9 @@ mcpgw 是一个 <strong>Cargo 虚拟工作区（virtual workspace）</strong>，
     <li><strong><span class="inline">catalog</span> 不依赖任何兄弟 crate</strong>，只用 serde——它是最底层的纯数据结构。</li>
     <li><strong><span class="inline">retrieval</span> 只依赖 <span class="inline">catalog</span></strong>，<strong>不引入任何 HTTP 依赖</strong>；
       <span class="inline">build_strategy</span> 故意接受策略名字符串（+ 可选 <span class="inline">Embedder</span>）而非配置类型，保持检索内核可独立复用。</li>
-    <li><strong>HTTP 依赖被隔离在独立的 <span class="inline">embedder</span> crate</strong>（<span class="inline">reqwest 0.13</span> + rustls）——
-      它是全工作区<strong>唯一</strong>带 HTTP 依赖的 crate，承载真实嵌入后端 <span class="inline">OpenAiEmbedder</span>。</li>
+    <li><strong>检索栈的 HTTP 客户端被隔离在独立的 <span class="inline">embedder</span> crate</strong>（<span class="inline">reqwest 0.13</span> + rustls）——
+      它是工作区里<strong>唯一直接以 reqwest 作 HTTP 客户端</strong>的 crate，承载真实嵌入后端 <span class="inline">OpenAiEmbedder</span>；
+      上游/下游方向的 HTTP 则走 rmcp 的 Streamable HTTP 传输与 axum（见下方传输表）。</li>
   </ul>
   <div class="codefile">
     <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/Cargo.toml · crates/embedder/Cargo.toml</span></div>
@@ -344,7 +345,7 @@ reqwest = { version = <span class="st">"0.13"</span>, features = [<span class="s
   <div class="tag">✅ 关键要点</div>
   <ul>
     <li>mcpgw 是 Cargo 虚拟工作区，crate 各司其职、依赖<strong>无环</strong>。</li>
-    <li>越底层越纯：<span class="inline">catalog</span> 无兄弟依赖、<span class="inline">retrieval</span> 无 HTTP，HTTP 只在 <span class="inline">embedder</span>。</li>
+    <li>越底层越纯：<span class="inline">catalog</span> 无兄弟依赖、<span class="inline">retrieval</span> 无 HTTP，检索栈的 HTTP 客户端只在 <span class="inline">embedder</span>。</li>
     <li>上游 / 下游两个方向都支持 stdio + HTTP，可并发启用。</li>
   </ul>
 </div>
