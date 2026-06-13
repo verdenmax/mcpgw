@@ -101,6 +101,23 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
 - **锁纪律**：内层 `.await` 处于两段独立 `cache.lock()` 之间，绝不跨 `.await` 持锁
   （避免 `clippy::await_holding_lock` 与死锁风险）。
 
+## 向量策略（M2-A T4）
+
+`VectorStrategy`（`crates/retrieval/src/vector.rs`）在云端嵌入上做**暴力余弦检索**，内置一个
+`Bm25Strategy` 作为透明降级目标：
+
+- **归一化后余弦 = 点积**：`normalize` 对每个向量做 L2 归一化，查询向量也归一化，于是 `dot(qv, v)`
+  直接就是余弦相似度，省去逐次再除范数。
+  - **零范数保护**：`normalize` 仅在 `norm > 0.0` 时相除，零向量原样保留——否则除零得 `NaN`。
+    嵌入器对无 token 文本可能返回零向量（T2 review 指出），零向量的余弦因此为 `0` 而非 `NaN`。
+- **暴力线性扫描（目录小）**：工具目录规模小，归一化向量上的线性点积扫描完全够用，**不引入 ANN 索引**
+  （YAGNI）。排序同 BM25：分数降序、同分 `qualified_name` 升序，确定性 tie-break 后 `truncate(top_k)`。
+- **两条降级路径**：
+  1. **degraded（索引期）**：`index` 总是**先（重）建 BM25**，再尝试批量嵌入全部工具文本；嵌入失败时
+     `tracing::warn!` 记录、清空 `vectors`、置 `degraded = true`，此后所有查询走 BM25。
+  2. **per-query（查询期）**：未降级时每次查询先嵌入 query，若该次嵌入失败则**仅本次**回退 BM25
+     （不改变 `degraded` 状态）；若 `degraded` 或 `vectors` 为空也直接走 BM25。
+
 ## 相关
 
 - 接口见 L2：[retrieval](../L2-components/retrieval.md)；逐文件 API 见 L4：[retrieval/lib.rs](../L4-api/retrieval-lib.md)

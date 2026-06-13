@@ -3,10 +3,12 @@ use catalog::Catalog;
 
 mod caching;
 mod embedder;
+mod vector;
 pub use caching::CachingEmbedder;
 #[cfg(feature = "testkit")]
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
+pub use vector::VectorStrategy;
 
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.
 #[derive(Debug, Clone, PartialEq)]

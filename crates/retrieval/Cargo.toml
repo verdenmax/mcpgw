@@ -10,6 +10,7 @@ testkit = []
 catalog = { path = "../catalog" }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -21,4 +22,8 @@ required-features = ["testkit"]
 
 [[test]]
 name = "caching"
+required-features = ["testkit"]
+
+[[test]]
+name = "vector"
 required-features = ["testkit"]
