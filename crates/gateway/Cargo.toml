@@ -14,6 +14,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 
 [dev-dependencies]
+retrieval = { path = "../retrieval", features = ["testkit"] }
 upstream = { path = "../upstream", features = ["testkit"] }
 tokio = { workspace = true, features = ["full"] }
 rmcp = { workspace = true, features = ["client", "server", "macros", "transport-io"] }

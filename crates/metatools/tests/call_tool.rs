@@ -31,7 +31,7 @@ async fn setup(
     registry.insert(Arc::new(handle));
 
     let mut strat = Bm25Strategy::new();
-    strat.index(&catalog);
+    strat.index(&catalog).await;
     let snap = GatewaySnapshot::new(catalog, Box::new(strat));
     (snap, registry, join)
 }
@@ -78,7 +78,7 @@ async fn call_tool_unregistered_upstream_is_unavailable() {
         input_schema: serde_json::Value::Null,
     }]);
     let mut strat = Bm25Strategy::new();
-    strat.index(&catalog);
+    strat.index(&catalog).await;
     let snap = GatewaySnapshot::new(catalog, Box::new(strat));
     let registry = UpstreamRegistry::new(); // empty — no "ghost" handle
 
@@ -108,7 +108,7 @@ async fn call_tool_maps_upstream_timeout_to_metaerror_timeout() {
     let registry = UpstreamRegistry::new();
     registry.insert(Arc::new(handle));
     let mut strat = Bm25Strategy::new();
-    strat.index(&catalog);
+    strat.index(&catalog).await;
     let snap = GatewaySnapshot::new(catalog, Box::new(strat));
 
     // mock__slow sleeps 10s; the 50ms handle timeout fires and maps to MetaError::Timeout.

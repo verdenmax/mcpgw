@@ -18,13 +18,13 @@ const GOLDEN: &[(&str, &str)] = &[
     ("write file to disk", "filesystem__write_file"),
 ];
 
-#[test]
-fn golden_top_one_matches_expected() {
+#[tokio::test]
+async fn golden_top_one_matches_expected() {
     let mut s = Bm25Strategy::new();
-    s.index(&load_catalog());
+    s.index(&load_catalog()).await;
 
     for (query, expected) in GOLDEN {
-        let hits = s.search(query, 5);
+        let hits = s.search(query, 5).await;
         assert!(!hits.is_empty(), "query {query:?} returned no hits");
         assert_eq!(
             &hits[0].qualified_name, expected,

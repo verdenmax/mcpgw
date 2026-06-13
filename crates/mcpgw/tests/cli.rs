@@ -119,8 +119,11 @@ fn search_uses_top_k_from_config_file() {
 }
 
 #[test]
-fn unimplemented_strategy_in_config_fails() {
-    let cfg = write_temp_config("vector", "[retrieval]\nstrategy = \"vector\"\n");
+fn vector_strategy_without_embedder_fails_in_search_cli() {
+    let cfg = write_temp_config(
+        "vector",
+        "[retrieval]\nstrategy = \"vector\"\n[retrieval.vector]\nmodel = \"m\"\napi_key_env = \"OPENAI_API_KEY\"\n",
+    );
     let out = Command::new(bin())
         .arg("--catalog")
         .arg(fixture())
@@ -132,12 +135,15 @@ fn unimplemented_strategy_in_config_fails() {
         .expect("run mcpgw");
     let _ = std::fs::remove_file(&cfg);
 
-    // "vector" is a config-valid but not-yet-implemented strategy; it must surface
-    // as a runtime error (non-zero exit) through the binary.
+    // "vector" is config-valid but the offline `search` CLI builds no embedder, so it must
+    // surface as a runtime error (non-zero exit) through the binary.
     assert!(
         !out.status.success(),
-        "expected failure for unimplemented strategy"
+        "expected failure for strategy requiring an embedder"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not implemented"), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("requires an embedder"),
+        "stderr was: {stderr}"
+    );
 }

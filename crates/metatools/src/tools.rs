@@ -5,9 +5,10 @@ use catalog::ToolDef;
 use crate::snapshot::{GatewaySnapshot, ToolSummary};
 
 /// Search the snapshot's tools for `query`, returning up to `top_k` summaries (best first).
-pub fn search_tools(snap: &GatewaySnapshot, query: &str, top_k: usize) -> Vec<ToolSummary> {
+pub async fn search_tools(snap: &GatewaySnapshot, query: &str, top_k: usize) -> Vec<ToolSummary> {
     snap.strategy
         .search(query, top_k)
+        .await
         .into_iter()
         .map(|hit| ToolSummary {
             name: hit.qualified_name,
@@ -65,7 +66,7 @@ mod tests {
         }
     }
 
-    fn snapshot() -> GatewaySnapshot {
+    async fn snapshot() -> GatewaySnapshot {
         let catalog = Catalog::from_tooldefs(vec![
             tool(
                 "github",
@@ -79,14 +80,14 @@ mod tests {
             ),
         ]);
         let mut strat = Bm25Strategy::new();
-        strat.index(&catalog);
+        strat.index(&catalog).await;
         GatewaySnapshot::new(catalog, Box::new(strat))
     }
 
-    #[test]
-    fn search_tools_returns_namespaced_summaries() {
-        let snap = snapshot();
-        let hits = search_tools(&snap, "weather forecast", 5);
+    #[tokio::test]
+    async fn search_tools_returns_namespaced_summaries() {
+        let snap = snapshot().await;
+        let hits = search_tools(&snap, "weather forecast", 5).await;
         assert_eq!(
             hits.first().map(|s| s.name.as_str()),
             Some("weather__get_forecast")
@@ -94,23 +95,23 @@ mod tests {
         assert!(hits[0].description.contains("forecast"));
     }
 
-    #[test]
-    fn get_tool_details_returns_full_def_or_none() {
-        let snap = snapshot();
+    #[tokio::test]
+    async fn get_tool_details_returns_full_def_or_none() {
+        let snap = snapshot().await;
         let d = get_tool_details(&snap, "github__create_issue").unwrap();
         assert_eq!(d.server, "github");
         assert_eq!(d.name, "create_issue");
         assert!(get_tool_details(&snap, "nope__missing").is_none());
     }
 
-    #[test]
-    fn get_tool_details_handles_tool_names_containing_double_underscore() {
+    #[tokio::test]
+    async fn get_tool_details_handles_tool_names_containing_double_underscore() {
         // A tool whose ORIGINAL name contains "__" must still be retrievable by its
         // qualified name; routing later relies on the stored `server`/`name` fields,
         // not on splitting the qualified string.
         let catalog = Catalog::from_tooldefs(vec![tool("srv", "weird__tool", "x")]);
         let mut strat = Bm25Strategy::new();
-        strat.index(&catalog);
+        strat.index(&catalog).await;
         let snap = GatewaySnapshot::new(catalog, Box::new(strat));
 
         let d = get_tool_details(&snap, "srv__weird__tool").unwrap();

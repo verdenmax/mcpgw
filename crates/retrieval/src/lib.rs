@@ -1,4 +1,14 @@
+use async_trait::async_trait;
 use catalog::Catalog;
+
+mod caching;
+mod embedder;
+mod vector;
+pub use caching::CachingEmbedder;
+#[cfg(feature = "testkit")]
+pub use embedder::MockEmbedder;
+pub use embedder::{EmbedError, Embedder};
+pub use vector::VectorStrategy;
 
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.
 #[derive(Debug, Clone, PartialEq)]
@@ -9,11 +19,12 @@ pub struct ScoredTool {
 }
 
 /// A pluggable tool-retrieval strategy (BM25, vector, hybrid, ...).
+#[async_trait]
 pub trait RetrievalStrategy: Send + Sync {
     /// (Re)build internal indices from the current catalog.
-    fn index(&mut self, catalog: &Catalog);
+    async fn index(&mut self, catalog: &Catalog);
     /// Return up to `top_k` tools relevant to `query`, best first.
-    fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool>;
+    async fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool>;
 }
 
 /// Lowercase, split on any non-alphanumeric boundary (this also splits `_`), drop empties.
@@ -75,8 +86,9 @@ impl Default for Bm25Strategy {
     }
 }
 
+#[async_trait]
 impl RetrievalStrategy for Bm25Strategy {
-    fn index(&mut self, catalog: &Catalog) {
+    async fn index(&mut self, catalog: &Catalog) {
         let mut docs = Vec::new();
         let mut doc_freq: HashMap<String, u32> = HashMap::new();
         let mut total_len = 0usize;
@@ -114,7 +126,7 @@ impl RetrievalStrategy for Bm25Strategy {
         self.docs = docs;
     }
 
-    fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool> {
+    async fn search(&self, query: &str, top_k: usize) -> Vec<ScoredTool> {
         if self.n == 0 || self.avgdl == 0.0 {
             return Vec::new();
         }
@@ -165,16 +177,24 @@ use thiserror::Error;
 pub enum StrategyError {
     #[error("retrieval strategy {0:?} is not implemented in this version")]
     NotImplemented(String),
+    #[error("retrieval strategy {0:?} requires an embedder but none was configured")]
+    EmbedderRequired(String),
 }
 
-/// Construct a retrieval strategy by name. Only "bm25" is implemented in v1;
-/// "vector" and "hybrid" are reserved for P2 and return `NotImplemented`.
+/// Construct a retrieval strategy by name. "vector" requires `embedder`; "hybrid" is M2-B.
 ///
 /// Takes a plain `&str` (not a config type) so this crate stays free of any
 /// dependency on `config` — callers pass `cfg.retrieval.strategy.as_str()`.
-pub fn build_strategy(strategy: &str) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
-    match strategy {
+pub fn build_strategy(
+    name: &str,
+    embedder: Option<&std::sync::Arc<dyn Embedder>>,
+) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
+    match name {
         "bm25" => Ok(Box::new(Bm25Strategy::new())),
+        "vector" => match embedder {
+            Some(e) => Ok(Box::new(VectorStrategy::new(e.clone()))),
+            None => Err(StrategyError::EmbedderRequired(name.to_string())),
+        },
         other => Err(StrategyError::NotImplemented(other.to_string())),
     }
 }
@@ -230,12 +250,12 @@ mod tests {
         ])
     }
 
-    #[test]
-    fn bm25_ranks_relevant_tool_first() {
+    #[tokio::test]
+    async fn bm25_ranks_relevant_tool_first() {
         let mut s = Bm25Strategy::new();
-        s.index(&sample_catalog());
+        s.index(&sample_catalog()).await;
 
-        let hits = s.search("create github issue", 3);
+        let hits = s.search("create github issue", 3).await;
         assert!(!hits.is_empty());
         assert_eq!(hits[0].qualified_name, "github__create_issue");
         // scores are sorted descending
@@ -244,29 +264,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bm25_respects_top_k_and_filters_zero_score() {
+    #[tokio::test]
+    async fn bm25_respects_top_k_and_filters_zero_score() {
         let mut s = Bm25Strategy::new();
-        s.index(&sample_catalog());
+        s.index(&sample_catalog()).await;
 
         // Only weather matches; top_k larger than match count returns just the match.
-        let hits = s.search("forecast", 10);
+        let hits = s.search("forecast", 10).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].qualified_name, "weather__get_forecast");
 
         // No term matches -> empty.
-        assert!(s.search("zzzzz nonexistent", 10).is_empty());
+        assert!(s.search("zzzzz nonexistent", 10).await.is_empty());
 
         // top_k caps the result count.
-        let capped = s.search("repository", 1);
+        let capped = s.search("repository", 1).await;
         assert_eq!(capped.len(), 1);
     }
 
-    #[test]
-    fn build_strategy_returns_bm25_and_indexes() {
-        let mut strat = build_strategy("bm25").expect("bm25 is supported");
-        strat.index(&sample_catalog());
-        let hits = strat.search("forecast", 8);
+    #[tokio::test]
+    async fn build_strategy_returns_bm25_and_indexes() {
+        let mut strat = build_strategy("bm25", None).expect("bm25 is supported");
+        strat.index(&sample_catalog()).await;
+        let hits = strat.search("forecast", 8).await;
         assert_eq!(
             hits.first().map(|h| h.qualified_name.as_str()),
             Some("weather__get_forecast")
@@ -274,12 +294,14 @@ mod tests {
     }
 
     #[test]
-    fn build_strategy_errors_on_unimplemented_strategies() {
-        for s in ["vector", "hybrid"] {
-            assert!(matches!(
-                build_strategy(s),
-                Err(StrategyError::NotImplemented(_))
-            ));
-        }
+    fn build_strategy_errors_appropriately() {
+        assert!(matches!(
+            build_strategy("hybrid", None),
+            Err(StrategyError::NotImplemented(_))
+        ));
+        assert!(matches!(
+            build_strategy("vector", None),
+            Err(StrategyError::EmbedderRequired(_))
+        ));
     }
 }

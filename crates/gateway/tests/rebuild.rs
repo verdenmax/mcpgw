@@ -21,14 +21,14 @@ async fn rebuild_snapshot_ingests_registered_upstreams() {
     let state = GatewayState::new("bm25").unwrap();
 
     // Empty before any upstream.
-    assert!(search_tools(&state.snapshot(), "echo", 5).is_empty());
+    assert!(search_tools(&state.snapshot(), "echo", 5).await.is_empty());
 
     let (handle, join) = connect_mock("mock").await;
     state.registry().insert(Arc::new(handle));
     state.rebuild_snapshot().await.unwrap();
 
     // After rebuild, the mock's namespaced tools are searchable.
-    let hits = search_tools(&state.snapshot(), "echo", 5);
+    let hits = search_tools(&state.snapshot(), "echo", 5).await;
     assert!(
         hits.iter().any(|s| s.name == "mock__echo"),
         "hits: {hits:?}"
@@ -47,9 +47,9 @@ async fn old_snapshot_reader_is_unaffected_by_rebuild() {
     state.rebuild_snapshot().await.unwrap();
 
     // The previously-loaded snapshot still works and still reflects the OLD (empty) state.
-    assert!(search_tools(&old, "echo", 5).is_empty());
+    assert!(search_tools(&old, "echo", 5).await.is_empty());
     // A freshly-loaded snapshot reflects the new state.
-    assert!(!search_tools(&state.snapshot(), "echo", 5).is_empty());
+    assert!(!search_tools(&state.snapshot(), "echo", 5).await.is_empty());
 
     join.abort();
 }
@@ -78,7 +78,7 @@ async fn rebuild_isolates_a_failed_upstream() {
     state.registry().insert(Arc::new(broken));
     state.rebuild_snapshot().await.unwrap(); // must not error despite the broken upstream
 
-    let hits = search_tools(&state.snapshot(), "echo", 10);
+    let hits = search_tools(&state.snapshot(), "echo", 10).await;
     assert!(
         hits.iter().any(|s| s.name == "good__echo"),
         "hits: {hits:?}"
@@ -165,7 +165,9 @@ async fn rebuild_worker_rebuilds_when_triggered() {
     state.registry().insert(std::sync::Arc::new(handle));
 
     // Before triggering: snapshot is empty (search finds nothing).
-    assert!(metatools::search_tools(&state.snapshot(), "echo", 5).is_empty());
+    assert!(metatools::search_tools(&state.snapshot(), "echo", 5)
+        .await
+        .is_empty());
 
     // Trigger one rebuild.
     tx.send("mock".to_string()).await.unwrap();
@@ -174,6 +176,7 @@ async fn rebuild_worker_rebuilds_when_triggered() {
     let mut found = false;
     for _ in 0..100 {
         if metatools::search_tools(&state.snapshot(), "echo", 5)
+            .await
             .iter()
             .any(|s| s.name == "mock__echo")
         {
@@ -189,4 +192,60 @@ async fn rebuild_worker_rebuilds_when_triggered() {
 
     drop(tx); // close channel -> worker exits
     let _ = worker.await;
+}
+
+#[tokio::test]
+async fn with_embedder_drives_vector_ranking_through_gateway_state() {
+    use retrieval::MockEmbedder;
+
+    // Vector strategy backed by a deterministic embedder, driven end-to-end through the
+    // gateway boundary: connect a non-empty mock upstream, rebuild, then search.
+    let state =
+        GatewayState::with_embedder("vector", Arc::new(MockEmbedder::new(64))).expect("vector");
+    let (handle, join) = connect_mock("mock").await;
+    state.registry().insert(Arc::new(handle));
+    state.rebuild_snapshot().await.unwrap();
+
+    // The query shares tokens with `mock__echo`'s text ("Echo the provided text back"), so
+    // cosine ranking must surface it first ahead of greet/slow (zero token overlap).
+    // `search_tools` returns hits already ordered best-first, so position 0 is the top rank.
+    let hits = search_tools(&state.snapshot(), "echo provided text back", 5).await;
+    assert!(!hits.is_empty(), "vector search returned no hits");
+    assert_eq!(hits[0].name, "mock__echo", "hits: {hits:?}");
+
+    join.abort();
+}
+
+#[tokio::test]
+async fn caching_embedder_persists_across_rebuilds_via_gateway_state() {
+    use retrieval::{CachingEmbedder, MockEmbedder};
+
+    // Wrap the inner MockEmbedder in a CachingEmbedder and keep a handle on its call counter.
+    let mock = MockEmbedder::new(64);
+    let calls = mock.calls.clone();
+    let caching = CachingEmbedder::new(Arc::new(mock));
+    let state =
+        GatewayState::with_embedder("vector", Arc::new(caching)).expect("vector with caching");
+
+    let (handle, join) = connect_mock("mock").await;
+    state.registry().insert(Arc::new(handle));
+
+    // First rebuild over the (cache-cold) catalog: the inner embedder is invoked.
+    state.rebuild_snapshot().await.unwrap();
+    let after_first = calls.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        after_first > 0,
+        "inner embedder should run on the 1st rebuild"
+    );
+
+    // Second rebuild over the SAME unchanged catalog: every tool text is a cache hit, so the
+    // inner MockEmbedder must NOT be re-invoked (cross-rebuild cache persistence).
+    state.rebuild_snapshot().await.unwrap();
+    let after_second = calls.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        after_second, after_first,
+        "inner embedder re-invoked for unchanged tools on the 2nd rebuild"
+    );
+
+    join.abort();
 }

@@ -21,6 +21,8 @@ pub struct RetrievalConfig {
     pub strategy: String,
     /// Number of tools `search_tools` returns.
     pub top_k: usize,
+    /// `[retrieval.vector]` provider config. Required when strategy is "vector".
+    pub vector: Option<VectorConfig>,
 }
 
 impl Default for RetrievalConfig {
@@ -28,8 +30,29 @@ impl Default for RetrievalConfig {
         Self {
             strategy: "bm25".into(),
             top_k: 8,
+            vector: None,
         }
     }
+}
+
+/// `[retrieval.vector]`: OpenAI-compatible embedding provider. Secrets via env name only.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorConfig {
+    #[serde(default = "default_vector_base_url")]
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: String,
+    #[serde(default)]
+    pub dim: Option<usize>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub batch_size: Option<usize>,
+}
+
+fn default_vector_base_url() -> String {
+    "https://api.openai.com/v1".into()
 }
 
 /// `[server]` section: which downstream transport(s) to serve.
@@ -166,6 +189,26 @@ impl Config {
         }
         if self.retrieval.top_k == 0 {
             return Err(ConfigError::Invalid("retrieval.top_k must be > 0".into()));
+        }
+        if self.retrieval.strategy == "vector" {
+            match &self.retrieval.vector {
+                None => {
+                    return Err(ConfigError::Invalid(
+                        "strategy=\"vector\" requires a [retrieval.vector] section".into(),
+                    ))
+                }
+                Some(v) => {
+                    if v.base_url.trim().is_empty()
+                        || v.model.trim().is_empty()
+                        || v.api_key_env.trim().is_empty()
+                    {
+                        return Err(ConfigError::Invalid(
+                            "[retrieval.vector] base_url/model/api_key_env must be non-empty"
+                                .into(),
+                        ));
+                    }
+                }
+            }
         }
         let mut seen = std::collections::HashSet::new();
         for u in &self.upstreams {
@@ -448,5 +491,40 @@ mod tests {
     fn server_http_rejects_unknown_field() {
         // HttpConfig 无 flatten -> deny_unknown_fields 生效。
         assert!(Config::from_toml_str("[server.http]\nbogus = 1\n").is_err());
+    }
+
+    #[test]
+    fn parses_retrieval_vector_section() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [retrieval]
+            strategy = "vector"
+            [retrieval.vector]
+            model = "text-embedding-3-small"
+            api_key_env = "OPENAI_API_KEY"
+            dim = 1536
+            "#,
+        )
+        .unwrap();
+        let v = cfg.retrieval.vector.expect("vector section");
+        assert_eq!(v.base_url, "https://api.openai.com/v1"); // default
+        assert_eq!(v.model, "text-embedding-3-small");
+        assert_eq!(v.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(v.dim, Some(1536));
+    }
+
+    #[test]
+    fn vector_strategy_requires_vector_section() {
+        let err = Config::from_toml_str("[retrieval]\nstrategy = \"vector\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn vector_section_rejects_unknown_field() {
+        let err = Config::from_toml_str(
+            "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"K\"\nbogus=1\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
     }
 }
