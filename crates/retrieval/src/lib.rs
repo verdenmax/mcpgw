@@ -3,8 +3,10 @@ use catalog::Catalog;
 
 mod caching;
 mod embedder;
+mod hybrid;
 mod vector;
 pub use caching::CachingEmbedder;
+pub use hybrid::HybridStrategy;
 #[cfg(feature = "testkit")]
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
