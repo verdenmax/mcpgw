@@ -86,7 +86,7 @@ while rx.recv().await.is_some():           // 阻塞等下一个触发
 使每次重建得到干净的、与新 catalog 匹配的索引；也保持与 `retrieval::build_strategy(name, embedder)` 的字符串选择约定一致。
 
 策略工厂按 **name + embedder** 构建：`"bm25"` 无需 embedder；`"vector"` 需要 embedder，缺则返回
-`StrategyError::EmbedderRequired`（经 `with_embedder` 注入）；`"hybrid"` 为 M2-B（当前 `NotImplemented`）；其余名字
+`StrategyError::EmbedderRequired`（经 `with_embedder` 注入）；`"hybrid"` 同样需要 embedder（缺则 `EmbedderRequired`）；其余名字
 `NotImplemented`。`embedder: Option<Arc<dyn Embedder>>` 由 `with_embedder` 持有进 state，rebuild 时**复用同一个** embedder
 实例——若它是 `CachingEmbedder`，其缓存便跨 rebuild 保留，只对新增工具计算嵌入。`new`（embedder 为 `None`）只能构建 bm25。
 
