@@ -34,6 +34,24 @@ Unicode 感知（`char::is_alphanumeric` + `to_lowercase`）。
 M0 仅实现 `"bm25"`；`"vector"`/`"hybrid"`/未知 → `NotImplemented`。
 **接受 `&str` 而非配置类型**，使本 crate 不依赖 `config`。
 
+### Embedder 抽象（HTTP 实现在独立 embedder crate）
+
+把文本转成向量的可插拔抽象。本 crate **只**定义 trait、错误与确定性 mock；
+**真实的 HTTP 后端 `OpenAiEmbedder` 位于独立的 `embedder` crate**，因此 `retrieval`
+**不引入任何 HTTP 依赖**。
+
+- trait `Embedder: Send + Sync`（`async_trait`）：
+  - `async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError>`：
+    一批文本各转一个向量，顺序对应；每次调用 all-or-nothing。
+  - `fn dim(&self) -> usize`：期望嵌入维度。
+- 错误 `EmbedError`（`thiserror`，**provider 无关**）：
+  `Provider(String)` 与 `Dimension { expected, got }`。
+- `MockEmbedder`（**仅 `testkit` feature**）：确定性测试嵌入器。token 经 `tokenize` 后用
+  FNV-1a 哈希分桶（`dim` 桶），共享 token 的文本余弦更高，便于断言排序。
+  暴露 `calls`（调用计数）与 `seen`（已嵌文本）供后续缓存测试断言。
+
+逐文件 API 见 L4：[retrieval/embedder.rs](../L4-api/retrieval-embedder.md)。
+
 ## 依赖
 
 - 外部：`thiserror`；（dev）`serde_json`。

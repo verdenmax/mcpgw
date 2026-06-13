@@ -1,6 +1,11 @@
 use async_trait::async_trait;
 use catalog::Catalog;
 
+mod embedder;
+#[cfg(feature = "testkit")]
+pub use embedder::MockEmbedder;
+pub use embedder::{EmbedError, Embedder};
+
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoredTool {
