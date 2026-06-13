@@ -266,7 +266,29 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第四部分 · 后续</div>
     <h1>Hybrid 检索（RRF）</h1>
   </div>
-  <p>（待填充：Hybrid 检索（RRF））</p>
+  
+<div class="card warn">
+  <div class="tag">🚧 施工中</div>
+  本课尚未写透，目前是占位页。Hybrid 检索用 RRF（Reciprocal Rank Fusion）融合 BM25 与向量两路排名，兼顾字面精确与语义召回。该能力属于 M2-B，尚未实现，本课待其落地后补全。
+</div>
+
+<h2>本课将覆盖</h2>
+<ul>
+<li>RRF 融合公式与为何优于单路（字面 vs 语义互补）</li>
+<li><code>build_strategy("hybrid", …)</code> 目前返回 <code>StrategyError::NotImplemented</code>，M2-B 将实现</li>
+<li>默认检索策略从 bm25 切换到 hybrid 的考量</li>
+</ul>
+
+<div class="card key">
+  <div class="tag">✅ 先看这些</div>
+  在本课补全前，可先阅读相关已写透课程与对应源码：
+  <ul>
+<li><a href="04-vector-overview.html">04 · 向量检索总览（可插拔策略 + 透明降级）</a></li>
+<li><a href="07-vector-strategy.html">07 · VectorStrategy（向量一路）</a></li>
+<li><a href="13-retrieval-bm25.html">13 · retrieval 内核与 BM25（字面一路）</a></li>
+  </ul>
+</div>
+
   <div class="footnav"><a class="prev" href="14-config.html"><div class="dir">← 上一课</div><div class="ttl">config 配置系统</div></a><a class="next" href="../index.html"><div class="dir">完成 →</div><div class="ttl">返回目录</div></a></div>
 </div>
 

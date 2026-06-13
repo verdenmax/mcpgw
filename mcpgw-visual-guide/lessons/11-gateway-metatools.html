@@ -266,7 +266,29 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第三部分 · 各 crate 内部</div>
     <h1>gateway + metatools</h1>
   </div>
-  <p>（待填充：gateway + metatools）</p>
+  
+<div class="card warn">
+  <div class="tag">🚧 施工中</div>
+  本课尚未写透，目前是占位页。gateway 持有 ArcSwap 快照状态并做 build-then-swap 重建；metatools 在不可变快照上提供 search_tools / get_tool_details / call_tool 三个元工具。
+</div>
+
+<h2>本课将覆盖</h2>
+<ul>
+<li><code>GatewayState</code>：<code>ArcSwap&lt;GatewaySnapshot&gt;</code>（读无锁）+ rebuild 串行化（<code>crates/gateway/src/lib.rs</code>）</li>
+<li><code>rebuild_snapshot</code>：并发摄取 + per-ingest 超时 + 原子 swap</li>
+<li>三个元工具函数与 <code>call_tool</code> 经 catalog 路由（<code>crates/metatools/src/</code>）</li>
+</ul>
+
+<div class="card key">
+  <div class="tag">✅ 先看这些</div>
+  在本课补全前，可先阅读相关已写透课程与对应源码：
+  <ul>
+<li><a href="03-call-lifecycle.html">03 · 一次工具调用的生命周期（元工具数据流）</a></li>
+<li><a href="07-vector-strategy.html">07 · VectorStrategy（快照里装的检索策略）</a></li>
+<li><a href="08-wiring-config.html">08 · 装配与配置（embedder 如何注入 GatewayState）</a></li>
+  </ul>
+</div>
+
   <div class="footnav"><a class="prev" href="10-upstream.html"><div class="dir">← 上一课</div><div class="ttl">upstream 上游 I/O</div></a><a class="next" href="12-downstream.html"><div class="dir">下一课 →</div><div class="ttl">downstream 下游服务</div></a></div>
 </div>
 

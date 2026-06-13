@@ -266,7 +266,29 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第三部分 · 各 crate 内部</div>
     <h1>retrieval 内核与 BM25</h1>
   </div>
-  <p>（待填充：retrieval 内核与 BM25）</p>
+  
+<div class="card warn">
+  <div class="tag">🚧 施工中</div>
+  本课尚未写透，目前是占位页。retrieval 是检索内核：定义 async 的 RetrievalStrategy 抽象与自研 BM25 默认实现；向量检索（第二部分）就建在这个抽象之上。
+</div>
+
+<h2>本课将覆盖</h2>
+<ul>
+<li><code>RetrievalStrategy</code>(async, <code>#[async_trait]</code>) 与 <code>ScoredTool</code>（<code>crates/retrieval/src/lib.rs</code>）</li>
+<li><code>tokenize</code> + <code>Bm25Strategy</code>（k1=1.2, b=0.75）算法</li>
+<li><code>build_strategy</code> 工厂如何选择 bm25 / vector / hybrid</li>
+</ul>
+
+<div class="card key">
+  <div class="tag">✅ 先看这些</div>
+  在本课补全前，可先阅读相关已写透课程与对应源码：
+  <ul>
+<li><a href="04-vector-overview.html">04 · 向量检索总览（与 BM25 对比）</a></li>
+<li><a href="07-vector-strategy.html">07 · VectorStrategy（内置 BM25 降级）</a></li>
+<li><a href="08-wiring-config.html">08 · 装配与配置（build_strategy）</a></li>
+  </ul>
+</div>
+
   <div class="footnav"><a class="prev" href="12-downstream.html"><div class="dir">← 上一课</div><div class="ttl">downstream 下游服务</div></a><a class="next" href="14-config.html"><div class="dir">下一课 →</div><div class="ttl">config 配置系统</div></a></div>
 </div>
 

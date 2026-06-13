@@ -266,7 +266,28 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第三部分 · 各 crate 内部</div>
     <h1>downstream 下游服务</h1>
   </div>
-  <p>（待填充：downstream 下游服务）</p>
+  
+<div class="card warn">
+  <div class="tag">🚧 施工中</div>
+  本课尚未写透，目前是占位页。downstream 把 3 个元工具暴露为真正的 MCP 服务：rmcp ServerHandler（stdio）+ Streamable HTTP（axum，多 key 常量时间 Bearer 鉴权）。
+</div>
+
+<h2>本课将覆盖</h2>
+<ul>
+<li><code>GatewayServer</code> 实现 rmcp <code>ServerHandler</code>，<code>list_tools</code> 恒返回 3 元工具（<code>crates/downstream/src/lib.rs</code>）</li>
+<li>HTTP：<code>StreamableHttpService</code> + <code>nest_service</code> 进 axum + Bearer 鉴权层</li>
+<li><code>serve</code> 并发 stdio + HTTP（<code>tokio::select!</code> 统一关闭）</li>
+</ul>
+
+<div class="card key">
+  <div class="tag">✅ 先看这些</div>
+  在本课补全前，可先阅读相关已写透课程与对应源码：
+  <ul>
+<li><a href="02-architecture.html">02 · 整体架构全景（下游传输能力一览）</a></li>
+<li><a href="03-call-lifecycle.html">03 · 一次工具调用的生命周期（客户端入口）</a></li>
+  </ul>
+</div>
+
   <div class="footnav"><a class="prev" href="11-gateway-metatools.html"><div class="dir">← 上一课</div><div class="ttl">gateway + metatools</div></a><a class="next" href="13-retrieval-bm25.html"><div class="dir">下一课 →</div><div class="ttl">retrieval 内核与 BM25</div></a></div>
 </div>
 
