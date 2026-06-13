@@ -266,7 +266,78 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第一部分 · 宏观全景</div>
     <h1>mcpgw 是什么</h1>
   </div>
-  <p>（待填充：mcpgw 是什么）</p>
+  
+<p class="lead">
+mcpgw 是一个用 <strong>Rust</strong> 写的<strong>智能 MCP（Model Context Protocol）网关</strong>。
+它把 N 个上游 MCP server 聚合起来，但对客户端<strong>只暴露少量「元工具」</strong>——
+由网关在内部做工具检索与按需加载，避免「把上百个工具一次性塞给 LLM」导致的上下文爆炸与选错工具。
+</p>
+
+<div class="card analogy">
+  <div class="tag">🔌 生活类比</div>
+  把「上百个工具一次性塞给 LLM」想成<strong>把整座图书馆的书全堆到桌上</strong>——桌子塞满了，你也根本找不到要用的那本。
+  mcpgw 更像图书馆门口的<strong>检索台</strong>：你先说一句「我想做 X」，它只把<strong>相关的几本</strong>递给你；
+  需要细看时再帮你取来完整那一本；想借走时它替你去书库里把书拿出来。
+  LLM 始终只面对检索台这一个稳定窗口，而不是整面书墙。
+</div>
+
+<h2>它解决什么问题：工具爆炸</h2>
+<p>每个上游 MCP server 都会暴露一堆工具。把很多 server 聚合到一起，工具总数会迅速膨胀。
+直接把这张长长的工具清单丢给模型，会同时引发三个麻烦：</p>
+
+<table class="t">
+  <tr><th>维度</th><th>没有网关（直接聚合全部工具）</th><th>mcpgw（渐进式发现）</th></tr>
+  <tr><td><strong>上下文占用</strong></td><td>上百个工具的 schema 全塞进 prompt，撑爆上下文窗口</td><td>客户端始终只看到 <strong>3 个元工具</strong>，占用恒定</td></tr>
+  <tr><td><strong>选择准确率</strong></td><td>候选越多，模型越容易选错工具</td><td>先按查询检索，只把<strong>相关候选</strong>交给模型</td></tr>
+  <tr><td><strong>prompt 缓存</strong></td><td>上游增删工具 → 工具数组变化 → 缓存失效</td><td>工具数组<strong>永不变化</strong> → 缓存稳定命中</td></tr>
+</table>
+
+<h2>它的解法：3 个元工具的渐进式发现</h2>
+<p>mcpgw 不把真实工具直接暴露出去，而是只暴露三个固定的「元工具」，让客户端按
+<strong>检索 → 看详情 → 执行</strong>的节奏，分步把需要的工具「问」出来：</p>
+
+<div class="flow">
+  <div class="node hl"><div class="nt">search_tools(query)</div><div class="nd">用自然语言查询，拿到相关工具候选</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">get_tool_details(name)</div><div class="nd">看清某个工具的完整入参 schema</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">call_tool(name, args)</div><div class="nd">带参数真正执行该上游工具</div></div>
+</div>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  无论上游有多少工具、是否增减，客户端<strong>永远只看到这 3 个元工具</strong>。
+  下游 MCP 服务的 <span class="inline">list_tools</span> 恒定返回这 3 个，因此<strong>不需要</strong>用
+  <span class="inline">list_changed</span> 去改变模型可见的工具列表（上游变化只在网关内部触发重建检索索引）。
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/downstream/src/lib.rs · GatewayServer::list_tools</span></div>
+<pre><span class="cm">// 客户端能看到的工具集合恒定为 3 个元工具</span>
+<span class="kw">async fn</span> <span class="fn">list_tools</span>(&amp;self, _req, _ctx)
+    -&gt; Result&lt;ListToolsResult, McpError&gt; {
+    Ok(ListToolsResult::with_all_items(<span class="fn">meta_tools</span>()))
+}
+<span class="cm">// meta_tools() == [search_tools, get_tool_details, call_tool]</span></pre>
+  </div>
+</div>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li>mcpgw = 聚合 N 个上游 MCP server 的<strong>智能网关</strong>，对外只露 3 个稳定元工具。</li>
+    <li>核心能力是<strong>渐进式工具发现</strong>：检索 → 详情 → 执行，把工具按需「问」出来。</li>
+    <li>三个元工具的真实名字是 <span class="inline">search_tools</span> / <span class="inline">get_tool_details</span> / <span class="inline">call_tool</span>。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  渐进式披露做在<strong>网关（server）侧</strong>，因此<strong>兼容所有 MCP 客户端、零改造</strong>；
+  又因为对外的工具数组永不变化，对 <strong>prompt 缓存友好</strong>。
+  这一选择背后还有现实考量：<span class="inline">tools/list_changed</span> 在协议里是可选能力，主流客户端运行中刷新并不可靠，
+  所以 mcpgw 不依赖它来改变可见工具列表（决策详见
+  <span class="inline">docs/superpowers/specs/2026-06-08-mcpgw-progressive-discovery-design.md</span>）。
+</div>
+
   <div class="footnav"><a class="prev" href="../index.html"><div class="dir">← 返回</div><div class="ttl">目录</div></a><a class="next" href="02-architecture.html"><div class="dir">下一课 →</div><div class="ttl">整体架构全景</div></a></div>
 </div>
 

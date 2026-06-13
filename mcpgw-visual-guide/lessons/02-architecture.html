@@ -266,7 +266,105 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第一部分 · 宏观全景</div>
     <h1>整体架构全景</h1>
   </div>
-  <p>（待填充：整体架构全景）</p>
+  
+<p class="lead">
+mcpgw 是一个 <strong>Cargo 虚拟工作区（virtual workspace）</strong>，按「职责单一」拆成多个 crate。
+每个 crate 只做一件事，彼此<strong>依赖方向无环</strong>，于是检索逻辑、上游 I/O、对外服务都能独立演进。
+</p>
+
+<h2>分层全景：各 crate 与它的一句话职责</h2>
+<p>从对外的可执行程序，到最底层的纯数据结构，自上而下大致是这样几层：</p>
+
+<div class="layers">
+  <div class="layer l-app">
+    <div class="lh"><span class="badge">bin</span><span class="name">mcpgw</span></div>
+    <div class="ld">唯一的集成者：clap CLI + <span class="inline">serve</span> 装配者，把上游、网关、检索、配置拼起来。</div>
+  </div>
+  <div class="layer l-main">
+    <div class="lh"><span class="badge">下游</span><span class="name">downstream</span></div>
+    <div class="ld">把 3 个元工具暴露为真正的 MCP 服务（stdio + Streamable HTTP）。</div>
+  </div>
+  <div class="layer l-main">
+    <div class="lh"><span class="badge">网关</span><span class="name">gateway + metatools</span></div>
+    <div class="ld"><span class="inline">ArcSwap</span> 快照状态 + 三个元工具逻辑（在不可变快照上检索/路由）。</div>
+  </div>
+  <div class="layer l-main">
+    <div class="lh"><span class="badge">上游</span><span class="name">upstream</span></div>
+    <div class="ld">活的上游 MCP I/O：连接、工具摄取、<span class="inline">call_tool</span> 路由转发。</div>
+  </div>
+  <div class="layer l-part">
+    <div class="lh"><span class="badge">检索</span><span class="name">retrieval + embedder</span></div>
+    <div class="ld">检索策略（BM25 / Vector）+ 云端嵌入的 HTTP 后端（仅 embedder 带 HTTP）。</div>
+  </div>
+  <div class="layer l-core">
+    <div class="lh"><span class="badge">内核</span><span class="name">catalog + config</span></div>
+    <div class="ld">工具目录与 <span class="inline">{server}__{name}</span> 命名空间 + 配置解析/校验。</div>
+  </div>
+</div>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应：依赖纪律</div>
+  <p>分层之所以稳，靠的是几条刻意定下的依赖规则（对照 <span class="inline">docs/L1-overview.md</span> 依赖关系段）：</p>
+  <ul>
+    <li><strong><span class="inline">catalog</span> 不依赖任何兄弟 crate</strong>，只用 serde——它是最底层的纯数据结构。</li>
+    <li><strong><span class="inline">retrieval</span> 只依赖 <span class="inline">catalog</span></strong>，<strong>不引入任何 HTTP 依赖</strong>；
+      <span class="inline">build_strategy</span> 故意接受策略名字符串（+ 可选 <span class="inline">Embedder</span>）而非配置类型，保持检索内核可独立复用。</li>
+    <li><strong>HTTP 依赖被隔离在独立的 <span class="inline">embedder</span> crate</strong>（<span class="inline">reqwest 0.13</span> + rustls）——
+      它是全工作区<strong>唯一</strong>带 HTTP 依赖的 crate，承载真实嵌入后端 <span class="inline">OpenAiEmbedder</span>。</li>
+  </ul>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/Cargo.toml · crates/embedder/Cargo.toml</span></div>
+<pre><span class="cm"># crates/retrieval/Cargo.toml —— 没有 reqwest / http</span>
+[dependencies]
+catalog = { path = <span class="st">"../catalog"</span> }
+async-trait = { workspace = <span class="kw">true</span> }
+
+<span class="cm"># crates/embedder/Cargo.toml —— HTTP 被隔离在这里</span>
+[dependencies]
+retrieval = { path = <span class="st">"../retrieval"</span> }
+reqwest = { version = <span class="st">"0.13"</span>, features = [<span class="st">"json"</span>, <span class="st">"rustls"</span>] }</pre>
+  </div>
+</div>
+
+<h2>传输能力一览</h2>
+<p>网关在「上游」和「下游」两个方向上都支持 stdio 与 HTTP（与 <span class="inline">docs/L1-overview.md</span> 同名表一致）：</p>
+
+<table class="t">
+  <tr><th>方向</th><th>stdio</th><th>HTTP（Streamable HTTP）</th></tr>
+  <tr>
+    <td><strong>上游</strong>（连接被聚合的 MCP server）</td>
+    <td>✅ 子进程（<span class="inline">command</span>/<span class="inline">args</span> + env allow-list）</td>
+    <td>✅ 远程 <span class="inline">url</span> + 静态鉴权（<span class="inline">bearer_env</span> 原始 token、<span class="inline">headers</span> 头名→env）</td>
+  </tr>
+  <tr>
+    <td><strong>下游</strong>（向客户端暴露 3 个元工具）</td>
+    <td>✅ <span class="inline">serve</span> over stdio</td>
+    <td>✅ 默认 <span class="inline">127.0.0.1:8970</span> <span class="inline">/mcp</span> + 多 key Bearer 鉴权</td>
+  </tr>
+</table>
+<p style="color:var(--muted);font-size:.92rem">下游 stdio 与 HTTP <strong>可并发同时启用</strong>（共享一份 <span class="inline">Arc&lt;GatewayState&gt;</span>），但至少须启用一种。</p>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li>mcpgw 是 Cargo 虚拟工作区，crate 各司其职、依赖<strong>无环</strong>。</li>
+    <li>越底层越纯：<span class="inline">catalog</span> 无兄弟依赖、<span class="inline">retrieval</span> 无 HTTP，HTTP 只在 <span class="inline">embedder</span>。</li>
+    <li>上游 / 下游两个方向都支持 stdio + HTTP，可并发启用。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  这套分层把「会爆炸的工具列表」收敛成对外<strong>恒定的 3 个元工具</strong>，
+  而真正复杂的检索逻辑全部留在网关内部。因为检索内核（<span class="inline">retrieval</span>）不被 HTTP、配置或 CLI 绑死，
+  它可以<strong>独立演进</strong>：从 BM25 到向量检索、再到混合检索，都不动对外契约。
+</div>
+
+<p style="margin-top:1.2rem">
+👉 检索策略正是网关的<strong>核心可插拔件</strong>。下一部分我们就钻进去，看<strong>向量检索</strong>是怎么建在
+<span class="inline">retrieval</span> 抽象之上、又如何在嵌入失败时透明降级回 BM25 的。
+</p>
+
   <div class="footnav"><a class="prev" href="01-what-is-mcpgw.html"><div class="dir">← 上一课</div><div class="ttl">mcpgw 是什么</div></a><a class="next" href="03-call-lifecycle.html"><div class="dir">下一课 →</div><div class="ttl">一次工具调用的生命周期</div></a></div>
 </div>
 

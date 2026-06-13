@@ -266,7 +266,96 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第一部分 · 宏观全景</div>
     <h1>一次工具调用的生命周期</h1>
   </div>
-  <p>（待填充：一次工具调用的生命周期）</p>
+  
+<p class="lead">
+把前两课串起来：我们跟随一次「客户端想调用某个上游工具」的完整数据流，
+看 3 个元工具是如何接力把请求从客户端送到上游、再把结果带回来的。
+</p>
+
+<h2>一次调用的四步生命周期</h2>
+
+<div class="vflow">
+  <div class="step">
+    <div class="num">1</div>
+    <div class="sc">
+      <h4>连接 &amp; 看到 3 个元工具</h4>
+      <p>客户端连上 <span class="inline">downstream</span>（stdio 或 HTTP），调 <span class="inline">list_tools</span>，
+        看到的永远是 <span class="inline">search_tools</span> / <span class="inline">get_tool_details</span> / <span class="inline">call_tool</span> 这 3 个元工具。</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="num">2</div>
+    <div class="sc">
+      <h4>search_tools("…") —— 检索候选</h4>
+      <p><span class="inline">metatools</span> 在不可变的 <span class="inline">GatewaySnapshot</span> 上跑检索策略（BM25 或 Vector），
+        返回一组按相关性排好序的候选 <span class="inline">ToolSummary</span>（限定名 + 描述）。</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="num">3</div>
+    <div class="sc">
+      <h4>get_tool_details(qualified_name) —— 看清入参</h4>
+      <p>从 <span class="inline">catalog</span> 取出该工具的完整 <span class="inline">ToolDef</span>（含 input schema），
+        让模型知道要传哪些参数、各是什么类型。</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="num">4</div>
+    <div class="sc">
+      <h4>call_tool(qualified_name, args) —— 路由执行</h4>
+      <p><span class="inline">metatools</span> 经 catalog 查出该限定名对应的 <span class="inline">(server, tool)</span>
+        ——<strong>绝不靠拆 <span class="inline">__</span> 去猜</strong>——再路由到 <span class="inline">upstream</span> 对应 handle 转发，带每调用超时。</p>
+    </div>
+  </div>
+</div>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应：快照与重建</div>
+  <p>检索（步骤 2/3/4 的读路径）始终发生在一份<strong>不可变快照</strong>上，所以<strong>读路径无锁</strong>：
+    网关用 <span class="inline">ArcSwap&lt;GatewaySnapshot&gt;</span> 持有当前快照。
+    当上游发来 <span class="inline">tools/list_changed</span> 时，后台 <span class="inline">rebuild_snapshot</span> 会
+    <strong>build-then-swap</strong>（先在旁边重建好新快照，再原子换上），整个过程<strong>不阻塞</strong>正在进行的检索。</p>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/metatools/src/tools.rs · search_tools / get_tool_details / call_tool</span></div>
+<pre><span class="cm">// 读路径：在不可变快照上检索，无需加锁</span>
+<span class="kw">pub async fn</span> <span class="fn">search_tools</span>(snap: &amp;GatewaySnapshot, query: &amp;str, top_k: usize)
+    -&gt; Vec&lt;ToolSummary&gt; { snap.strategy.<span class="fn">search</span>(query, top_k).<span class="kw">await</span> ... }
+
+<span class="cm">// 路由：经 catalog 查 (server, tool)，绝不拆 "__"</span>
+<span class="kw">pub async fn</span> <span class="fn">call_tool</span>(snap, registry, name, arguments) -&gt; Result&lt;_, MetaError&gt; {
+    <span class="kw">let</span> def = snap.catalog.<span class="fn">get</span>(name)?;          <span class="cm">// (server, tool)</span>
+    <span class="kw">let</span> handle = registry.<span class="fn">get</span>(&amp;def.server)?;      <span class="cm">// 找到对应上游</span>
+    handle.<span class="fn">call_tool</span>(&amp;def.name, arguments).<span class="kw">await</span>  <span class="cm">// 转发（带超时）</span>
+}</pre>
+  </div>
+  <p style="color:var(--muted);font-size:.9rem;margin-top:.4rem">快照重建逻辑见 <span class="inline">crates/gateway/src/lib.rs · GatewayState::rebuild_snapshot</span>。</p>
+</div>
+
+<div class="card warn">
+  <div class="tag">⚠️ 注意</div>
+  网关的<strong>日志全部走 stderr</strong>，<strong>stdout 专门留给 MCP 协议帧</strong>。
+  在 stdio 传输下，往 stdout 打任何普通日志都会污染协议流、让客户端解析失败——这是一条硬规则。
+</div>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <p>记住这条三步心智模型即可：</p>
+  <div class="flow">
+    <div class="node"><div class="nt">检索</div><div class="nd">search_tools</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="nt">详情</div><div class="nd">get_tool_details</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><div class="nt">执行</div><div class="nd">call_tool</div></div>
+  </div>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  这正是「渐进式披露」在<strong>数据流</strong>层面的体现：无论上游有多少工具、如何增删，
+  LLM 永远只面对 <strong>3 个稳定入口</strong>。复杂度（检索排序、快照重建、路由转发、超时隔离）
+  全被收进网关内部，对外暴露的契约始终不变。
+</div>
+
   <div class="footnav"><a class="prev" href="02-architecture.html"><div class="dir">← 上一课</div><div class="ttl">整体架构全景</div></a><a class="next" href="04-vector-overview.html"><div class="dir">下一课 →</div><div class="ttl">向量检索总览</div></a></div>
 </div>
 

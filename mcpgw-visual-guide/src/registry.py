@@ -3,6 +3,7 @@
 build.py imports this so the lesson set stays in sync with shell.PAGES.
 """
 import shell
+import part1_macro as p1
 import part3_internals as p3
 import part4_next as p4
 
@@ -12,6 +13,9 @@ _STUB = {fname: f"<p>（待填充：{title}）</p>" for fname, title, _part in s
 
 CONTENT = {
     **_STUB,
+    "01-what-is-mcpgw.html": p1.LESSON_01,
+    "02-architecture.html": p1.LESSON_02,
+    "03-call-lifecycle.html": p1.LESSON_03,
     "09-catalog.html": p3.LESSON_09,
     "10-upstream.html": p3.LESSON_10,
     "11-gateway-metatools.html": p3.LESSON_11,
