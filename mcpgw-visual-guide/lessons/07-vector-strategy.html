@@ -266,7 +266,108 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第二部分 · 检索深入 · 向量检索</div>
     <h1>VectorStrategy 余弦 + 降级</h1>
   </div>
-  <p>（待填充：VectorStrategy 余弦 + 降级）</p>
+  
+<p class="lead">
+<span class="inline">VectorStrategy</span> 在云端嵌入之上做<strong>暴力余弦检索</strong>——工具目录很小，<strong>线性扫一遍</strong>就足够快，
+不需要近似最近邻索引。而当嵌入服务不可用时，它会<strong>透明回落</strong>到内置的 BM25，对上层完全不露痕迹。
+</p>
+
+<h2>数据结构</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">VectorStrategy</span> 持有四样东西：</p>
+  <ul>
+    <li><span class="inline">embedder: Arc&lt;dyn Embedder&gt;</span>——把文本转成向量（很可能外面还套了第 06 课的缓存）。</li>
+    <li><span class="inline">bm25: Bm25Strategy</span>——<strong>内置的字面兜底</strong>策略。</li>
+    <li><span class="inline">vectors: Vec&lt;(qualified_name, description, 归一化向量)&gt;</span>——降级时为空。</li>
+    <li><span class="inline">degraded: bool</span>——是否已退化为纯 BM25。</li>
+  </ul>
+  <p>每个工具被嵌入的文本是 <span class="inline">tool_text</span> = <span class="inline">"{qualified_name}\n{description}"</span>（限定名 + 换行 + 描述）。</p>
+</div>
+
+<h2>index：先建兜底，再尝试嵌入</h2>
+
+<div class="vflow">
+  <div class="step"><div class="num">1</div><div class="sc"><h4>总是先建 BM25</h4>
+    <p><span class="inline">self.bm25 = Bm25Strategy::new(); self.bm25.index(catalog).await;</span> ——
+    <strong>无论嵌入成不成功，兜底索引先就位</strong>。</p></div></div>
+  <div class="step"><div class="num">2</div><div class="sc"><h4>收集 tool_text 并批量嵌入</h4>
+    <p>对目录里每个工具算 <span class="inline">tool_text</span>，再一次性 <span class="inline">embedder.embed(&amp;texts).await</span>。</p></div></div>
+  <div class="step"><div class="num">3</div><div class="sc"><h4>数量匹配 → 存归一化向量</h4>
+    <p><span class="inline">Ok(vecs)</span> 且 <span class="inline">vecs.len() == tools.len()</span>：把每个向量 <span class="inline">normalize</span> 后存入
+    <span class="inline">vectors</span>，<span class="inline">degraded = false</span>。</p></div></div>
+  <div class="step"><div class="num">4</div><div class="sc"><h4>数量不符 → 降级</h4>
+    <p><span class="inline">Ok(vecs)</span> 但数量对不上：这违反 embedder 的 <strong>all-or-nothing / 顺序对应</strong>契约，
+    强行 <span class="inline">zip</span> 会让向量与工具<strong>错位</strong>。于是<strong>清空 <span class="inline">vectors</span>、<span class="inline">degraded = true</span></strong>，
+    宁可降级也不建错位索引。</p></div></div>
+  <div class="step"><div class="num">5</div><div class="sc"><h4>Err → 降级</h4>
+    <p>嵌入直接报错，同样清空向量、<span class="inline">degraded = true</span>，退回 BM25。</p></div></div>
+</div>
+
+<h2>search：余弦打分，单次失败也兜底</h2>
+
+<div class="flow">
+  <div class="node"><div class="nt">degraded 或 vectors 空？</div><div class="nd">是 → 直接 bm25.search</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">嵌入 query</div><div class="nd">单次失败 → 回落 BM25</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">余弦打分</div><div class="nd">dot(归一化 query, 归一化向量)</div></div>
+  <div class="arrow">→</div>
+  <div class="node hl"><div class="nt">排序 + 截断</div><div class="nd">score 降序, qualified_name 升序 → top_k</div></div>
+</div>
+
+<p>当 <span class="inline">degraded</span> 或 <span class="inline">vectors</span> 为空时，<span class="inline">search</span> 直接走
+<span class="inline">bm25.search(query, top_k)</span>；否则先嵌入查询（<strong>这一次嵌入失败也回落 BM25</strong>），
+对每个工具算 <span class="inline">dot(归一化 query, 归一化向量)</span> 即<strong>余弦相似度</strong>，
+按 <span class="inline">score</span> <strong>降序</strong>、并列时按 <span class="inline">qualified_name</span> <strong>升序</strong>做<strong>稳定排序</strong>，最后截断到 <span class="inline">top_k</span>。</p>
+
+<h2>零范数不会算出 NaN</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">normalize</span> 做 L2 归一化时，对<strong>零向量原样返回</strong>（不做除法），所以<strong>绝不会除以 0</strong>，
+  余弦打分里也就<strong>永远不会冒出 NaN</strong>。</p>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/src/vector.rs · normalize</span></div>
+<pre><span class="cm">// L2 归一化（原地）；零向量原样返回——它和任何向量的余弦都是 0</span>
+<span class="kw">fn</span> <span class="fn">normalize</span>(<span class="kw">mut</span> v: Vec&lt;f32&gt;) -&gt; Vec&lt;f32&gt; {
+    <span class="kw">let</span> norm = v.<span class="fn">iter</span>().<span class="fn">map</span>(|x| x * x).<span class="fn">sum</span>::&lt;f32&gt;().<span class="fn">sqrt</span>();
+    <span class="kw">if</span> norm &gt; <span class="st">0.0</span> {              <span class="cm">// ← 仅当范数 &gt; 0 才除，零向量跳过</span>
+        <span class="kw">for</span> x <span class="kw">in</span> &amp;<span class="kw">mut</span> v { *x /= norm; }
+    }
+    v
+}</pre>
+  </div>
+</div>
+
+<div class="card warn">
+  <div class="tag">⚠️ 双重降级的两条路径</div>
+  <p>「降级到 BM25」会在<strong>两个时机</strong>各自独立发生，别混为一谈：</p>
+  <ul>
+    <li><strong>index-time（建索引时）</strong>：整批嵌入 <span class="inline">Err</span>，<strong>或</strong>返回向量<strong>数量不符</strong> →
+      清空 <span class="inline">vectors</span>、<span class="inline">degraded = true</span>。此后所有查询都走 BM25。</li>
+    <li><strong>query-time（单次查询时）</strong>：即便索引是好的，<strong>这一次</strong>查询的嵌入失败，也会<strong>临时</strong>回落到
+      <span class="inline">bm25.search</span>——不改 <span class="inline">degraded</span>，下次查询仍会再试向量。</li>
+  </ul>
+</div>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li><strong>余弦 = 归一化点积</strong>：向量都先 <span class="inline">normalize</span>，打分就是一个 <span class="inline">dot</span>。</li>
+    <li><strong>稳定排序</strong>：<span class="inline">score</span> 降序 + <span class="inline">qualified_name</span> 升序，结果确定可复现，再截断 <span class="inline">top_k</span>。</li>
+    <li><strong>永不 NaN</strong>：零向量原样返回，不除零。</li>
+    <li><strong>永不硬失败</strong>：index 与 query 两处都能透明回落 BM25。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  <span class="inline">VectorStrategy</span> 把「<strong>语义检索</strong>」与「<strong>字面兜底</strong>」缝进<strong>同一个策略</strong>里，
+  对上层而言它就只是一个普通的 <span class="inline">RetrievalStrategy</span>——调用方既不用判断嵌入服务是否健在，也不用自己拼装兜底逻辑。
+</div>
+
   <div class="footnav"><a class="prev" href="06-caching-embedder.html"><div class="dir">← 上一课</div><div class="ttl">CachingEmbedder 缓存</div></a><a class="next" href="08-wiring-config.html"><div class="dir">下一课 →</div><div class="ttl">装配与配置</div></a></div>
 </div>
 

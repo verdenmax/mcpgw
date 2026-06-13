@@ -19,6 +19,8 @@ CONTENT = {
     "03-call-lifecycle.html": p1.LESSON_03,
     "04-vector-overview.html": p2.LESSON_04,
     "05-embedder.html": p2.LESSON_05,
+    "06-caching-embedder.html": p2.LESSON_06,
+    "07-vector-strategy.html": p2.LESSON_07,
     "09-catalog.html": p3.LESSON_09,
     "10-upstream.html": p3.LESSON_10,
     "11-gateway-metatools.html": p3.LESSON_11,

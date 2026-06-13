@@ -266,7 +266,111 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">第二部分 · 检索深入 · 向量检索</div>
     <h1>CachingEmbedder 缓存</h1>
   </div>
-  <p>（待填充：CachingEmbedder 缓存）</p>
+  
+<p class="lead">
+每次快照重建，都要给<strong>整个工具目录</strong>重新算一遍嵌入——可工具大多<strong>压根没变</strong>，重算就是白白花钱、白等延迟。
+<span class="inline">CachingEmbedder</span> 是一个<strong>装饰器</strong>：它包在任意 <span class="inline">Embedder</span> 外面，按<strong>文本内容的哈希</strong>记住算过的向量，
+只把<strong>缓存未命中</strong>的文本转发给内层 embedder。见过的文本，直接复用旧向量。
+</p>
+
+<div class="card analogy">
+  <div class="tag">🔌 生活类比</div>
+  像<strong>背单词卡片</strong>：见过的词翻面直接念出答案，只有<strong>没见过的生词</strong>才去翻词典。
+  词典（内层 embedder）很贵又慢，卡片堆（缓存）又快又免费——所以能不翻就不翻。
+</div>
+
+<h2>怎么记：用内容哈希当 key</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p>缓存的 key 是<strong>文本内容的 64-bit 哈希</strong>，用 <strong>FNV-1a</strong> 算法（<span class="inline">hash_text</span>：初值
+  <span class="inline">0xcbf29ce484222325</span>，每个字节异或后乘 <span class="inline">0x100000001b3</span>）。命中就直接复用缓存里的向量，
+  未命中才会真正去嵌入。<span class="inline">embed</span> 的实现分<strong>三段</strong>：先收集 miss、只嵌 miss、再按原序重组。</p>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/src/caching.rs · CachingEmbedder::embed</span></div>
+<pre><span class="kw">fn</span> <span class="fn">hash_text</span>(text: &amp;<span class="kw">str</span>) -&gt; <span class="kw">u64</span> {       <span class="cm">// FNV-1a</span>
+    <span class="kw">let mut</span> h: <span class="kw">u64</span> = <span class="st">0xcbf29ce484222325</span>;
+    <span class="kw">for</span> b <span class="kw">in</span> text.<span class="fn">as_bytes</span>() { h ^= *b <span class="kw">as</span> <span class="kw">u64</span>; h = h.<span class="fn">wrapping_mul</span>(<span class="st">0x100000001b3</span>); }
+    h
+}
+
+<span class="kw">async fn</span> <span class="fn">embed</span>(&amp;self, texts: &amp;[String]) -&gt; Result&lt;Vec&lt;Vec&lt;f32&gt;&gt;, EmbedError&gt; {
+    <span class="kw">let</span> hashes: Vec&lt;<span class="kw">u64</span>&gt; = texts.<span class="fn">iter</span>().<span class="fn">map</span>(|t| <span class="fn">hash_text</span>(t)).<span class="fn">collect</span>();
+
+    <span class="cm">// ① 持锁：收集去重的 cache-miss 文本，保留首次出现顺序</span>
+    <span class="kw">let mut</span> miss_texts = Vec::new();
+    { <span class="kw">let</span> cache = self.cache.<span class="fn">lock</span>().<span class="fn">unwrap</span>();
+      <span class="kw">for</span> (h, t) <span class="kw">in</span> hashes.<span class="fn">iter</span>().<span class="fn">zip</span>(texts) {
+          <span class="kw">if</span> !cache.<span class="fn">contains_key</span>(h) &amp;&amp; miss_seen.<span class="fn">insert</span>(*h) { miss_texts.<span class="fn">push</span>(t.<span class="fn">clone</span>()); } } }
+
+    <span class="cm">// ② 不持锁：全命中就跳过；否则只嵌 miss，再持锁写回</span>
+    <span class="kw">if</span> !miss_texts.<span class="fn">is_empty</span>() {
+        <span class="kw">let</span> embedded = self.inner.<span class="fn">embed</span>(&amp;miss_texts).<span class="kw">await</span>?;   <span class="cm">// ← 此处不持锁</span>
+        <span class="kw">let mut</span> cache = self.cache.<span class="fn">lock</span>().<span class="fn">unwrap</span>();
+        <span class="kw">for</span> (t, v) <span class="kw">in</span> miss_texts.<span class="fn">iter</span>().<span class="fn">zip</span>(embedded) { cache.<span class="fn">insert</span>(<span class="fn">hash_text</span>(t), Arc::<span class="fn">from</span>(/* v */)); }
+    }
+
+    <span class="cm">// ③ 持锁：按原始输入顺序重组输出</span>
+    <span class="kw">let</span> cache = self.cache.<span class="fn">lock</span>().<span class="fn">unwrap</span>();
+    Ok(hashes.<span class="fn">iter</span>().<span class="fn">map</span>(|h| cache.<span class="fn">get</span>(h).<span class="fn">expect</span>(<span class="st">"just inserted/hit"</span>).<span class="fn">to_vec</span>()).<span class="fn">collect</span>())
+}</pre>
+  </div>
+</div>
+
+<h2>关键纪律：绝不跨 .await 持锁</h2>
+
+<div class="card warn">
+  <div class="tag">⚠️ 锁纪律</div>
+  <p>缓存用的是 <span class="inline">std::sync::Mutex</span>（同步锁），而 <span class="inline">embed</span> 是 <span class="inline">async</span> 的。
+  实现把工作切成<strong>三个互不相交的临界区</strong>，<strong>绝不把锁跨 <span class="inline">.await</span> 持有</strong>：</p>
+  <div class="vflow">
+    <div class="step"><div class="num">1</div><div class="sc"><h4>持锁 · 读 miss</h4>
+      <p>锁住缓存，挑出去重的未命中文本，<strong>出了 <span class="inline">{}</span> 作用域立刻解锁</strong>。</p></div></div>
+    <div class="step"><div class="num">2</div><div class="sc"><h4>不持锁 · 只嵌 miss</h4>
+      <p><span class="inline">inner.embed(&amp;miss_texts).await</span> 在这里发生——<strong>此时手里没有锁</strong>，再持锁把结果写回。</p></div></div>
+    <div class="step"><div class="num">3</div><div class="sc"><h4>持锁 · 重组</h4>
+      <p>重新锁住缓存，按原始输入顺序拼出每个文本对应的向量。</p></div></div>
+  </div>
+  <p>为什么重要？<span class="inline">std::sync::Mutex</span> 的守卫<strong>不是 <span class="inline">Send</span></strong>，跨 <span class="inline">.await</span> 持有它
+  会让 future 无法在多线程执行器间迁移，更糟的是<strong>持锁等待网络</strong>会把别的任务全堵死。把唯一的 <span class="inline">.await</span> 夹在两次解锁之间，正好避开这一切。</p>
+</div>
+
+<h2>为什么那个 .expect 永不 panic</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / insert-only 不变量</div>
+  <p>第三段重组里的 <span class="inline">.expect("just inserted/hit")</span> <strong>永远不会触发 panic</strong>，靠的是一条
+  <strong>insert-only（只插入、从不淘汰）不变量</strong>：到这一步，每个 key 要么<strong>本来就命中</strong>、要么<strong>刚刚在第二段被插入</strong>，
+  而缓存<strong>从不删除、从不淘汰</strong>，所以此刻<strong>每个 key 必然存在</strong>。
+  源码里有注释明确写道：将来若加 <span class="inline">LRU</span>/<span class="inline">TTL</span> 淘汰策略，就必须在<strong>这一步重新处理 miss</strong>，否则这个 <span class="inline">.expect</span> 就会变成真正的 bug。</p>
+</div>
+
+<h2>缓存跨多次重建存活</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 跨 rebuild 持久</div>
+  <p>在装配层，<span class="inline">CachingEmbedder</span> 只被<strong>构造一次</strong>（细节见<strong>第 08 课</strong>），于是同一个缓存会<strong>跨多次
+  <span class="inline">rebuild_snapshot</span> 存活</strong>——没变的工具<strong>不会被重复嵌入</strong>。
+  有门控测试用 <span class="inline">MockEmbedder.calls</span> 断言这一点：<strong>第二次重建时内层调用次数不再增长</strong>，证明命中全部走了缓存。</p>
+</div>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li><span class="inline">CachingEmbedder</span> 是<strong>装饰器</strong>：按 <strong>FNV-1a</strong> 内容哈希记忆向量，只转发 cache-miss 给内层。</li>
+    <li><strong>三段式、绝不跨 <span class="inline">.await</span> 持锁</strong>：读 miss → 不持锁嵌入 → 重组，全程不阻塞异步执行器。</li>
+    <li>重组的 <span class="inline">.expect</span> 在 <strong>insert-only 不变量</strong>下永不 panic；加淘汰策略必须重写此处。</li>
+    <li>缓存<strong>跨 rebuild 存活</strong>，未变工具<strong>零重复嵌入</strong>，省钱又省延迟。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  装饰器模式把「<strong>省钱省延迟</strong>」这件事<strong>正交地</strong>叠加在<strong>任意</strong> <span class="inline">Embedder</span> 之上：
+  内层是 OpenAI 还是本地服务、是 Mock 还是别的实现，统统无所谓；上层的 <span class="inline">VectorStrategy</span> 也<strong>完全无感</strong>——
+  它拿到的还是一个普通 <span class="inline">Embedder</span>，缓存这层对它彻底透明。
+</div>
+
   <div class="footnav"><a class="prev" href="05-embedder.html"><div class="dir">← 上一课</div><div class="ttl">Embedder 抽象 & OpenAiEmbedder</div></a><a class="next" href="07-vector-strategy.html"><div class="dir">下一课 →</div><div class="ttl">VectorStrategy 余弦 + 降级</div></a></div>
 </div>
 

@@ -228,3 +228,214 @@ LESSON_05 = r"""
   换厂商（OpenAI / 本地服务）也只换一个实现，检索内核一行都不用动。
 </div>
 """
+
+# ---------------------------------------------------------------------------
+LESSON_06 = r"""
+<p class="lead">
+每次快照重建，都要给<strong>整个工具目录</strong>重新算一遍嵌入——可工具大多<strong>压根没变</strong>，重算就是白白花钱、白等延迟。
+<span class="inline">CachingEmbedder</span> 是一个<strong>装饰器</strong>：它包在任意 <span class="inline">Embedder</span> 外面，按<strong>文本内容的哈希</strong>记住算过的向量，
+只把<strong>缓存未命中</strong>的文本转发给内层 embedder。见过的文本，直接复用旧向量。
+</p>
+
+<div class="card analogy">
+  <div class="tag">🔌 生活类比</div>
+  像<strong>背单词卡片</strong>：见过的词翻面直接念出答案，只有<strong>没见过的生词</strong>才去翻词典。
+  词典（内层 embedder）很贵又慢，卡片堆（缓存）又快又免费——所以能不翻就不翻。
+</div>
+
+<h2>怎么记：用内容哈希当 key</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p>缓存的 key 是<strong>文本内容的 64-bit 哈希</strong>，用 <strong>FNV-1a</strong> 算法（<span class="inline">hash_text</span>：初值
+  <span class="inline">0xcbf29ce484222325</span>，每个字节异或后乘 <span class="inline">0x100000001b3</span>）。命中就直接复用缓存里的向量，
+  未命中才会真正去嵌入。<span class="inline">embed</span> 的实现分<strong>三段</strong>：先收集 miss、只嵌 miss、再按原序重组。</p>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/src/caching.rs · CachingEmbedder::embed</span></div>
+<pre><span class="kw">fn</span> <span class="fn">hash_text</span>(text: &amp;<span class="kw">str</span>) -&gt; <span class="kw">u64</span> {       <span class="cm">// FNV-1a</span>
+    <span class="kw">let mut</span> h: <span class="kw">u64</span> = <span class="st">0xcbf29ce484222325</span>;
+    <span class="kw">for</span> b <span class="kw">in</span> text.<span class="fn">as_bytes</span>() { h ^= *b <span class="kw">as</span> <span class="kw">u64</span>; h = h.<span class="fn">wrapping_mul</span>(<span class="st">0x100000001b3</span>); }
+    h
+}
+
+<span class="kw">async fn</span> <span class="fn">embed</span>(&amp;self, texts: &amp;[String]) -&gt; Result&lt;Vec&lt;Vec&lt;f32&gt;&gt;, EmbedError&gt; {
+    <span class="kw">let</span> hashes: Vec&lt;<span class="kw">u64</span>&gt; = texts.<span class="fn">iter</span>().<span class="fn">map</span>(|t| <span class="fn">hash_text</span>(t)).<span class="fn">collect</span>();
+
+    <span class="cm">// ① 持锁：收集去重的 cache-miss 文本，保留首次出现顺序</span>
+    <span class="kw">let mut</span> miss_texts = Vec::new();
+    { <span class="kw">let</span> cache = self.cache.<span class="fn">lock</span>().<span class="fn">unwrap</span>();
+      <span class="kw">for</span> (h, t) <span class="kw">in</span> hashes.<span class="fn">iter</span>().<span class="fn">zip</span>(texts) {
+          <span class="kw">if</span> !cache.<span class="fn">contains_key</span>(h) &amp;&amp; miss_seen.<span class="fn">insert</span>(*h) { miss_texts.<span class="fn">push</span>(t.<span class="fn">clone</span>()); } } }
+
+    <span class="cm">// ② 不持锁：全命中就跳过；否则只嵌 miss，再持锁写回</span>
+    <span class="kw">if</span> !miss_texts.<span class="fn">is_empty</span>() {
+        <span class="kw">let</span> embedded = self.inner.<span class="fn">embed</span>(&amp;miss_texts).<span class="kw">await</span>?;   <span class="cm">// ← 此处不持锁</span>
+        <span class="kw">let mut</span> cache = self.cache.<span class="fn">lock</span>().<span class="fn">unwrap</span>();
+        <span class="kw">for</span> (t, v) <span class="kw">in</span> miss_texts.<span class="fn">iter</span>().<span class="fn">zip</span>(embedded) { cache.<span class="fn">insert</span>(<span class="fn">hash_text</span>(t), Arc::<span class="fn">from</span>(/* v */)); }
+    }
+
+    <span class="cm">// ③ 持锁：按原始输入顺序重组输出</span>
+    <span class="kw">let</span> cache = self.cache.<span class="fn">lock</span>().<span class="fn">unwrap</span>();
+    Ok(hashes.<span class="fn">iter</span>().<span class="fn">map</span>(|h| cache.<span class="fn">get</span>(h).<span class="fn">expect</span>(<span class="st">"just inserted/hit"</span>).<span class="fn">to_vec</span>()).<span class="fn">collect</span>())
+}</pre>
+  </div>
+</div>
+
+<h2>关键纪律：绝不跨 .await 持锁</h2>
+
+<div class="card warn">
+  <div class="tag">⚠️ 锁纪律</div>
+  <p>缓存用的是 <span class="inline">std::sync::Mutex</span>（同步锁），而 <span class="inline">embed</span> 是 <span class="inline">async</span> 的。
+  实现把工作切成<strong>三个互不相交的临界区</strong>，<strong>绝不把锁跨 <span class="inline">.await</span> 持有</strong>：</p>
+  <div class="vflow">
+    <div class="step"><div class="num">1</div><div class="sc"><h4>持锁 · 读 miss</h4>
+      <p>锁住缓存，挑出去重的未命中文本，<strong>出了 <span class="inline">{}</span> 作用域立刻解锁</strong>。</p></div></div>
+    <div class="step"><div class="num">2</div><div class="sc"><h4>不持锁 · 只嵌 miss</h4>
+      <p><span class="inline">inner.embed(&amp;miss_texts).await</span> 在这里发生——<strong>此时手里没有锁</strong>，再持锁把结果写回。</p></div></div>
+    <div class="step"><div class="num">3</div><div class="sc"><h4>持锁 · 重组</h4>
+      <p>重新锁住缓存，按原始输入顺序拼出每个文本对应的向量。</p></div></div>
+  </div>
+  <p>为什么重要？<span class="inline">std::sync::Mutex</span> 的守卫<strong>不是 <span class="inline">Send</span></strong>，跨 <span class="inline">.await</span> 持有它
+  会让 future 无法在多线程执行器间迁移，更糟的是<strong>持锁等待网络</strong>会把别的任务全堵死。把唯一的 <span class="inline">.await</span> 夹在两次解锁之间，正好避开这一切。</p>
+</div>
+
+<h2>为什么那个 .expect 永不 panic</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / insert-only 不变量</div>
+  <p>第三段重组里的 <span class="inline">.expect("just inserted/hit")</span> <strong>永远不会触发 panic</strong>，靠的是一条
+  <strong>insert-only（只插入、从不淘汰）不变量</strong>：到这一步，每个 key 要么<strong>本来就命中</strong>、要么<strong>刚刚在第二段被插入</strong>，
+  而缓存<strong>从不删除、从不淘汰</strong>，所以此刻<strong>每个 key 必然存在</strong>。
+  源码里有注释明确写道：将来若加 <span class="inline">LRU</span>/<span class="inline">TTL</span> 淘汰策略，就必须在<strong>这一步重新处理 miss</strong>，否则这个 <span class="inline">.expect</span> 就会变成真正的 bug。</p>
+</div>
+
+<h2>缓存跨多次重建存活</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 跨 rebuild 持久</div>
+  <p>在装配层，<span class="inline">CachingEmbedder</span> 只被<strong>构造一次</strong>（细节见<strong>第 08 课</strong>），于是同一个缓存会<strong>跨多次
+  <span class="inline">rebuild_snapshot</span> 存活</strong>——没变的工具<strong>不会被重复嵌入</strong>。
+  有门控测试用 <span class="inline">MockEmbedder.calls</span> 断言这一点：<strong>第二次重建时内层调用次数不再增长</strong>，证明命中全部走了缓存。</p>
+</div>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li><span class="inline">CachingEmbedder</span> 是<strong>装饰器</strong>：按 <strong>FNV-1a</strong> 内容哈希记忆向量，只转发 cache-miss 给内层。</li>
+    <li><strong>三段式、绝不跨 <span class="inline">.await</span> 持锁</strong>：读 miss → 不持锁嵌入 → 重组，全程不阻塞异步执行器。</li>
+    <li>重组的 <span class="inline">.expect</span> 在 <strong>insert-only 不变量</strong>下永不 panic；加淘汰策略必须重写此处。</li>
+    <li>缓存<strong>跨 rebuild 存活</strong>，未变工具<strong>零重复嵌入</strong>，省钱又省延迟。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  装饰器模式把「<strong>省钱省延迟</strong>」这件事<strong>正交地</strong>叠加在<strong>任意</strong> <span class="inline">Embedder</span> 之上：
+  内层是 OpenAI 还是本地服务、是 Mock 还是别的实现，统统无所谓；上层的 <span class="inline">VectorStrategy</span> 也<strong>完全无感</strong>——
+  它拿到的还是一个普通 <span class="inline">Embedder</span>，缓存这层对它彻底透明。
+</div>
+"""
+
+# ---------------------------------------------------------------------------
+LESSON_07 = r"""
+<p class="lead">
+<span class="inline">VectorStrategy</span> 在云端嵌入之上做<strong>暴力余弦检索</strong>——工具目录很小，<strong>线性扫一遍</strong>就足够快，
+不需要近似最近邻索引。而当嵌入服务不可用时，它会<strong>透明回落</strong>到内置的 BM25，对上层完全不露痕迹。
+</p>
+
+<h2>数据结构</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">VectorStrategy</span> 持有四样东西：</p>
+  <ul>
+    <li><span class="inline">embedder: Arc&lt;dyn Embedder&gt;</span>——把文本转成向量（很可能外面还套了第 06 课的缓存）。</li>
+    <li><span class="inline">bm25: Bm25Strategy</span>——<strong>内置的字面兜底</strong>策略。</li>
+    <li><span class="inline">vectors: Vec&lt;(qualified_name, description, 归一化向量)&gt;</span>——降级时为空。</li>
+    <li><span class="inline">degraded: bool</span>——是否已退化为纯 BM25。</li>
+  </ul>
+  <p>每个工具被嵌入的文本是 <span class="inline">tool_text</span> = <span class="inline">"{qualified_name}\n{description}"</span>（限定名 + 换行 + 描述）。</p>
+</div>
+
+<h2>index：先建兜底，再尝试嵌入</h2>
+
+<div class="vflow">
+  <div class="step"><div class="num">1</div><div class="sc"><h4>总是先建 BM25</h4>
+    <p><span class="inline">self.bm25 = Bm25Strategy::new(); self.bm25.index(catalog).await;</span> ——
+    <strong>无论嵌入成不成功，兜底索引先就位</strong>。</p></div></div>
+  <div class="step"><div class="num">2</div><div class="sc"><h4>收集 tool_text 并批量嵌入</h4>
+    <p>对目录里每个工具算 <span class="inline">tool_text</span>，再一次性 <span class="inline">embedder.embed(&amp;texts).await</span>。</p></div></div>
+  <div class="step"><div class="num">3</div><div class="sc"><h4>数量匹配 → 存归一化向量</h4>
+    <p><span class="inline">Ok(vecs)</span> 且 <span class="inline">vecs.len() == tools.len()</span>：把每个向量 <span class="inline">normalize</span> 后存入
+    <span class="inline">vectors</span>，<span class="inline">degraded = false</span>。</p></div></div>
+  <div class="step"><div class="num">4</div><div class="sc"><h4>数量不符 → 降级</h4>
+    <p><span class="inline">Ok(vecs)</span> 但数量对不上：这违反 embedder 的 <strong>all-or-nothing / 顺序对应</strong>契约，
+    强行 <span class="inline">zip</span> 会让向量与工具<strong>错位</strong>。于是<strong>清空 <span class="inline">vectors</span>、<span class="inline">degraded = true</span></strong>，
+    宁可降级也不建错位索引。</p></div></div>
+  <div class="step"><div class="num">5</div><div class="sc"><h4>Err → 降级</h4>
+    <p>嵌入直接报错，同样清空向量、<span class="inline">degraded = true</span>，退回 BM25。</p></div></div>
+</div>
+
+<h2>search：余弦打分，单次失败也兜底</h2>
+
+<div class="flow">
+  <div class="node"><div class="nt">degraded 或 vectors 空？</div><div class="nd">是 → 直接 bm25.search</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">嵌入 query</div><div class="nd">单次失败 → 回落 BM25</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="nt">余弦打分</div><div class="nd">dot(归一化 query, 归一化向量)</div></div>
+  <div class="arrow">→</div>
+  <div class="node hl"><div class="nt">排序 + 截断</div><div class="nd">score 降序, qualified_name 升序 → top_k</div></div>
+</div>
+
+<p>当 <span class="inline">degraded</span> 或 <span class="inline">vectors</span> 为空时，<span class="inline">search</span> 直接走
+<span class="inline">bm25.search(query, top_k)</span>；否则先嵌入查询（<strong>这一次嵌入失败也回落 BM25</strong>），
+对每个工具算 <span class="inline">dot(归一化 query, 归一化向量)</span> 即<strong>余弦相似度</strong>，
+按 <span class="inline">score</span> <strong>降序</strong>、并列时按 <span class="inline">qualified_name</span> <strong>升序</strong>做<strong>稳定排序</strong>，最后截断到 <span class="inline">top_k</span>。</p>
+
+<h2>零范数不会算出 NaN</h2>
+
+<div class="card detail">
+  <div class="tag">🔬 细节 / 代码对应</div>
+  <p><span class="inline">normalize</span> 做 L2 归一化时，对<strong>零向量原样返回</strong>（不做除法），所以<strong>绝不会除以 0</strong>，
+  余弦打分里也就<strong>永远不会冒出 NaN</strong>。</p>
+  <div class="codefile">
+    <div class="cf-head"><span class="dot"></span><span class="path">crates/retrieval/src/vector.rs · normalize</span></div>
+<pre><span class="cm">// L2 归一化（原地）；零向量原样返回——它和任何向量的余弦都是 0</span>
+<span class="kw">fn</span> <span class="fn">normalize</span>(<span class="kw">mut</span> v: Vec&lt;f32&gt;) -&gt; Vec&lt;f32&gt; {
+    <span class="kw">let</span> norm = v.<span class="fn">iter</span>().<span class="fn">map</span>(|x| x * x).<span class="fn">sum</span>::&lt;f32&gt;().<span class="fn">sqrt</span>();
+    <span class="kw">if</span> norm &gt; <span class="st">0.0</span> {              <span class="cm">// ← 仅当范数 &gt; 0 才除，零向量跳过</span>
+        <span class="kw">for</span> x <span class="kw">in</span> &amp;<span class="kw">mut</span> v { *x /= norm; }
+    }
+    v
+}</pre>
+  </div>
+</div>
+
+<div class="card warn">
+  <div class="tag">⚠️ 双重降级的两条路径</div>
+  <p>「降级到 BM25」会在<strong>两个时机</strong>各自独立发生，别混为一谈：</p>
+  <ul>
+    <li><strong>index-time（建索引时）</strong>：整批嵌入 <span class="inline">Err</span>，<strong>或</strong>返回向量<strong>数量不符</strong> →
+      清空 <span class="inline">vectors</span>、<span class="inline">degraded = true</span>。此后所有查询都走 BM25。</li>
+    <li><strong>query-time（单次查询时）</strong>：即便索引是好的，<strong>这一次</strong>查询的嵌入失败，也会<strong>临时</strong>回落到
+      <span class="inline">bm25.search</span>——不改 <span class="inline">degraded</span>，下次查询仍会再试向量。</li>
+  </ul>
+</div>
+
+<div class="card key">
+  <div class="tag">✅ 关键要点</div>
+  <ul>
+    <li><strong>余弦 = 归一化点积</strong>：向量都先 <span class="inline">normalize</span>，打分就是一个 <span class="inline">dot</span>。</li>
+    <li><strong>稳定排序</strong>：<span class="inline">score</span> 降序 + <span class="inline">qualified_name</span> 升序，结果确定可复现，再截断 <span class="inline">top_k</span>。</li>
+    <li><strong>永不 NaN</strong>：零向量原样返回，不除零。</li>
+    <li><strong>永不硬失败</strong>：index 与 query 两处都能透明回落 BM25。</li>
+  </ul>
+</div>
+
+<div class="card spark">
+  <div class="tag">💡 设计亮点</div>
+  <span class="inline">VectorStrategy</span> 把「<strong>语义检索</strong>」与「<strong>字面兜底</strong>」缝进<strong>同一个策略</strong>里，
+  对上层而言它就只是一个普通的 <span class="inline">RetrievalStrategy</span>——调用方既不用判断嵌入服务是否健在，也不用自己拼装兜底逻辑。
+</div>
+"""
