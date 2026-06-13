@@ -17,11 +17,11 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetrievalConfig {
-    /// "bm25" | "vector" | "hybrid". Only "bm25" is implemented in v1.
+    /// "bm25" | "vector" | "hybrid". All three are implemented; default is "bm25".
     pub strategy: String,
     /// Number of tools `search_tools` returns.
     pub top_k: usize,
-    /// `[retrieval.vector]` provider config. Required when strategy is "vector".
+    /// `[retrieval.vector]` provider config. Required when strategy is "vector" or "hybrid".
     pub vector: Option<VectorConfig>,
 }
 
