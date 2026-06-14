@@ -23,6 +23,8 @@ pub struct RetrievalConfig {
     pub top_k: usize,
     /// `[retrieval.vector]` provider config. Required when strategy is "vector" or "hybrid".
     pub vector: Option<VectorConfig>,
+    /// `[retrieval.subagent]` provider config. Required when strategy is "subagent".
+    pub subagent: Option<SubagentConfig>,
 }
 
 impl Default for RetrievalConfig {
@@ -31,6 +33,7 @@ impl Default for RetrievalConfig {
             strategy: "bm25".into(),
             top_k: 8,
             vector: None,
+            subagent: None,
         }
     }
 }
@@ -52,6 +55,26 @@ pub struct VectorConfig {
 }
 
 fn default_vector_base_url() -> String {
+    "https://api.openai.com/v1".into()
+}
+
+/// `[retrieval.subagent]`: OpenAI-compatible chat provider for the subagent reranker.
+/// Secrets via env name only.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubagentConfig {
+    #[serde(default = "default_subagent_base_url")]
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: String,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// BM25 prefilter shortlist size handed to the model. None -> retrieval's default.
+    #[serde(default)]
+    pub candidates: Option<usize>,
+}
+
+fn default_subagent_base_url() -> String {
     "https://api.openai.com/v1".into()
 }
 
@@ -180,7 +203,7 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        const KNOWN: [&str; 3] = ["bm25", "vector", "hybrid"];
+        const KNOWN: [&str; 4] = ["bm25", "vector", "hybrid", "subagent"];
         if !KNOWN.contains(&self.retrieval.strategy.as_str()) {
             return Err(ConfigError::Invalid(format!(
                 "unknown retrieval.strategy {:?} (expected one of {KNOWN:?})",
@@ -206,6 +229,31 @@ impl Config {
                         return Err(ConfigError::Invalid(
                             "[retrieval.vector] base_url/model/api_key_env must be non-empty"
                                 .into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if self.retrieval.strategy == "subagent" {
+            match &self.retrieval.subagent {
+                None => {
+                    return Err(ConfigError::Invalid(
+                        "strategy=\"subagent\" requires a [retrieval.subagent] section".into(),
+                    ))
+                }
+                Some(s) => {
+                    if s.base_url.trim().is_empty()
+                        || s.model.trim().is_empty()
+                        || s.api_key_env.trim().is_empty()
+                    {
+                        return Err(ConfigError::Invalid(
+                            "[retrieval.subagent] base_url/model/api_key_env must be non-empty"
+                                .into(),
+                        ));
+                    }
+                    if s.candidates == Some(0) {
+                        return Err(ConfigError::Invalid(
+                            "[retrieval.subagent] candidates must be > 0".into(),
                         ));
                     }
                 }
@@ -533,6 +581,50 @@ mod tests {
     fn vector_section_rejects_unknown_field() {
         let err = Config::from_toml_str(
             "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"K\"\nbogus=1\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn parses_retrieval_subagent_section() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [retrieval]
+            strategy = "subagent"
+            [retrieval.subagent]
+            model = "gpt-4o-mini"
+            api_key_env = "OPENAI_API_KEY"
+            candidates = 30
+            "#,
+        )
+        .unwrap();
+        let s = cfg.retrieval.subagent.expect("subagent section");
+        assert_eq!(s.base_url, "https://api.openai.com/v1"); // default
+        assert_eq!(s.model, "gpt-4o-mini");
+        assert_eq!(s.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(s.candidates, Some(30));
+    }
+
+    #[test]
+    fn subagent_strategy_requires_subagent_section() {
+        let err = Config::from_toml_str("[retrieval]\nstrategy = \"subagent\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn subagent_rejects_zero_candidates() {
+        let err = Config::from_toml_str(
+            "[retrieval]\nstrategy=\"subagent\"\n[retrieval.subagent]\nmodel=\"m\"\napi_key_env=\"K\"\ncandidates=0\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn subagent_section_rejects_unknown_field() {
+        let err = Config::from_toml_str(
+            "[retrieval]\nstrategy=\"subagent\"\n[retrieval.subagent]\nmodel=\"m\"\napi_key_env=\"K\"\nbogus=1\n",
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
