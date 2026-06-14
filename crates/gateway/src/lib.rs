@@ -6,8 +6,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use catalog::Catalog;
 use metatools::GatewaySnapshot;
-use retrieval::build_strategy;
-use retrieval::Embedder;
+use retrieval::{build_strategy, Backends, Embedder};
 use tokio::sync::Mutex;
 use upstream::registry::UpstreamRegistry;
 
@@ -33,37 +32,32 @@ pub struct GatewayState {
     snapshot: Arc<ArcSwap<GatewaySnapshot>>,
     registry: UpstreamRegistry,
     strategy_name: Arc<str>,
-    /// Optional embedder backing "vector"/"hybrid" strategies. Held across rebuilds so a
-    /// `CachingEmbedder` keeps its cache (only newly-added tools are embedded each rebuild).
-    embedder: Option<Arc<dyn Embedder>>,
+    /// Optional retrieval backends (embedder/chat), held across rebuilds so a CachingEmbedder keeps its cache.
+    backends: Backends,
     /// Serializes rebuilds so concurrent triggers can't commit a stale snapshot
     /// (last-store-wins). Readers never touch this — they only load the `ArcSwap`.
     rebuild_lock: Arc<Mutex<()>>,
 }
 
 impl GatewayState {
-    /// Assemble state for `strategy_name`, optionally backed by `embedder`. Shared by
-    /// `new`/`with_embedder` so the assembly logic lives in one place (no drift).
-    fn build(
-        strategy_name: &str,
-        embedder: Option<Arc<dyn Embedder>>,
-    ) -> Result<Self, GatewayError> {
-        let strat = build_strategy(strategy_name, embedder.as_ref())
+    /// Assemble state for `strategy_name`, optionally backed by `backends`. Shared by
+    /// `new`/`with_embedder`/`with_backends` so the assembly logic lives in one place (no drift).
+    fn build(strategy_name: &str, backends: Backends) -> Result<Self, GatewayError> {
+        let strat = build_strategy(strategy_name, &backends)
             .map_err(|e| GatewayError::Strategy(e.to_string()))?;
         let empty = Catalog::new();
         Ok(Self {
             snapshot: Arc::new(ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))),
             registry: UpstreamRegistry::new(),
             strategy_name: Arc::from(strategy_name),
-            embedder,
+            backends,
             rebuild_lock: Arc::new(Mutex::new(())),
         })
     }
 
     /// Create empty state (no upstreams, empty catalog) using `strategy_name` (e.g. "bm25").
-    /// Returns an error if the strategy is not implemented.
     pub fn new(strategy_name: &str) -> Result<Self, GatewayError> {
-        Self::build(strategy_name, None)
+        Self::build(strategy_name, Backends::default())
     }
 
     /// Create state whose retrieval strategy is backed by `embedder` (for "vector"/"hybrid").
@@ -71,7 +65,18 @@ impl GatewayState {
         strategy_name: &str,
         embedder: Arc<dyn Embedder>,
     ) -> Result<Self, GatewayError> {
-        Self::build(strategy_name, Some(embedder))
+        Self::build(
+            strategy_name,
+            Backends {
+                embedder: Some(embedder),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Create state with arbitrary retrieval `backends` (e.g. a `chat` model for "subagent").
+    pub fn with_backends(strategy_name: &str, backends: Backends) -> Result<Self, GatewayError> {
+        Self::build(strategy_name, backends)
     }
 
     /// The upstream registry (B.2's eager-connect populates it; tests inject mock handles).
@@ -122,7 +127,7 @@ impl GatewayState {
         summary.ingested.sort();
         summary.skipped.sort();
 
-        let mut strat = build_strategy(&self.strategy_name, self.embedder.as_ref())
+        let mut strat = build_strategy(&self.strategy_name, &self.backends)
             .map_err(|e| GatewayError::Strategy(e.to_string()))?;
         strat.index(&catalog).await;
         self.snapshot

@@ -185,23 +185,37 @@ pub enum StrategyError {
     NotImplemented(String),
     #[error("retrieval strategy {0:?} requires an embedder but none was configured")]
     EmbedderRequired(String),
+    #[error("retrieval strategy {0:?} requires a chat model but none was configured")]
+    ChatModelRequired(String),
 }
 
-/// Construct a retrieval strategy by name. "vector" and "hybrid" both require an `embedder`.
+/// Optional retrieval backends injected into `build_strategy`. Bundling them keeps the factory
+/// signature stable as new backends are added. `bm25` needs none; `vector`/`hybrid` need
+/// `embedder`; `subagent` needs `chat`.
+#[derive(Default, Clone)]
+pub struct Backends {
+    pub embedder: Option<std::sync::Arc<dyn Embedder>>,
+    pub chat: Option<std::sync::Arc<dyn ChatModel>>,
+    /// Shortlist size for "subagent"'s BM25 prefilter (None -> default). Consumed by the subagent
+    /// arm added in T3; carried here so the factory signature stays stable.
+    pub subagent_candidates: Option<usize>,
+}
+
+/// Construct a retrieval strategy by name, wired with the given optional `backends`.
 ///
-/// Takes a plain `&str` (not a config type) so this crate stays free of any
-/// dependency on `config` — callers pass `cfg.retrieval.strategy.as_str()`.
+/// Takes a plain `&str` (not a config type) so this crate stays free of any dependency on
+/// `config` — callers pass `cfg.retrieval.strategy.as_str()`.
 pub fn build_strategy(
     name: &str,
-    embedder: Option<&std::sync::Arc<dyn Embedder>>,
+    backends: &Backends,
 ) -> Result<Box<dyn RetrievalStrategy>, StrategyError> {
     match name {
         "bm25" => Ok(Box::new(Bm25Strategy::new())),
-        "vector" => match embedder {
+        "vector" => match backends.embedder.as_ref() {
             Some(e) => Ok(Box::new(VectorStrategy::new(e.clone()))),
             None => Err(StrategyError::EmbedderRequired(name.to_string())),
         },
-        "hybrid" => match embedder {
+        "hybrid" => match backends.embedder.as_ref() {
             Some(e) => Ok(Box::new(HybridStrategy::new(e.clone()))),
             None => Err(StrategyError::EmbedderRequired(name.to_string())),
         },
@@ -294,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_strategy_returns_bm25_and_indexes() {
-        let mut strat = build_strategy("bm25", None).expect("bm25 is supported");
+        let mut strat = build_strategy("bm25", &Backends::default()).expect("bm25 is supported");
         strat.index(&sample_catalog()).await;
         let hits = strat.search("forecast", 8).await;
         assert_eq!(
@@ -307,16 +321,16 @@ mod tests {
     fn build_strategy_errors_appropriately() {
         // hybrid without an embedder now errors as EmbedderRequired (was NotImplemented pre-M2-B).
         assert!(matches!(
-            build_strategy("hybrid", None),
+            build_strategy("hybrid", &Backends::default()),
             Err(StrategyError::EmbedderRequired(_))
         ));
         assert!(matches!(
-            build_strategy("vector", None),
+            build_strategy("vector", &Backends::default()),
             Err(StrategyError::EmbedderRequired(_))
         ));
         // A genuinely unknown name is still NotImplemented.
         assert!(matches!(
-            build_strategy("nope", None),
+            build_strategy("nope", &Backends::default()),
             Err(StrategyError::NotImplemented(_))
         ));
     }
