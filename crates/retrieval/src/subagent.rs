@@ -37,7 +37,8 @@ fn build_user_prompt(query: &str, shortlist: &[ScoredTool], top_k: usize) -> Str
 /// (drops hallucinations), de-duplicated, order-preserving. Empty on any failure (caller then
 /// degrades to BM25).
 fn parse_selection(reply: &str, allowed: &[ScoredTool]) -> Vec<String> {
-    // Extract the first JSON array `[ ... ]` (models sometimes wrap it in prose / code fences).
+    // Extract the span from the first `[` to the last `]` (models sometimes wrap the array in
+    // prose / code fences). Greedy by design; non-array spans then fail JSON parsing and degrade.
     let arr = match (reply.find('['), reply.rfind(']')) {
         (Some(a), Some(b)) if b > a => &reply[a..=b],
         _ => return Vec::new(),
@@ -90,7 +91,15 @@ impl RetrievalStrategy for SubagentStrategy {
             .complete(SYSTEM_PROMPT, &build_user_prompt(query, &shortlist, top_k))
             .await
         {
-            Ok(reply) => parse_selection(&reply, &shortlist),
+            Ok(reply) => {
+                let sel = parse_selection(&reply, &shortlist);
+                if sel.is_empty() {
+                    tracing::debug!(
+                        "subagent reply yielded no valid tools; falling back to BM25 shortlist"
+                    );
+                }
+                sel
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "subagent chat failed; falling back to BM25 shortlist");
                 Vec::new()
@@ -154,5 +163,13 @@ mod tests {
         assert!(parse_selection("no json here", &allowed).is_empty());
         assert!(parse_selection("[not valid json", &allowed).is_empty());
         assert!(parse_selection("[]", &allowed).is_empty());
+    }
+
+    #[test]
+    fn parse_returns_empty_on_non_string_json_array() {
+        // Valid JSON array but not of strings -> `from_str::<Vec<String>>` errors -> empty
+        // (exercises the serde parse-error arm, not just the bracket-extraction guard).
+        let allowed = vec![tool("a__x")];
+        assert!(parse_selection("[1, 2, 3]", &allowed).is_empty());
     }
 }
