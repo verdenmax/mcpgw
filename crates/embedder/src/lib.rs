@@ -1,6 +1,6 @@
 //! `OpenAiEmbedder`: an `Embedder` backed by an OpenAI-compatible `/embeddings` endpoint
-//! (OpenAI, or local servers like Ollama/LM Studio/vLLM that speak the same shape). The only
-//! crate in the workspace that depends on reqwest; everything else uses the `Embedder` trait.
+//! (OpenAI, or local servers like Ollama/LM Studio/vLLM that speak the same shape). One of two
+//! crates (with `chat`) that depend on reqwest; everything else uses the `Embedder` trait.
 
 use std::time::Duration;
 

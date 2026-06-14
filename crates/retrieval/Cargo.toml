@@ -11,9 +11,9 @@ catalog = { path = "../catalog" }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [[test]]
@@ -30,4 +30,8 @@ required-features = ["testkit"]
 
 [[test]]
 name = "hybrid"
+required-features = ["testkit"]
+
+[[test]]
+name = "subagent"
 required-features = ["testkit"]

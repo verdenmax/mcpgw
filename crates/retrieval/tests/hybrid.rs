@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use catalog::{Catalog, ToolDef};
 use retrieval::{
-    build_strategy, Bm25Strategy, EmbedError, Embedder, HybridStrategy, MockEmbedder,
+    build_strategy, Backends, Bm25Strategy, EmbedError, Embedder, HybridStrategy, MockEmbedder,
     RetrievalStrategy,
 };
 use serde_json::Value;
@@ -106,7 +106,14 @@ async fn hybrid_surfaces_vector_candidates_when_bm25_empty() {
 #[tokio::test]
 async fn build_strategy_hybrid_with_embedder_indexes_and_searches() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(64));
-    let mut strat = build_strategy("hybrid", Some(&embedder)).expect("hybrid ok with embedder");
+    let mut strat = build_strategy(
+        "hybrid",
+        &Backends {
+            embedder: Some(embedder.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("hybrid ok with embedder");
     strat.index(&sample()).await;
     let hits = strat.search("forecast", 8).await;
     assert_eq!(

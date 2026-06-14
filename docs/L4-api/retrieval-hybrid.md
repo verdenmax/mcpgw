@@ -11,7 +11,7 @@ impl HybridStrategy {
 }
 ```
 RRF 混合检索器：内部组合一个 `Bm25Strategy` 与一个 `VectorStrategy`（后者持有 `embedder`、自带 BM25 降级）。
-实现 `RetrievalStrategy`（async）。一般经 `build_strategy("hybrid", Some(embedder))` 构造。
+实现 `RetrievalStrategy`（async）。一般经 `build_strategy("hybrid", &Backends { embedder: Some(e), .. })` 构造。
 
 - `index(&mut self, &Catalog)`：分别 `index` BM25 与向量分量，并记录 `doc_count`（= 目录工具数，用作全深度子检索的 `top_k`）。
 - `search(&self, query, top_k)`：`doc_count == 0` → 空；否则取 `bm25.search(query, doc_count)` 与
