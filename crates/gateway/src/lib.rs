@@ -171,4 +171,18 @@ mod tests {
             .await
             .is_empty());
     }
+
+    #[tokio::test]
+    async fn with_embedder_rebuild_builds_hybrid_snapshot_no_upstreams() {
+        let state = super::GatewayState::with_embedder(
+            "hybrid",
+            std::sync::Arc::new(retrieval::MockEmbedder::new(16)),
+        )
+        .expect("hybrid state");
+        // No upstreams -> empty catalog; rebuild must succeed (embed of [] is fine).
+        state.rebuild_snapshot().await.expect("rebuild ok");
+        assert!(metatools::search_tools(&state.snapshot(), "anything", 5)
+            .await
+            .is_empty());
+    }
 }

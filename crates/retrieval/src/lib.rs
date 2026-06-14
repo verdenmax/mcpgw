@@ -3,11 +3,13 @@ use catalog::Catalog;
 
 mod caching;
 mod embedder;
+mod hybrid;
 mod vector;
 pub use caching::CachingEmbedder;
 #[cfg(feature = "testkit")]
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
+pub use hybrid::HybridStrategy;
 pub use vector::VectorStrategy;
 
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.
@@ -181,7 +183,7 @@ pub enum StrategyError {
     EmbedderRequired(String),
 }
 
-/// Construct a retrieval strategy by name. "vector" requires `embedder`; "hybrid" is M2-B.
+/// Construct a retrieval strategy by name. "vector" and "hybrid" both require an `embedder`.
 ///
 /// Takes a plain `&str` (not a config type) so this crate stays free of any
 /// dependency on `config` — callers pass `cfg.retrieval.strategy.as_str()`.
@@ -193,6 +195,10 @@ pub fn build_strategy(
         "bm25" => Ok(Box::new(Bm25Strategy::new())),
         "vector" => match embedder {
             Some(e) => Ok(Box::new(VectorStrategy::new(e.clone()))),
+            None => Err(StrategyError::EmbedderRequired(name.to_string())),
+        },
+        "hybrid" => match embedder {
+            Some(e) => Ok(Box::new(HybridStrategy::new(e.clone()))),
             None => Err(StrategyError::EmbedderRequired(name.to_string())),
         },
         other => Err(StrategyError::NotImplemented(other.to_string())),
@@ -295,13 +301,19 @@ mod tests {
 
     #[test]
     fn build_strategy_errors_appropriately() {
+        // hybrid without an embedder now errors as EmbedderRequired (was NotImplemented pre-M2-B).
         assert!(matches!(
             build_strategy("hybrid", None),
-            Err(StrategyError::NotImplemented(_))
+            Err(StrategyError::EmbedderRequired(_))
         ));
         assert!(matches!(
             build_strategy("vector", None),
             Err(StrategyError::EmbedderRequired(_))
+        ));
+        // A genuinely unknown name is still NotImplemented.
+        assert!(matches!(
+            build_strategy("nope", None),
+            Err(StrategyError::NotImplemented(_))
         ));
     }
 }

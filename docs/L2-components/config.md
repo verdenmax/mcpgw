@@ -21,9 +21,9 @@
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `strategy` | `String` | `"bm25"` | `bm25` \| `vector` \| `hybrid`（默认 bm25；vector 经 config opt-in） |
+| `strategy` | `String` | `"bm25"` | `bm25` \| `vector` \| `hybrid`（默认 bm25；vector/hybrid 经 config opt-in） |
 | `top_k` | `usize` | `8` | `search_tools` 返回条数 |
-| `vector` | `Option<VectorConfig>` | `None` | `[retrieval.vector]` 段；`strategy="vector"` 时必填 |
+| `vector` | `Option<VectorConfig>` | `None` | `[retrieval.vector]` 段；`strategy ∈ {vector,hybrid}` 时必填 |
 
 ### 类型 `VectorConfig`
 `[retrieval.vector]` 段。`#[serde(deny_unknown_fields)]`：OpenAI 兼容 embedding 提供方。密钥**只经 env 变量名引用**。
@@ -72,7 +72,7 @@
 ### 错误 `ConfigError`
 `enum ConfigError { Parse(toml::de::Error), Invalid(String) }`（`thiserror`，`Parse` 带 `#[from]`）。
 - `Parse`：TOML 语法错误或未知字段（`deny_unknown_fields`）。
-- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；`strategy="vector"` 缺 `[retrieval.vector]` 段或其 `base_url`/`model`/`api_key_env` 空白；upstream `name` 空白/含 `__`/重复；http 上游 `url` 空白）。
+- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其 `base_url`/`model`/`api_key_env` 空白；upstream `name` 空白/含 `__`/重复；http 上游 `url` 空白）。
 
 ## 依赖
 

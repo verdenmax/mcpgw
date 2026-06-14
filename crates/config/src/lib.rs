@@ -17,11 +17,11 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetrievalConfig {
-    /// "bm25" | "vector" | "hybrid". Only "bm25" is implemented in v1.
+    /// "bm25" | "vector" | "hybrid". All three are implemented; default is "bm25".
     pub strategy: String,
     /// Number of tools `search_tools` returns.
     pub top_k: usize,
-    /// `[retrieval.vector]` provider config. Required when strategy is "vector".
+    /// `[retrieval.vector]` provider config. Required when strategy is "vector" or "hybrid".
     pub vector: Option<VectorConfig>,
 }
 
@@ -190,12 +190,13 @@ impl Config {
         if self.retrieval.top_k == 0 {
             return Err(ConfigError::Invalid("retrieval.top_k must be > 0".into()));
         }
-        if self.retrieval.strategy == "vector" {
+        if matches!(self.retrieval.strategy.as_str(), "vector" | "hybrid") {
             match &self.retrieval.vector {
                 None => {
-                    return Err(ConfigError::Invalid(
-                        "strategy=\"vector\" requires a [retrieval.vector] section".into(),
-                    ))
+                    return Err(ConfigError::Invalid(format!(
+                        "strategy={:?} requires a [retrieval.vector] section",
+                        self.retrieval.strategy
+                    )))
                 }
                 Some(v) => {
                     if v.base_url.trim().is_empty()
@@ -260,6 +261,9 @@ mod tests {
             [retrieval]
             strategy = "hybrid"
             top_k = 5
+            [retrieval.vector]
+            model = "m"
+            api_key_env = "K"
             "#,
         )
         .unwrap();
@@ -516,6 +520,12 @@ mod tests {
     #[test]
     fn vector_strategy_requires_vector_section() {
         let err = Config::from_toml_str("[retrieval]\nstrategy = \"vector\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn hybrid_strategy_requires_vector_section() {
+        let err = Config::from_toml_str("[retrieval]\nstrategy = \"hybrid\"\n").unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
     }
 
