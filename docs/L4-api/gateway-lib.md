@@ -30,11 +30,11 @@ pub struct GatewayState {
     snapshot: Arc<ArcSwap<GatewaySnapshot>>,   // 私有
     registry: UpstreamRegistry,                // 私有
     strategy_name: Arc<str>,                   // 私有
-    embedder: Option<Arc<dyn Embedder>>,       // 私有，vector/hybrid 策略所需，跨 rebuild 持有（保留缓存）
+    backends: Backends,                        // 私有，retrieval 后端（embedder/chat/subagent_candidates），跨 rebuild 持有（保留缓存）
     rebuild_lock: Arc<Mutex<()>>,              // 私有，串行化重建
 }
 ```
-可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 可选 embedder + 重建锁。`Clone` 仅克隆内部 `Arc`，
+可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 检索后端 `Backends` + 重建锁。`Clone` 仅克隆内部 `Arc`，
 所有克隆共享同一份状态。
 
 ### `GatewayState::new`

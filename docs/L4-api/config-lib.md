@@ -154,7 +154,8 @@ pub struct SubagentConfig {
 `[retrieval.subagent]`：OpenAI 兼容 chat 提供方，给 subagent 重排器用。密钥**只经 env 变量名引用**
 （`api_key_env`），配置里不出现明文。无 flatten，故 `deny_unknown_fields` 生效（未知字段 → `Parse`）。
 `candidates` 是交给小模型的 BM25 预筛 shortlist 大小，`None` 时取 `retrieval` 的 `DEFAULT_CANDIDATES`；
-`validate()` 拒绝 `candidates == Some(0)`。
+`validate()` 拒绝 `candidates == Some(0)`。**生产建议设 `timeout_ms`**：subagent 在**每次** `search_tools` 都同步调一次
+chat，而 reqwest 无默认超时——挂死的端点会阻塞该次请求（仅影响单次检索，读快照仍无锁）；超时（或任何错误）都会透明降级回 BM25。
 
 ## `enum ConfigError`
 ```rust

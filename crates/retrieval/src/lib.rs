@@ -15,7 +15,7 @@ pub use chat::{ChatError, ChatModel};
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
 pub use hybrid::HybridStrategy;
-pub use subagent::SubagentStrategy;
+pub use subagent::{SubagentStrategy, DEFAULT_CANDIDATES};
 pub use vector::VectorStrategy;
 
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.
