@@ -2,10 +2,14 @@ use async_trait::async_trait;
 use catalog::Catalog;
 
 mod caching;
+mod chat;
 mod embedder;
 mod hybrid;
 mod vector;
 pub use caching::CachingEmbedder;
+#[cfg(feature = "testkit")]
+pub use chat::MockChatModel;
+pub use chat::{ChatError, ChatModel};
 #[cfg(feature = "testkit")]
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
