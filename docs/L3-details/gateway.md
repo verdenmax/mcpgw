@@ -33,7 +33,7 @@ while let Some((name, outcome, local)) = set.join_next().await:
         Ok(Err(e))     => summary.skipped.push((name, e.to_string()))        // 调用错误
         Ok(Ok(_dupes)) => { for tool in local.iter() { catalog.upsert(tool) }; summary.ingested.push(name) }
 summary.{ingested,skipped}.sort();                 // 结果确定、可断言
-let mut strat = build_strategy(&self.strategy_name, self.embedder.as_ref())?;  // 未实现/缺 embedder -> GatewayError::Strategy
+let mut strat = build_strategy(&self.strategy_name, &self.backends)?;  // 未知名/缺 embedder|chat -> GatewayError::Strategy
 strat.index(&catalog);
 self.snapshot.store(Arc::new(GatewaySnapshot::new(catalog, strat)));   // 原子换入
 ```
@@ -81,14 +81,15 @@ while rx.recv().await.is_some():           // 阻塞等下一个触发
 
 ## `strategy_name` 与 `embedder`：策略工厂
 
-`strategy_name: Arc<str>` 在 `new`/`with_embedder` 时由字符串建立，每次 `rebuild_snapshot` 都用它
-`build_strategy(&self.strategy_name, self.embedder.as_ref())` 新建一份策略再 `index`。把策略名（而非策略实例）存进状态，
-使每次重建得到干净的、与新 catalog 匹配的索引；也保持与 `retrieval::build_strategy(name, embedder)` 的字符串选择约定一致。
+`strategy_name: Arc<str>` 在 `new`/`with_embedder`/`with_backends` 时由字符串建立，每次 `rebuild_snapshot` 都用它
+`build_strategy(&self.strategy_name, &self.backends)` 新建一份策略再 `index`。把策略名（而非策略实例）存进状态，
+使每次重建得到干净的、与新 catalog 匹配的索引；也保持与 `retrieval::build_strategy(name, &Backends)` 的字符串选择约定一致。
 
-策略工厂按 **name + embedder** 构建：`"bm25"` 无需 embedder；`"vector"` 需要 embedder，缺则返回
-`StrategyError::EmbedderRequired`（经 `with_embedder` 注入）；`"hybrid"` 同样需要 embedder（缺则 `EmbedderRequired`）；其余名字
-`NotImplemented`。`embedder: Option<Arc<dyn Embedder>>` 由 `with_embedder` 持有进 state，rebuild 时**复用同一个** embedder
-实例——若它是 `CachingEmbedder`，其缓存便跨 rebuild 保留，只对新增工具计算嵌入。`new`（embedder 为 `None`）只能构建 bm25。
+策略工厂按 **name + backends** 构建：`"bm25"` 无需后端；`"vector"`/`"hybrid"` 需要 `backends.embedder`，缺则返回
+`StrategyError::EmbedderRequired`；`"subagent"` 需要 `backends.chat`，缺则 `StrategyError::ChatModelRequired`；其余名字
+`NotImplemented`。`backends: Backends`（`embedder`/`chat`/`subagent_candidates`）由 `with_embedder`/`with_backends` 持有进 state，
+rebuild 时**复用同一份** backends——若 `embedder` 是 `CachingEmbedder`，其缓存便跨 rebuild 保留，只对新增工具计算嵌入。
+`new`（`Backends::default()`，无后端）只能构建 bm25。
 
 ## 错误类型 `GatewayError`
 

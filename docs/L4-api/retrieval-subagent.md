@@ -11,7 +11,7 @@ impl SubagentStrategy {
 }
 ```
 **retrieve-then-rerank** 检索器：内部 BM25 先预筛出候选 shortlist，再交由一个小型 chat 模型重排。
-实现 `RetrievalStrategy`（async）。一般经 `build_strategy("subagent", &Backends { chat: Some(embedder), .. })` 构造。
+实现 `RetrievalStrategy`（async）。一般经 `build_strategy("subagent", &Backends { chat: Some(chat), .. })` 构造。
 
 - `new(chat, candidates)`：持有注入的 `Arc<dyn ChatModel>` 与一个新建（空）的 `Bm25Strategy`；`candidates`
   经 `.max(1)` 夹紧（至少 1），作为 BM25 预筛 shortlist 的大小。

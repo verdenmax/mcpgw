@@ -34,3 +34,5 @@ vLLM）。
 - 检索/排序策略（属 `retrieval`）。
 - 配置解析、CLI（属 `config` / `mcpgw`）。
 - 嵌入缓存（属 `retrieval::CachingEmbedder`，可装饰本 crate 的实例）。
+
+> 真实 HTTP chat（重排）后端见姊妹组件：[chat](./chat.md)。

@@ -41,17 +41,24 @@ pub struct GatewayState {
 ```rust
 pub fn new(strategy_name: &str) -> Result<Self, GatewayError>
 ```
-建空状态：用 `build_strategy(strategy_name, None)` 新建策略、对空 `Catalog` `index`，装入
-`ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))`；`embedder` 为 `None`，注册表与重建锁均为空/新建。策略名未实现（或需要
-embedder 却未提供）时返回 `Err(GatewayError::Strategy)`。
+建空状态：用 `build_strategy(strategy_name, &Backends::default())` 新建策略、对空 `Catalog` `index`，装入
+`ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))`；`backends` 为空（`Backends::default()`），注册表与重建锁均为空/新建。策略名未知（或需要
+embedder/chat 却未提供）时返回 `Err(GatewayError::Strategy)`。
 
 ### `GatewayState::with_embedder`
 ```rust
 pub fn with_embedder(strategy_name: &str, embedder: Arc<dyn Embedder>) -> Result<Self, GatewayError>
 ```
-同 `new`，但用 `build_strategy(strategy_name, Some(&embedder))` 构建策略，并把 `embedder` 持有进 `Some(..)`，供 "vector"/"hybrid"
+便捷封装：把 `embedder` 包进 `Backends { embedder: Some(embedder), ..Default::default() }` 后委托 `with_backends`，供 "vector"/"hybrid"
 策略在每次 `rebuild_snapshot` 时复用（若是 `CachingEmbedder` 则缓存跨 rebuild 保留，仅嵌入新增工具）。策略构建失败返回
 `Err(GatewayError::Strategy)`。
+
+### `GatewayState::with_backends`
+```rust
+pub fn with_backends(strategy_name: &str, backends: Backends) -> Result<Self, GatewayError>
+```
+同 `new`，但持有任意 `retrieval::Backends`（`embedder` 供 "vector"/"hybrid"；`chat` + `subagent_candidates` 供 "subagent"），
+经 `build_strategy(strategy_name, &backends)` 构建策略并跨 `rebuild_snapshot` 复用。`mcpgw` 启动期据 `strategy` 用 `build_backends` 装配后调用此入口。
 
 ### `GatewayState::registry`
 ```rust
@@ -76,8 +83,8 @@ pub async fn rebuild_snapshot(&self) -> Result<RebuildSummary, GatewayError>
    `tokio::time::timeout(handle.call_timeout(), handle.ingest_into(&mut local)).await`。
 3. `join_next` 收集：超时 → `skipped("ingest timed out")`；调用错误 → `skipped(err)`；成功 → 把 `local` 工具
    `upsert` 进最终 catalog 并记 `ingested`。两表均排序。
-4. `build_strategy(&self.strategy_name, self.embedder.as_ref())?`（未实现/缺 embedder 则 `Err(GatewayError::Strategy)`）→
-   `strat.index(&catalog)`。复用 state 持有的 embedder，故 `CachingEmbedder` 的缓存跨 rebuild 保留。
+4. `build_strategy(&self.strategy_name, &self.backends)?`（未知名/缺 embedder 或 chat 则 `Err(GatewayError::Strategy)`）→
+   `strat.index(&catalog)`。复用 state 持有的 `backends`，故 `CachingEmbedder` 的缓存跨 rebuild 保留。
 5. `self.snapshot.store(Arc::new(GatewaySnapshot::new(catalog, strat)))` **原子换入**（build-then-swap），返回
    `RebuildSummary`。
 
