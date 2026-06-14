@@ -3,8 +3,8 @@
 源文件：`crates/embedder/src/lib.rs`。
 
 `OpenAiEmbedder`：由 **OpenAI 兼容** `/embeddings` 端点支撑的 `Embedder` 实现（OpenAI，或
-说同样形状的本地服务器，如 Ollama / LM Studio / vLLM）。**全工作区唯一依赖 reqwest 的 crate**；
-其它一切只通过 `retrieval::Embedder` trait 交互。
+说同样形状的本地服务器，如 Ollama / LM Studio / vLLM）。**与 `chat` 并列、是全工作区仅有的两个依赖 reqwest
+的 crate**；其它一切只通过 `retrieval::Embedder` trait 交互。
 
 ## `struct OpenAiEmbedder`
 ```rust

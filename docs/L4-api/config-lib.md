@@ -20,9 +20,10 @@ pub struct Config {
 | `from_toml_str` | `pub fn from_toml_str(s: &str) -> Result<Self, ConfigError>` | 解析 + 校验；语法/未知字段 → `Parse`，语义非法 → `Invalid` |
 | `default_from_empty` | `pub fn default_from_empty() -> Self` | 全默认配置（解析空串，恒成功） |
 
-> 私有 `fn validate(&self) -> Result<(), ConfigError>`：校验 `strategy ∈ {bm25,vector,hybrid}`、
+> 私有 `fn validate(&self) -> Result<(), ConfigError>`：校验 `strategy ∈ {bm25,vector,hybrid,subagent}`、
 > `top_k > 0`、`strategy ∈ {vector,hybrid}` 时必须有 `[retrieval.vector]` 段且其 `base_url`/`model`/`api_key_env`
-> 非空白，以及每个 upstream 的 `name` 非空白、不含 `__`、不重复（否则 `Invalid`）。
+> 非空白、`strategy == "subagent"` 时必须有 `[retrieval.subagent]` 段且其 `base_url`/`model`/`api_key_env` 非空白且
+> `candidates != Some(0)`，以及每个 upstream 的 `name` 非空白、不含 `__`、不重复（否则 `Invalid`）。
 
 ## `struct UpstreamConfig`
 ```rust
@@ -114,9 +115,10 @@ pub struct RetrievalConfig {
     pub strategy: String,             // 默认 "bm25"
     pub top_k: usize,                 // 默认 8
     pub vector: Option<VectorConfig>, // 默认 None；strategy ∈ {vector,hybrid} 时必填
+    pub subagent: Option<SubagentConfig>, // 默认 None；strategy == "subagent" 时必填
 }
 ```
-实现 `Default`（`strategy="bm25"`、`top_k=8`、`vector=None`）。
+实现 `Default`（`strategy="bm25"`、`top_k=8`、`vector=None`、`subagent=None`）。
 
 ## `struct VectorConfig`
 ```rust
@@ -136,6 +138,24 @@ pub struct VectorConfig {
 配置里不出现明文。无 flatten，故 `deny_unknown_fields` 生效（未知字段 → `Parse`）。`batch_size`
 为**预留字段、当前未启用**：`OpenAiEmbedder` 一次请求发送全部输入，不做分块（留待 M2-B）。
 
+## `struct SubagentConfig`
+```rust
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubagentConfig {
+    #[serde(default = "default_subagent_base_url")]
+    pub base_url: String,             // 默认 "https://api.openai.com/v1"
+    pub model: String,                // 必填
+    pub api_key_env: String,          // 必填；持有 key 的 env 变量名（只引用名，不含明文）
+    #[serde(default)] pub timeout_ms: Option<u64>,
+    #[serde(default)] pub candidates: Option<usize>, // BM25 预筛 shortlist 大小；None → retrieval 默认
+}
+```
+`[retrieval.subagent]`：OpenAI 兼容 chat 提供方，给 subagent 重排器用。密钥**只经 env 变量名引用**
+（`api_key_env`），配置里不出现明文。无 flatten，故 `deny_unknown_fields` 生效（未知字段 → `Parse`）。
+`candidates` 是交给小模型的 BM25 预筛 shortlist 大小，`None` 时取 `retrieval` 的 `DEFAULT_CANDIDATES`；
+`validate()` 拒绝 `candidates == Some(0)`。
+
 ## `enum ConfigError`
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -147,6 +167,6 @@ pub enum ConfigError {
 }
 ```
 - `Parse`：TOML 语法错误或未知字段。
-- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、upstream `name` 空白/含 `__`/重复）。
+- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`、upstream `name` 空白/含 `__`/重复）。
 
 > 行为细节见 L3：[config](../L3-details/config.md)

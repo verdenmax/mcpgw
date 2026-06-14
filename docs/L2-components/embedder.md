@@ -6,7 +6,7 @@
 `POST {base_url}/embeddings` 端点（OpenAI，或同样形状的本地服务器，如 Ollama / LM Studio /
 vLLM）。
 
-本 crate 是**全工作区唯一依赖 `reqwest` 的 crate**：把 HTTP/序列化的关注点隔离在此，使
+本 crate 与 `chat` **并列、是全工作区仅有的两个依赖 `reqwest` 的 crate**：把 HTTP/序列化的关注点隔离在此，使
 `retrieval` 等其它 crate 保持无 HTTP 依赖，只通过 `retrieval::Embedder` trait 交互。
 
 ## 公开接口
@@ -25,7 +25,7 @@ vLLM）。
 ## 依赖
 
 - `retrieval`（trait `Embedder` + `EmbedError`）。
-- `reqwest`（`0.13`，`default-features = false`，features `json` + `rustls`）——**唯一 HTTP 依赖**。
+- `reqwest`（`0.13`，`default-features = false`，features `json` + `rustls`）——与 `chat` 并列的 HTTP 依赖。
 - `async-trait`、`serde`、`serde_json`。
 - dev：`tokio`（`full`）、`axum`——用于 mock-HTTP 单测。
 

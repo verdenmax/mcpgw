@@ -1,4 +1,4 @@
-# L3 — `retrieval` 细节（BM25 / 向量 / 混合）
+# L3 — `retrieval` 细节（BM25 / 向量 / 混合 / subagent）
 
 ## 分词 `tokenize`
 
@@ -64,9 +64,12 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
 
 ## 工厂与解耦
 
-`build_strategy(strategy: &str)` 按名构造策略；M0 仅 `"bm25"`，其余返回 `StrategyError::NotImplemented`。
-**接受 `&str` 而非 `RetrievalConfig`**：使 `retrieval` 不依赖 `config`，符合"核心排序 crate 仅依赖
-`catalog`"的边界（由 mcpgw 传入 `cfg.retrieval.strategy.as_str()`）。
+`build_strategy(name: &str, backends: &Backends)` 按名构造策略：`"bm25"` → `Bm25Strategy`（无需后端）；
+`"vector"`/`"hybrid"` → 需 `backends.embedder`（否则 `EmbedderRequired`）；`"subagent"` → 需 `backends.chat`
+（否则 `ChatModelRequired`）；其余 → `StrategyError::NotImplemented`。**接受 `&str` 而非 `RetrievalConfig`**：
+使 `retrieval` 不依赖 `config`，符合"核心排序 crate 仅依赖 `catalog`"的边界（由 mcpgw 传入
+`cfg.retrieval.strategy.as_str()`）。可选后端打包进 `Backends { embedder, chat, subagent_candidates }`，
+让 factory 签名在新增后端时保持稳定。
 
 ## 测试覆盖
 
@@ -136,6 +139,27 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
   的 hybrid 总能返回最多 `top_k` 个语义最近结果（不同于纯 BM25「无命中即空」）。
 - **降级自愈**：embedding 失败时（索引期或查询期），`VectorStrategy` 返回内部 BM25 排名 → 两份子表≈同一 BM25
   排名 → RRF 融合后名次单调一致 → hybrid 退化≈纯 BM25。**无需额外 degraded 标志**。
+
+## subagent 策略 `SubagentStrategy`（retrieve-then-rerank）
+
+`SubagentStrategy`（`crates/retrieval/src/subagent.rs`）用一个**小型 chat 模型**对 BM25 预筛出的候选做
+**重排**（retrieve-then-rerank），prompt 构造与响应解析都在本 crate（纯逻辑、可经 `MockChatModel` 测试），
+真实 HTTP chat 客户端在独立 `chat` crate。
+
+- **数据流**：`index` 委托内置 `Bm25Strategy`；`search` 先 `bm25.search(query, candidates)` 取候选 shortlist →
+  `build_user_prompt`（query + 编号候选清单 + "最多 top_k 个"）→ `chat.complete(SYSTEM_PROMPT, user)` →
+  `parse_selection`（白名单去重保序）→ 命中名映回 `ScoredTool` 赋**合成递减分** `(n − i)` → 取前 `top_k`。
+- **合成分仅承载次序**：量级与 BM25/cosine 无关，**不可跨策略比较**；它只是把模型给的有序选择编码成可排序的
+  `ScoredTool.score`。
+- **空 shortlist 限制（重要）**：BM25 预筛是**固定**前置步骤。一个纯语义、无任何词法命中的 query 会得到**空
+  shortlist**，此时 `search` **直接返回空且不调用 chat**——subagent 复用 BM25 的召回，不额外引入语义召回（当前
+  刻意取舍；若要覆盖此场景，可在 prefilter 处换成 vector/hybrid）。
+- **幻觉过滤**：`parse_selection` 以 shortlist 作白名单，模型臆造（不在候选里）的工具名被丢弃；从首个 `[` 到末个
+  `]` 截取 span，容忍模型在数组外夹带散文/代码围栏；非法 JSON 或非字符串数组都解析为空。
+- **降级自愈**：chat 调用失败（`tracing::warn!`）、回复解析失败或解析后零个合法工具（`tracing::debug!`），均回退到
+  **BM25 shortlist 截到 `top_k`**——无需额外 degraded 标志，BM25 预筛结果本就在手。
+- **为何 prompt/parse 放在 retrieval**：保持 `retrieval` 无 HTTP 依赖；`ChatModel` trait 把网络隔离到 `chat`
+  crate，于是重排逻辑可用确定性 `MockChatModel` 做端到端单测（脚本回复 → 断言重排次序/降级/幻觉过滤）。
 
 ## 相关
 

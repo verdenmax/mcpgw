@@ -45,8 +45,8 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
 
 - `catalog` → 仅依赖 `serde`/`serde_json`，不依赖任何兄弟 crate。
 - `retrieval` → **仅依赖 `catalog`**（不依赖 `config`/CLI，**也不引入任何 HTTP 依赖**）。`build_strategy` 故意接受
-  策略名字符串（+ 可选 `Embedder`）而非配置类型，保持核心排序 crate 的独立可复用性（M2-A 起签名为
-  `build_strategy(name: &str, embedder: Option<&Arc<dyn Embedder>>)`）。
+  策略名字符串（+ 打包的可选后端 `Backends`）而非配置类型，保持核心排序 crate 的独立可复用性（M2.T5 起签名为
+  `build_strategy(name: &str, backends: &Backends)`，`Backends { embedder, chat, subagent_candidates }`）。
 - `config` → 仅依赖 `serde`/`toml`/`thiserror`，**不反向依赖 `retrieval`**。
 - `mcpgw`（bin）→ 唯一的集成者，依赖以上三者。
 
@@ -177,56 +177,73 @@ Cargo **虚拟工作区**，四个 crate，职责单一、边界清晰：
   [upstream](./L2-components/upstream.md) · [downstream/http.rs](./L4-api/downstream-http.md) ·
   [upstream/connect.rs](./L4-api/upstream-connect.md)。
 
-## M2-A 新增：异步可插拔检索 + 向量策略 + `embedder` crate（已完成）
+## M2-A 新增：异步可插拔检索 + 向量/混合/subagent 策略 + `embedder`/`chat` crate（已完成）
 
 把检索从「**仅 BM25、同步**」升级为「**可插拔、异步（`async-trait`）、失败可透明降级**」：默认仍是 BM25，
-另加一条 **Vector** 路径——用云端嵌入做余弦检索，任何嵌入失败都**透明回退到内置 BM25**。新增**全工作区
-唯一带 HTTP 依赖**的 `embedder` crate 承载真实后端 `OpenAiEmbedder`，使 `retrieval` 保持无 HTTP 依赖。
-M2-B 新增 **hybrid**（RRF 融合 BM25 + 向量）路径，opt-in（需 embedder）；**默认仍为 `bm25`**。
+另加一条 **Vector** 路径——用云端嵌入做余弦检索，任何嵌入失败都**透明回退到内置 BM25**。新增**带 HTTP 依赖**的
+`embedder` crate 承载真实后端 `OpenAiEmbedder`，使 `retrieval` 保持无 HTTP 依赖。
+M2-B 新增 **hybrid**（RRF 融合 BM25 + 向量）路径，opt-in（需 embedder）。
+M2.T5 再加一条 **subagent** 路径——BM25 预筛 → 小模型重排，并新增**与 `embedder` 对称**的第二个 HTTP-依赖 crate
+`chat`（`OpenAiChat`）；装配入口从 `build_embedder` 升级为 `build_backends`（按 strategy 建 embedder 和/或 chat）。
+所有新策略均 **opt-in**；**默认仍为 `bm25`**。
 
 ```
    ┌──────────────────────────── mcpgw serve（装配） ────────────────────────────┐
-   │  build_embedder(cfg): strategy=="vector"/"hybrid" 时读 api_key_env（fail-fast，       │
-   │    只报 env 变量名、绝不泄露值）→ OpenAiEmbedder → 包一层 CachingEmbedder（只建一次，  │
-   │    缓存跨快照重建持续）→ Some(Arc<dyn Embedder>)；否则 None                            │
-   │  prepare_state: 有 embedder → GatewayState::with_embedder(..)；否则 ::new(..)         │
-   └───────┬───────────────────────────────────────────────────┬────────────────────────┘
-           │ Option<Arc<dyn Embedder>> 注入                      │ HTTP /embeddings（唯一 HTTP 依赖）
-   ┌───────▼───────────────────────────────────┐      ┌────────▼──────────────────────────┐
-   │  retrieval（无 HTTP 依赖）                  │      │  embedder（reqwest 0.13 + rustls） │
-   │  RetrievalStrategy（#[async_trait]）         │      │  OpenAiEmbedder：POST /embeddings  │
-   │  build_strategy(name, embedder?)             │◄─────│   bearer 鉴权、按 index 排序、     │
-   │   bm25 → Bm25Strategy（无需 embedder）        │ impl │   count/连续性/dim 校验、非2xx 截断 │
-   │   vector → VectorStrategy（需 embedder）      │Embedder│  实现 retrieval::Embedder        │
-   │   hybrid → HybridStrategy（需 embedder）      │      └────────────────────────────────────┘
-   │  Embedder trait · EmbedError · CachingEmbedder（FNV-1a 记忆，仅嵌未命中）              │
-   └───────┬──────────────────────────────────────────────────────────────────────────────┘
-           │ VectorStrategy = 暴力余弦 over 归一化向量 + 内置 Bm25Strategy（降级目标）
+   │  build_backends(cfg): 按 strategy 建后端，启动期 fail-fast 读 api_key_env（只报变量名、 │
+   │    绝不泄露值）→ vector/hybrid: OpenAiEmbedder → CachingEmbedder（只建一次，缓存跨快照）；│
+   │    subagent: OpenAiChat + subagent_candidates；bm25: 空 Backends                       │
+   │  prepare_state: GatewayState::with_backends(strategy, backends)                        │
+   └───────┬───────────────────────────────────┬───────────────────────────┬──────────────┘
+           │ Backends.embedder 注入             │ Backends.chat 注入        │ HTTP（两个 HTTP-依赖 crate）
+   ┌───────▼──────────────────────────┐  ┌─────▼──────────────────┐  ┌─────▼──────────────────────┐
+   │  retrieval（无 HTTP 依赖）         │  │ embedder(reqwest+rustls)│  │ chat(reqwest+rustls)       │
+   │  RetrievalStrategy（#[async_trait]）│  │ OpenAiEmbedder          │  │ OpenAiChat：POST           │
+   │  build_strategy(name, &Backends)  │◄─│  POST /embeddings、按    │  │  /chat/completions、        │
+   │   bm25 → Bm25Strategy（无需后端）  │  │  index 排序、dim 校验    │  │  temp=0、bearer、非2xx 截断 │
+   │   vector/hybrid → 需 embedder     │  │  impl retrieval::Embedder│  │  impl retrieval::ChatModel │
+   │   subagent → 需 chat              │  └─────────────────────────┘  └────────────────────────────┘
+   │  Embedder/ChatModel trait · EmbedError/ChatError · CachingEmbedder（FNV-1a 记忆，仅嵌未命中）│
+   └───────┬──────────────────────────────────────────────────────────────────────────────────┘
+           │ VectorStrategy = 暴力余弦 + 内置 Bm25 降级；SubagentStrategy = BM25 预筛 + 小模型重排 + 降级
            ▼
-       index 总是先建 BM25，再尝试嵌入全目录；嵌入失败→degraded；search 在 degraded / 无向量 /
-       本次 query 嵌入失败 时透明回退 BM25，否则 cosine（零范数守卫、无 NaN）
+       vector: index 先建 BM25 再嵌入全目录，失败→degraded；search 在 degraded/无向量/本次嵌入失败 时回退 BM25
+       subagent: BM25 预筛 candidates → 小模型选工具（白名单去重）；chat/解析失败或空 shortlist → 回退 BM25
 ```
 
 - **异步化**：`RetrievalStrategy` 改为 `#[async_trait]`，`index`/`search` 均为 `async`；`Bm25Strategy` 方法体
   逐字不变仅加 `async`。`GatewayState::new` **不在构造时索引**（空目录 → 首次 `rebuild_snapshot` 前 `search` 返回空）。
 - **`Embedder` 抽象**（`retrieval`，`async-trait`）：`async fn embed(&[String]) -> Result<Vec<Vec<f32>>, EmbedError>`
   （保序、all-or-nothing）+ `fn dim()`；错误 `EmbedError::{Provider, Dimension{expected,got}}`（provider 无关）。
+- **`ChatModel` 抽象**（`retrieval`，`async-trait`）：`async fn complete(system, user) -> Result<String, ChatError>`；
+  错误 `ChatError::{Provider, Empty}`（provider 无关）；HTTP 实现 `OpenAiChat` 在 `chat` crate，`MockChatModel`
+  （`testkit`）供 subagent 重排测试。
 - **`CachingEmbedder`**（`retrieval`）：装饰任意 `Arc<dyn Embedder>`，按文本内容哈希（FNV-1a）记忆，只嵌缓存未命中、
   保序保维；在 `mcpgw` 中**只构造一次**，缓存跨快照重建持续（`list_changed` 时只嵌新增工具文本）。
 - **`VectorStrategy`**（`retrieval`）：每工具嵌入文本为 `"{qualified_name}\n{description}"`，对归一化向量做暴力余弦
   （目录小，线性扫描足够），内置 `Bm25Strategy` 作**双重透明降级**（索引期嵌入失败 → `degraded`；查询期单次嵌入
   失败 → 仅本次回退），零范数守卫、不产生 NaN。
-- **`build_strategy(name, embedder: Option<&Arc<dyn Embedder>>)`**：`"bm25"` 无需 embedder；`"vector"` 要求 embedder
-  否则 `StrategyError::EmbedderRequired`；`"hybrid"` 同样要求 embedder（否则 `EmbedderRequired`）；未知名 → `StrategyError::NotImplemented`。
-- **`embedder` crate**（**唯一 HTTP 依赖**，`reqwest 0.13` + `rustls`）：`OpenAiEmbedder::new(base_url, model, api_key,
+- **`SubagentStrategy`**（`retrieval`）：BM25 预筛 `candidates` 候选 → `build_user_prompt` → `chat.complete` →
+  `parse_selection`（首 `[`..末 `]`、`serde_json` 解析、shortlist 白名单去重保序、剔除幻觉）→ 命中名赋合成递减分取
+  `top_k`；空 shortlist 直接返回空（不调 chat），chat/解析失败或零命中**透明回退 BM25 shortlist**。prompt/parse
+  纯逻辑可经 `MockChatModel` 测试。
+- **`build_strategy(name, backends: &Backends)`**：`"bm25"` 无需后端；`"vector"`/`"hybrid"` 要求 `backends.embedder`
+  否则 `StrategyError::EmbedderRequired`；`"subagent"` 要求 `backends.chat` 否则 `StrategyError::ChatModelRequired`；
+  未知名 → `StrategyError::NotImplemented`。`Backends { embedder, chat, subagent_candidates }` 打包注入。
+- **`embedder` crate**（**两个 HTTP-依赖 crate 之一**，`reqwest 0.13` + `rustls`）：`OpenAiEmbedder::new(base_url, model, api_key,
   dim: Option<usize>, timeout: Option<Duration>)` POST `{base_url}/embeddings`（bearer 鉴权），按响应 `index` 排序、校验数量/连续性/维度，非 2xx
   附**截断**的 body 片段，空输入短路返回。
+- **`chat` crate**（**与 `embedder` 对称的第二个 HTTP-依赖 crate**，`reqwest 0.13` + `rustls`）：`OpenAiChat::new(base_url,
+  model, api_key, timeout: Option<Duration>)` POST `{base_url}/chat/completions`（`temperature: 0`、system+user 两条消息、
+  bearer 鉴权），返回 `choices[0].message.content`；非 2xx 附**截断**的 body 片段（≤500 字符），缺失/仅空白内容 → `ChatError::Empty`。
 - **配置**：`[retrieval.vector]`（`base_url` 默认 OpenAI、`model`、`api_key_env`、`dim?`、`timeout_ms?`、
-  `batch_size?`，`deny_unknown_fields`）；`strategy == "vector"` 时 `validate()` 要求该段存在。**`batch_size` 目前为
+  `batch_size?`，`deny_unknown_fields`）；`[retrieval.subagent]`（`base_url` 默认 OpenAI、`model`、`api_key_env`、
+  `timeout_ms?`、`candidates?`，`deny_unknown_fields`）；`validate()` 在 `strategy == "vector"/"hybrid"` 时要求
+  `[retrieval.vector]`、`strategy == "subagent"` 时要求 `[retrieval.subagent]`（`candidates != Some(0)`）。**`batch_size` 目前为
   保留字段（未启用分块）**。密钥经 **env 变量名**引用，启动期 fail-fast 解析（缺失只报变量名，绝不泄露值）。
 - 接口/细节见 L2/L3/L4：[retrieval](./L2-components/retrieval.md) · [embedder](./L2-components/embedder.md) ·
-  [retrieval/embedder.rs](./L4-api/retrieval-embedder.md) · [retrieval/vector.rs](./L4-api/retrieval-vector.md) ·
-  [embedder/lib.rs](./L4-api/embedder-openai.md)。
+  [chat](./L2-components/chat.md) · [retrieval/embedder.rs](./L4-api/retrieval-embedder.md) ·
+  [retrieval/vector.rs](./L4-api/retrieval-vector.md) · [retrieval/subagent.rs](./L4-api/retrieval-subagent.md) ·
+  [embedder/lib.rs](./L4-api/embedder-openai.md) · [chat/lib.rs](./L4-api/chat-openai.md)。
 
 ## 传输能力一览
 
@@ -242,7 +259,7 @@ M2-B 新增 **hybrid**（RRF 融合 BM25 + 向量）路径，opt-in（需 embedd
 ```
 读取 catalog JSON ──► Catalog::from_json_str ──► Catalog（命名空间注册表）
 读取/默认 config  ──► Config::from_toml_str / default_from_empty
-search 子命令：build_strategy(cfg.strategy, embedder?) ──► strat.index(&catalog).await ──► strat.search(query, top_k).await ──► JSON
+search 子命令：build_strategy(cfg.strategy, &backends) ──► strat.index(&catalog).await ──► strat.search(query, top_k).await ──► JSON
 get-details 子命令：catalog.get(qualified_name) ──► 该工具完整 JSON
 ```
 
@@ -288,10 +305,11 @@ cargo fmt --all             # 格式化
     并发跑 stdio + HTTP 共享 `Arc<GatewayState>`，`tokio::select!` 统一关闭，启动期 env fail-fast。
 - **M2-A（异步可插拔检索 + 向量策略）✅ 已完成** —— `RetrievalStrategy` 改为 `#[async_trait]`（`index`/`search`
   异步）；新增 `Embedder` trait + `EmbedError` + `CachingEmbedder`（FNV-1a 记忆，跨重建复用）；`VectorStrategy`
-  在云端嵌入上做暴力余弦、内置 BM25 双重透明降级；`build_strategy(name, embedder?)`（`"vector"`/`"hybrid"` 要求 embedder）；
-  新增**唯一带 HTTP 依赖**的 `embedder` crate 承载 `OpenAiEmbedder`；配置 `[retrieval.vector]`
-  + 启动期装配（`build_embedder` fail-fast、`GatewayState::with_embedder`）。**默认策略仍是 `bm25`**。
-- **M2-B（混合检索 RRF）✅ 已完成** —— 新增 `HybridStrategy`：用 Reciprocal Rank Fusion（`k=60` 固定）融合 `Bm25Strategy` 词法排名与 `VectorStrategy` 语义排名（两份**全深度**子排名）；`build_strategy("hybrid", …)` 需 embedder（否则 `EmbedderRequired`），`config`/`build_embedder` 将 `[retrieval.vector]` 要求扩到 hybrid；embedding 失败时经 `VectorStrategy` 内置降级自愈≈纯 BM25。**opt-in；默认仍是 `bm25`**。
+  在云端嵌入上做暴力余弦、内置 BM25 双重透明降级；`build_strategy`（`"vector"`/`"hybrid"` 要求 embedder）；
+  新增带 HTTP 依赖的 `embedder` crate 承载 `OpenAiEmbedder`；配置 `[retrieval.vector]`
+  + 启动期装配（`build_backends` fail-fast、`GatewayState::with_backends`）。**默认策略仍是 `bm25`**。
+- **M2-B（混合检索 RRF）✅ 已完成** —— 新增 `HybridStrategy`：用 Reciprocal Rank Fusion（`k=60` 固定）融合 `Bm25Strategy` 词法排名与 `VectorStrategy` 语义排名（两份**全深度**子排名）；`build_strategy("hybrid", …)` 需 embedder（否则 `EmbedderRequired`），`config`/`build_backends` 将 `[retrieval.vector]` 要求扩到 hybrid；embedding 失败时经 `VectorStrategy` 内置降级自愈≈纯 BM25。**opt-in；默认仍是 `bm25`**。
+- **M2.T5（subagent 重排策略）✅ 已完成** —— 新增 `SubagentStrategy`：BM25 预筛 `candidates` 候选 → 小模型（Haiku/Flash/gpt-4o-mini）重排（retrieve-then-rerank），prompt 构造/响应解析（白名单去重保序、剔除幻觉）为纯逻辑、可经 `MockChatModel` 测试；空 shortlist 不调 chat、chat/解析失败透明降级 BM25；新增 provider 无关的 `ChatModel` trait + `ChatError` 与**与 `embedder` 对称**的第二个 HTTP-依赖 crate `chat`（`OpenAiChat`，POST `/chat/completions`、`temperature: 0`、bearer）；`build_strategy(name, &Backends)` 四臂（`"subagent"` 缺 chat → `ChatModelRequired`），装配入口 `build_embedder` → `build_backends`（按 strategy 建 embedder 和/或 chat）、`GatewayState::with_backends`；配置 `[retrieval.subagent]`。**opt-in；默认仍是 `bm25`**。
 - **后续里程碑**：完整 OAuth/DCR/反向代理（M3）、运行时热吊销 API-Key（M4）、超时主动
   `notifications/cancelled`（继续延后）见路线图。
 
@@ -299,7 +317,7 @@ cargo fmt --all             # 格式化
 
 各组件的职责与接口见 **L2**：
 [catalog](./L2-components/catalog.md) · [retrieval](./L2-components/retrieval.md) ·
-[embedder](./L2-components/embedder.md) · [config](./L2-components/config.md) ·
+[embedder](./L2-components/embedder.md) · [chat](./L2-components/chat.md) · [config](./L2-components/config.md) ·
 [mcpgw-cli](./L2-components/mcpgw-cli.md) · [upstream](./L2-components/upstream.md) ·
 [metatools](./L2-components/metatools.md) · [gateway](./L2-components/gateway.md) ·
 [downstream](./L2-components/downstream.md)
