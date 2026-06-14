@@ -5,6 +5,7 @@ mod caching;
 mod chat;
 mod embedder;
 mod hybrid;
+mod subagent;
 mod vector;
 pub use caching::CachingEmbedder;
 #[cfg(feature = "testkit")]
@@ -14,6 +15,7 @@ pub use chat::{ChatError, ChatModel};
 pub use embedder::MockEmbedder;
 pub use embedder::{EmbedError, Embedder};
 pub use hybrid::HybridStrategy;
+pub use subagent::SubagentStrategy;
 pub use vector::VectorStrategy;
 
 /// A retrieval hit: a tool's qualified name, its description, and a relevance score.
@@ -219,6 +221,15 @@ pub fn build_strategy(
             Some(e) => Ok(Box::new(HybridStrategy::new(e.clone()))),
             None => Err(StrategyError::EmbedderRequired(name.to_string())),
         },
+        "subagent" => match backends.chat.as_ref() {
+            Some(c) => Ok(Box::new(SubagentStrategy::new(
+                c.clone(),
+                backends
+                    .subagent_candidates
+                    .unwrap_or(subagent::DEFAULT_CANDIDATES),
+            ))),
+            None => Err(StrategyError::ChatModelRequired(name.to_string())),
+        },
         other => Err(StrategyError::NotImplemented(other.to_string())),
     }
 }
@@ -332,6 +343,10 @@ mod tests {
         assert!(matches!(
             build_strategy("nope", &Backends::default()),
             Err(StrategyError::NotImplemented(_))
+        ));
+        assert!(matches!(
+            build_strategy("subagent", &Backends::default()),
+            Err(StrategyError::ChatModelRequired(_))
         ));
     }
 }
