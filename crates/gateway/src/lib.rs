@@ -56,6 +56,7 @@ impl GatewayState {
     }
 
     /// Create empty state (no upstreams, empty catalog) using `strategy_name` (e.g. "bm25").
+    /// Errors if the strategy is unknown or its required backend (embedder/chat) is missing.
     pub fn new(strategy_name: &str) -> Result<Self, GatewayError> {
         Self::build(strategy_name, Backends::default())
     }

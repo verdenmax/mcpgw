@@ -52,7 +52,8 @@ fn rrf_fuse(lists: &[Vec<ScoredTool>], top_k: usize) -> Vec<ScoredTool> {
 }
 
 /// RRF hybrid of BM25 + vector retrieval. Requires an `Embedder` (the vector arm); construct via
-/// `build_strategy("hybrid", Some(embedder))` or directly with `new`.
+/// `build_strategy("hybrid", &Backends { embedder: Some(e), ..Default::default() })` or directly
+/// with `new`.
 pub struct HybridStrategy {
     bm25: Bm25Strategy,
     vector: VectorStrategy,
