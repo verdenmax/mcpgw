@@ -44,7 +44,9 @@ fn sample() -> Catalog {
 
 #[tokio::test]
 async fn rerank_follows_model_order() {
-    // BM25 shortlist for "create github issue" = the two github tools; the model reorders them.
+    // BM25 shortlist for "create github issue" = the two github tools. The scripted order is the
+    // REVERSE of BM25's natural order (create_issue is BM25 top-1), so a passing assertion proves
+    // the rerank was applied rather than BM25 passthrough.
     let mock = Arc::new(MockChatModel::new(
         r#"["github__list_pull_requests", "github__create_issue"]"#,
     ));
@@ -108,7 +110,9 @@ async fn degrades_to_bm25_when_chat_fails() {
 
 #[tokio::test]
 async fn garbage_reply_degrades_to_bm25() {
-    let mut s = SubagentStrategy::new(Arc::new(MockChatModel::new("I think you want a tool")), 20);
+    // Model replied (chat WAS called) but the reply has no JSON array -> parse empty -> degrade.
+    let mock = Arc::new(MockChatModel::new("I think you want a tool"));
+    let mut s = SubagentStrategy::new(mock.clone(), 20);
     let cat = sample();
     s.index(&cat).await;
     let mut b = Bm25Strategy::new();
@@ -126,6 +130,9 @@ async fn garbage_reply_degrades_to_bm25() {
         .map(|h| h.qualified_name)
         .collect();
     assert_eq!(sq, bq);
+    assert!(!sq.is_empty());
+    // Distinguishes the parse-failure degrade from the empty-shortlist short-circuit: chat ran.
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -138,15 +145,17 @@ async fn empty_shortlist_returns_empty_without_calling_chat() {
 }
 
 #[tokio::test]
-async fn respects_top_k() {
+async fn respects_top_k_after_rerank() {
+    // Model order is the REVERSE of BM25's (create_issue is BM25 top-1); with top_k=1 the result
+    // must keep the MODEL's first pick -> proves truncation happens AFTER rerank, not before.
     let mock = Arc::new(MockChatModel::new(
-        r#"["github__create_issue", "github__list_pull_requests"]"#,
+        r#"["github__list_pull_requests", "github__create_issue"]"#,
     ));
     let mut s = SubagentStrategy::new(mock, 20);
     s.index(&sample()).await;
     let hits = s.search("create github issue", 1).await;
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].qualified_name, "github__create_issue");
+    assert_eq!(hits[0].qualified_name, "github__list_pull_requests");
 }
 
 #[tokio::test]
