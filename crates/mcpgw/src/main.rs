@@ -374,7 +374,7 @@ mod tests {
     fn build_backends_empty_for_bm25() {
         let cfg = config::Config::default_from_empty();
         let b = build_backends(&cfg).unwrap();
-        assert!(b.embedder.is_none() && b.chat.is_none());
+        assert!(b.embedder.is_none() && b.chat.is_none() && b.subagent_candidates.is_none());
     }
 
     #[test]
@@ -393,7 +393,8 @@ mod tests {
             "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2_KEY\"\n",
         )
         .unwrap();
-        assert!(build_backends(&cfg).unwrap().embedder.is_some());
+        let b = build_backends(&cfg).unwrap();
+        assert!(b.embedder.is_some() && b.chat.is_none());
     }
 
     #[test]
@@ -403,7 +404,8 @@ mod tests {
             "[retrieval]\nstrategy=\"hybrid\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2B_KEY\"\n",
         )
         .unwrap();
-        assert!(build_backends(&cfg).unwrap().embedder.is_some());
+        let b = build_backends(&cfg).unwrap();
+        assert!(b.embedder.is_some() && b.chat.is_none());
     }
 
     #[test]

@@ -194,6 +194,8 @@ mod tests {
 
     #[tokio::test]
     async fn with_backends_rebuild_builds_subagent_snapshot_no_upstreams() {
+        // MockChatModel::new("[]") = chat selects no tools; no upstreams -> empty catalog;
+        // rebuild must still succeed and search returns empty.
         let backends = retrieval::Backends {
             chat: Some(std::sync::Arc::new(retrieval::MockChatModel::new("[]"))),
             ..Default::default()
