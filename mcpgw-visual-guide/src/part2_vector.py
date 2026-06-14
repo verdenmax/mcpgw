@@ -457,7 +457,8 @@ LESSON_08 = r"""
   <ul>
     <li><span class="inline">"bm25"</span> —— <strong>无需 embedder</strong>，直接造 <span class="inline">Bm25Strategy</span>。</li>
     <li><span class="inline">"vector"</span> —— <strong>必须有</strong> embedder；没有就返回 <span class="inline">StrategyError::EmbedderRequired</span>。</li>
-    <li><span class="inline">"hybrid"</span> / 其它未知名字 —— <span class="inline">StrategyError::NotImplemented</span>（留给 M2-B）。</li>
+    <li><span class="inline">"hybrid"</span> —— 与 vector 一样<strong>必须有</strong> embedder（M2-B，RRF 融合，见第 15 课）；没有就 <span class="inline">EmbedderRequired</span>。</li>
+    <li>其它<strong>未知名字</strong> —— <span class="inline">StrategyError::NotImplemented</span>。</li>
   </ul>
   <p>它故意只收 <span class="inline">&amp;str</span>（不依赖 <span class="inline">config</span> 类型），所以 <span class="inline">retrieval</span> 这个 crate 不必反向依赖配置层。
   另外提醒：<strong>默认策略仍是 <span class="inline">bm25</span></strong>，向量是显式选择项。</p>
@@ -473,17 +474,21 @@ LESSON_08 = r"""
             Some(e) =&gt; Ok(Box::new(VectorStrategy::new(e.clone()))),
             None =&gt; Err(StrategyError::EmbedderRequired(name.to_string())),
         },
+        <span class="st">"hybrid"</span> =&gt; <span class="kw">match</span> embedder {     <span class="cm">// M2-B：RRF 融合，同样需 embedder</span>
+            Some(e) =&gt; Ok(Box::new(HybridStrategy::new(e.clone()))),
+            None =&gt; Err(StrategyError::EmbedderRequired(name.to_string())),
+        },
         other =&gt; Err(StrategyError::NotImplemented(other.to_string())),
     }
 }</pre>
   </div>
 </div>
 
-<h2>build_embedder：只有 vector 才造，且只造一次</h2>
+<h2>build_embedder：vector / hybrid 才造，且只造一次</h2>
 
 <div class="card detail">
   <div class="tag">🔬 细节 / 代码对应</div>
-  <p><span class="inline">build_embedder</span> 在启动期跑一次。当且仅当 <span class="inline">strategy == "vector"</span> 时：</p>
+  <p><span class="inline">build_embedder</span> 在启动期跑一次。当 <span class="inline">strategy</span> 是 <span class="inline">"vector"</span> 或 <span class="inline">"hybrid"</span> 时（两者都需 embedder）：</p>
   <ul>
     <li>读 <span class="inline">[retrieval.vector]</span> 段（缺段直接报错）。</li>
     <li>从 <span class="inline">api_key_env</span> 命名的环境变量取密钥——<strong>fail-fast</strong>，
@@ -499,9 +504,9 @@ LESSON_08 = r"""
 <pre><span class="kw">fn</span> <span class="fn">build_embedder</span>(cfg: &amp;config::Config)
   -&gt; Result&lt;Option&lt;Arc&lt;dyn retrieval::Embedder&gt;&gt;, String&gt; {
     <span class="kw">match</span> cfg.retrieval.strategy.as_str() {
-        <span class="st">"vector"</span> =&gt; {
+        <span class="st">"vector"</span> | <span class="st">"hybrid"</span> =&gt; {
             <span class="kw">let</span> v = cfg.retrieval.vector.as_ref()
-                .ok_or(<span class="st">"strategy=\"vector\" requires [retrieval.vector]"</span>)?;
+                .ok_or_else(|| <span class="fn">format!</span>(<span class="st">"strategy={:?} requires [retrieval.vector]"</span>, cfg.retrieval.strategy))?;
             <span class="cm">// fail-fast：错误只提变量名，不含密钥值</span>
             <span class="kw">let</span> api_key = std::env::<span class="fn">var</span>(&amp;v.api_key_env)
                 .<span class="fn">map_err</span>(|_| <span class="fn">format!</span>(<span class="st">"[retrieval.vector]: env {:?} is not set"</span>, v.api_key_env))?;
@@ -578,5 +583,5 @@ api_key_env = <span class="st">"OPENAI_API_KEY"</span></pre>
   把这些声明兑现成可靠性约束——缺 key 立刻失败、缓存只建一次、名字与 embedder 的匹配性被强校验。意图与装配彻底分离。
 </div>
 
-<p>向量检索专章到此结束。下一步——<strong>Hybrid 检索与 RRF 融合</strong>——见第四部分的占位章节（待 M2-B 落地后写满）。</p>
+<p>向量检索专章到此结束。下一步——<strong>Hybrid 检索与 RRF 融合</strong>——把字面与语义两路用 RRF 合并，见第四部分「<strong>Hybrid 检索（RRF）</strong>」一课。</p>
 """

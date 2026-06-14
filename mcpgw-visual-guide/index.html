@@ -261,7 +261,7 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
     <div class="part">从零开始 · 面向 mcpgw 读者</div>
     <h1>用图解理解整个 mcpgw 网关项目</h1>
     <p class="lead">这套教程带你<strong>层层深入</strong>：先建立 mcpgw 的<strong>宏观全景</strong>（是什么 / 架构 / 一次调用的生命周期），
-    再写透<strong>向量检索专章</strong>（Embedder / 缓存 / VectorStrategy / 装配配置）。其余各 crate 内部与 Hybrid 检索为<strong>施工中</strong>占位，将逐步补全。
+    再写透<strong>向量检索专章</strong>（Embedder / 缓存 / VectorStrategy / 装配配置）与 <strong>Hybrid 检索（RRF）</strong>。其余各 crate 内部（09–14）为<strong>施工中</strong>占位，将逐步补全。
     每一课都对照 mcpgw 真实源码（crate 文件 + 符号名）。</p>
     <div class="legend">
       <span><i style="background:var(--blue)"></i>宏观理解</span>
@@ -293,7 +293,7 @@ table.t td.mono, table.t td .mono { font-family: ui-monospace, monospace; font-s
 <a href="lessons/13-retrieval-bm25.html"><span class="n">13</span><span class="tt">retrieval 内核与 BM25</span><span class="ts">RetrievalStrategy(async) 与 BM25（施工中）</span></a>
 <a href="lessons/14-config.html"><span class="n">14</span><span class="tt">config 配置系统</span><span class="ts">[server]/[upstream]/[retrieval] 配置（施工中）</span></a>
 <div class="toc-part">第四部分 · 后续</div>
-<a href="lessons/15-hybrid-rrf.html"><span class="n">15</span><span class="tt">Hybrid 检索（RRF）</span><span class="ts">RRF 融合 BM25+向量（待 M2-B）</span></a></div>
+<a href="lessons/15-hybrid-rrf.html"><span class="n">15</span><span class="tt">Hybrid 检索（RRF）</span><span class="ts">RRF 融合 BM25+向量 · opt-in · 默认仍 bm25</span></a></div>
   <div class="toc-empty" id="tocempty">没有匹配的课程，换个关键词试试。</div>
 </div>
 

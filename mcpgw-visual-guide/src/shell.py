@@ -417,7 +417,7 @@ def index_page(standalone=False, lesson_prefix=""):
         "12-downstream.html": "rmcp ServerHandler · stdio + HTTP（施工中）",
         "13-retrieval-bm25.html": "RetrievalStrategy(async) 与 BM25（施工中）",
         "14-config.html": "[server]/[upstream]/[retrieval] 配置（施工中）",
-        "15-hybrid-rrf.html": "RRF 融合 BM25+向量（待 M2-B）",
+        "15-hybrid-rrf.html": "RRF 融合 BM25+向量 · opt-in · 默认仍 bm25",
     }
     for part in order:
         blocks.append(f'<div class="toc-part">{part}</div>')
@@ -451,7 +451,7 @@ def index_page(standalone=False, lesson_prefix=""):
     <div class="part">从零开始 · 面向 mcpgw 读者</div>
     <h1>用图解理解整个 mcpgw 网关项目</h1>
     <p class="lead">这套教程带你<strong>层层深入</strong>：先建立 mcpgw 的<strong>宏观全景</strong>（是什么 / 架构 / 一次调用的生命周期），
-    再写透<strong>向量检索专章</strong>（Embedder / 缓存 / VectorStrategy / 装配配置）。其余各 crate 内部与 Hybrid 检索为<strong>施工中</strong>占位，将逐步补全。
+    再写透<strong>向量检索专章</strong>（Embedder / 缓存 / VectorStrategy / 装配配置）与 <strong>Hybrid 检索（RRF）</strong>。其余各 crate 内部（09–14）为<strong>施工中</strong>占位，将逐步补全。
     每一课都对照 mcpgw 真实源码（crate 文件 + 符号名）。</p>
     <div class="legend">
       <span><i style="background:var(--blue)"></i>宏观理解</span>
