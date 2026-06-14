@@ -191,4 +191,18 @@ mod tests {
             .await
             .is_empty());
     }
+
+    #[tokio::test]
+    async fn with_backends_rebuild_builds_subagent_snapshot_no_upstreams() {
+        let backends = retrieval::Backends {
+            chat: Some(std::sync::Arc::new(retrieval::MockChatModel::new("[]"))),
+            ..Default::default()
+        };
+        let state =
+            super::GatewayState::with_backends("subagent", backends).expect("subagent state");
+        state.rebuild_snapshot().await.expect("rebuild ok");
+        assert!(metatools::search_tools(&state.snapshot(), "anything", 5)
+            .await
+            .is_empty());
+    }
 }

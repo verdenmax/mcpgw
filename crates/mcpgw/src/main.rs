@@ -149,10 +149,11 @@ fn validate_upstream_http_env(cfg: &config::Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Build the retrieval embedder from config (vector/hybrid). Returns `None` for bm25.
-/// Reads the API key from its env var (fail-fast) and wraps the provider in a content-hash
-/// cache shared across snapshot rebuilds.
-fn build_embedder(cfg: &config::Config) -> Result<Option<Arc<dyn retrieval::Embedder>>, String> {
+/// Build the retrieval backends from config: an `embedder` for vector/hybrid, a `chat` model for
+/// subagent, or nothing for bm25. Reads API keys from their env vars (fail-fast); the embedder is
+/// wrapped in a content-hash cache shared across snapshot rebuilds.
+fn build_backends(cfg: &config::Config) -> Result<retrieval::Backends, String> {
+    let mut backends = retrieval::Backends::default();
     match cfg.retrieval.strategy.as_str() {
         "vector" | "hybrid" => {
             let v = cfg.retrieval.vector.as_ref().ok_or_else(|| {
@@ -170,12 +171,28 @@ fn build_embedder(cfg: &config::Config) -> Result<Option<Arc<dyn retrieval::Embe
                 v.dim,
                 v.timeout_ms.map(std::time::Duration::from_millis),
             );
-            Ok(Some(Arc::new(retrieval::CachingEmbedder::new(Arc::new(
-                openai,
-            )))))
+            backends.embedder = Some(Arc::new(retrieval::CachingEmbedder::new(Arc::new(openai))));
         }
-        _ => Ok(None),
+        "subagent" => {
+            let s = cfg
+                .retrieval
+                .subagent
+                .as_ref()
+                .ok_or("strategy=\"subagent\" requires [retrieval.subagent]")?;
+            let api_key = std::env::var(&s.api_key_env)
+                .map_err(|_| format!("[retrieval.subagent]: env {:?} is not set", s.api_key_env))?;
+            let openai = chat::OpenAiChat::new(
+                s.base_url.clone(),
+                s.model.clone(),
+                api_key,
+                s.timeout_ms.map(std::time::Duration::from_millis),
+            );
+            backends.chat = Some(Arc::new(openai));
+            backends.subagent_candidates = s.candidates;
+        }
+        _ => {}
     }
+    Ok(backends)
 }
 
 /// Build gateway state, connect upstreams, build the initial snapshot, and return the
@@ -189,15 +206,11 @@ async fn prepare_state(
     ),
     String,
 > {
-    let state = match build_embedder(cfg)? {
-        Some(embedder) => Arc::new(
-            gateway::GatewayState::with_embedder(&cfg.retrieval.strategy, embedder)
-                .map_err(|e| e.to_string())?,
-        ),
-        None => Arc::new(
-            gateway::GatewayState::new(&cfg.retrieval.strategy).map_err(|e| e.to_string())?,
-        ),
-    };
+    let backends = build_backends(cfg)?;
+    let state = Arc::new(
+        gateway::GatewayState::with_backends(&cfg.retrieval.strategy, backends)
+            .map_err(|e| e.to_string())?,
+    );
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     let csum = upstream::connect::connect_all(state.registry(), &cfg.upstreams, tx).await;
     tracing::info!(connected = ?csum.connected, skipped = ?csum.skipped, "upstreams connected");
@@ -358,37 +371,50 @@ mod tests {
     }
 
     #[test]
-    fn build_embedder_none_for_bm25() {
+    fn build_backends_empty_for_bm25() {
         let cfg = config::Config::default_from_empty();
-        assert!(build_embedder(&cfg).unwrap().is_none());
+        let b = build_backends(&cfg).unwrap();
+        assert!(b.embedder.is_none() && b.chat.is_none());
     }
 
     #[test]
-    fn build_embedder_fails_fast_on_missing_key() {
+    fn build_backends_fails_fast_on_missing_vector_key() {
         let cfg = config::Config::from_toml_str(
             "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2_NO_KEY\"\n",
         )
         .unwrap();
-        assert!(build_embedder(&cfg).is_err());
+        assert!(build_backends(&cfg).is_err());
     }
 
     #[test]
-    fn build_embedder_some_for_vector_with_key() {
+    fn build_backends_embedder_for_vector_with_key() {
         std::env::set_var("MCPGW_M2_KEY", "sk-x");
         let cfg = config::Config::from_toml_str(
             "[retrieval]\nstrategy=\"vector\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2_KEY\"\n",
         )
         .unwrap();
-        assert!(build_embedder(&cfg).unwrap().is_some());
+        assert!(build_backends(&cfg).unwrap().embedder.is_some());
     }
 
     #[test]
-    fn build_embedder_some_for_hybrid_with_key() {
+    fn build_backends_embedder_for_hybrid_with_key() {
         std::env::set_var("MCPGW_M2B_KEY", "sk-x");
         let cfg = config::Config::from_toml_str(
             "[retrieval]\nstrategy=\"hybrid\"\n[retrieval.vector]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2B_KEY\"\n",
         )
         .unwrap();
-        assert!(build_embedder(&cfg).unwrap().is_some());
+        assert!(build_backends(&cfg).unwrap().embedder.is_some());
+    }
+
+    #[test]
+    fn build_backends_chat_for_subagent_with_key() {
+        std::env::set_var("MCPGW_M2T5_KEY", "sk-x");
+        let cfg = config::Config::from_toml_str(
+            "[retrieval]\nstrategy=\"subagent\"\n[retrieval.subagent]\nmodel=\"m\"\napi_key_env=\"MCPGW_M2T5_KEY\"\ncandidates=15\n",
+        )
+        .unwrap();
+        let b = build_backends(&cfg).unwrap();
+        assert!(b.chat.is_some() && b.embedder.is_none());
+        assert_eq!(b.subagent_candidates, Some(15));
     }
 }
