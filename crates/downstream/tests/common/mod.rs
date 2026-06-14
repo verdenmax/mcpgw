@@ -64,3 +64,22 @@ pub async fn attach_revealing_mock_with_worker(state: &Arc<GatewayState>, name: 
     state.registry().insert(std::sync::Arc::new(handle));
     state.rebuild_snapshot().await.unwrap();
 }
+
+/// Attach a `MockUpstream` under `name` but RETURN its server task handle so a test can
+/// `abort()` it to simulate a runtime crash. Uses a short per-call timeout so a call against
+/// the now-dead connection returns promptly (instead of waiting the 30s default). Does NOT
+/// rebuild the snapshot — the caller attaches all upstreams, then rebuilds once.
+pub async fn attach_killable_mock(state: &GatewayState, name: &str) -> tokio::task::JoinHandle<()> {
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    let server = tokio::spawn(async move {
+        if let Ok(svc) = MockUpstream::new().serve(server_io).await {
+            let _ = svc.waiting().await;
+        }
+    });
+    let handle = UpstreamHandle::connect(name, client_io)
+        .await
+        .unwrap()
+        .with_call_timeout(std::time::Duration::from_millis(500));
+    state.registry().insert(std::sync::Arc::new(handle));
+    server
+}

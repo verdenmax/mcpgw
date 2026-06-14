@@ -154,3 +154,78 @@ async fn list_changed_refreshes_what_search_can_find() {
 
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn runtime_upstream_crash_is_isolated_from_other_upstreams() {
+    // Two live upstreams; one crashes mid-session. The dead one's tool must self-heal to an
+    // isError (no panic / no hang), and the OTHER upstream must keep working (isolation).
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    common::attach_mock(&state, "alive").await; // rebuilds with alive's tools
+    let doomed = common::attach_killable_mock(&state, "doomed").await; // no rebuild
+    state.rebuild_snapshot().await.unwrap(); // catalog now has alive__* + doomed__*
+
+    let client = common::connect_to_gateway(state, 8).await;
+
+    // Sanity: the doomed upstream is callable BEFORE the crash.
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("call_tool").with_arguments(args(json!({
+                "name": "doomed__echo", "arguments": {"text": "pre"}
+            }))),
+        )
+        .await
+        .unwrap();
+    assert_ne!(r.is_error, Some(true), "doomed__echo should work pre-crash");
+
+    // Crash it: aborting the server task drops the duplex, closing the connection.
+    doomed.abort();
+    let _ = doomed.await; // ensure the abort has settled before we call again
+
+    // The catalog entry still exists (no rebuild happened), so the isError below is attributable
+    // to the dead connection, not a missing tool.
+    let details = client
+        .call_tool(
+            CallToolRequestParams::new("get_tool_details")
+                .with_arguments(args(json!({"name": "doomed__echo"}))),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        details.is_error,
+        Some(true),
+        "doomed__echo must still be in the catalog post-crash"
+    );
+
+    // The dead upstream's tool now gracefully degrades to an isError result (not a panic / hang).
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("call_tool").with_arguments(args(json!({
+                "name": "doomed__echo", "arguments": {"text": "post"}
+            }))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.is_error,
+        Some(true),
+        "a call to a crashed upstream must gracefully degrade to isError"
+    );
+
+    // Isolation: the other upstream is unaffected and still forwards normally.
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("call_tool").with_arguments(args(json!({
+                "name": "alive__echo", "arguments": {"text": "still-here"}
+            }))),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        r.is_error,
+        Some(true),
+        "a live upstream must be unaffected by another's crash"
+    );
+    assert!(r.content[0].as_text().unwrap().text.contains("still-here"));
+
+    client.cancel().await.unwrap();
+}
