@@ -31,3 +31,7 @@ required-features = ["testkit"]
 [[test]]
 name = "hybrid"
 required-features = ["testkit"]
+
+[[test]]
+name = "subagent"
+required-features = ["testkit"]
