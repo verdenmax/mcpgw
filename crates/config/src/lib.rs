@@ -107,7 +107,8 @@ pub struct HttpConfig {
     pub enabled: bool,
     /// Bind address. Defaults to localhost; use a tunnel/reverse proxy for public exposure.
     pub bind: String,
-    /// Mount path for the MCP endpoint.
+    /// Mount path for the MCP endpoint. Must be a plain path starting with `/` and longer than
+    /// `/` (no wildcard/`{param}` segments); validated at startup before it reaches axum.
     pub path: String,
     /// Accepted API keys. Empty -> no auth (relies on localhost binding).
     #[serde(rename = "api_key")]
