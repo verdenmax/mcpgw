@@ -11,6 +11,9 @@ use retrieval::{build_strategy, Backends};
 /// Upper bound on how long shutdown waits for the audit writer to drain + fsync.
 const AUDIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Upper bound on how long shutdown waits for the HTTP server to drain in-flight requests.
+const HTTP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// mcpgw retrieval-core CLI: query a tool catalog with the configured strategy.
 #[derive(Parser)]
 #[command(name = "mcpgw", version)]
@@ -296,6 +299,24 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     let state_for_stdio = state.clone();
     let top_k = cfg.retrieval.top_k;
 
+    // Run HTTP as a background task with graceful shutdown driven by a oneshot, so on shutdown its
+    // keep-alive sessions close and release their GatewayServer/JsonlSink clones promptly (instead
+    // of being orphaned and forcing the audit drain to wait out its timeout).
+    let (http_shutdown_tx, http_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut http_task = http_bound.map(|(listener, router)| {
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = http_shutdown_rx.await;
+                })
+                .await
+                .map_err(|e| e.to_string())
+        })
+    });
+
+    // Wait for the first shutdown trigger: stdio client disconnect, ctrl_c, or the HTTP server
+    // terminating on its own (a serve error, or — in HTTP-only mode — the only transport ending).
+    let mut http_self_terminated = false;
     let outcome: Result<(), String> = tokio::select! {
         res = async {
             let server = downstream::GatewayServer::new(state_for_stdio, top_k, sinks.clone());
@@ -308,9 +329,12 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             res.map(|_| ())
         }
         res = async {
-            let (listener, router) = http_bound.unwrap();
-            axum::serve(listener, router).await.map_err(|e| e.to_string())
+            match http_task.as_mut() {
+                Some(t) => t.await.map_err(|e| e.to_string()).and_then(|r| r),
+                None => std::future::pending().await,
+            }
         }, if http_enabled => {
+            http_self_terminated = true;
             res
         }
         _ = tokio::signal::ctrl_c() => {
@@ -319,13 +343,24 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         }
     };
 
-    // Drain the audit writer (if any). All sinks share one `Arc<JsonlSink>` (one SyncSender), so
-    // the channel disconnects only when the last outer-Arc clone drops. On the stdio path the
-    // server is a select!-branch local already dropped here, so `drop(sinks)` releases the final
-    // clone and the writer drains+flushes+fsyncs immediately. The HTTP path mints per-session
-    // GatewayServers in detached tasks; an in-flight OR idle keep-alive session still holds a
-    // clone, so the bounded timeout backstops those (records already enqueued are flushed per
-    // batch regardless).
+    // Signal graceful shutdown and await the HTTP drain (bounded), UNLESS the HTTP task already
+    // ended (its JoinHandle is then consumed and must not be awaited again). Draining here closes
+    // keep-alive sessions and releases their sink clones before the audit drain below.
+    let _ = http_shutdown_tx.send(());
+    if !http_self_terminated {
+        if let Some(task) = http_task {
+            if tokio::time::timeout(HTTP_SHUTDOWN_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                tracing::warn!("http server graceful shutdown timed out");
+            }
+        }
+    }
+
+    // Drain the audit writer (if any). With the HTTP sessions now closed and the stdio server
+    // dropped, `drop(sinks)` releases the last JsonlSink clone, disconnecting the channel so the
+    // writer FIFO-drains, flushes, fsyncs, and exits — promptly, not at the timeout.
     drop(sinks);
     if let Some(writer) = audit_writer {
         if tokio::time::timeout(
