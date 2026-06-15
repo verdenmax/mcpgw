@@ -106,8 +106,9 @@ fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve every `[[server.http.api_key]]` secret from its env var. Fail-fast on any
-/// missing env (returns the offending field/env name, never the value).
+/// Resolve every `[[server.http.api_key]]` secret from its env var. Fail-fast on any missing
+/// env, or a set-but-empty/whitespace-only value (returns the offending field/env name, never
+/// the value).
 fn resolve_api_keys(cfg: &config::Config) -> Result<Vec<String>, String> {
     let Some(http) = cfg.server.http.as_ref().filter(|h| h.enabled) else {
         return Ok(Vec::new());
