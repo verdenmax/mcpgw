@@ -107,7 +107,8 @@ pub struct HttpConfig {
     pub enabled: bool,
     /// Bind address. Defaults to localhost; use a tunnel/reverse proxy for public exposure.
     pub bind: String,
-    /// Mount path for the MCP endpoint.
+    /// Mount path for the MCP endpoint. Must be a plain path starting with `/` and longer than
+    /// `/` (no wildcard/`{param}` segments); validated at startup before it reaches axum.
     pub path: String,
     /// Accepted API keys. Empty -> no auth (relies on localhost binding).
     #[serde(rename = "api_key")]
@@ -293,6 +294,13 @@ impl Config {
                     u.name
                 )));
             }
+            if u.name.starts_with('_') || u.name.ends_with('_') {
+                return Err(ConfigError::Invalid(format!(
+                    "upstream.name {:?} must not start or end with '_' \
+                     (a boundary underscore can re-form the \"__\" namespace separator)",
+                    u.name
+                )));
+            }
             if !seen.insert(u.name.as_str()) {
                 return Err(ConfigError::Invalid(format!(
                     "duplicate upstream.name {:?}",
@@ -306,6 +314,14 @@ impl Config {
                         u.name
                     )));
                 }
+            }
+        }
+        if let Some(http) = &self.server.http {
+            if !http.path.starts_with('/') || http.path.len() < 2 {
+                return Err(ConfigError::Invalid(format!(
+                    "[server.http].path {:?} must start with '/' and be longer than \"/\"",
+                    http.path
+                )));
             }
         }
         Ok(())
@@ -680,5 +696,48 @@ mod tests {
         let cfg = Config::from_toml_str("[audit]\nenabled = true\n").unwrap();
         assert!(cfg.audit.enabled);
         assert_eq!(cfg.audit.path, "mcpgw-audit.jsonl");
+    }
+
+    #[test]
+    fn rejects_server_name_leading_or_trailing_underscore() {
+        for bad in ["_github", "github_"] {
+            let toml =
+                format!("[[upstream]]\nname = \"{bad}\"\ntransport = \"stdio\"\ncommand = \"x\"\n");
+            let err = Config::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "server name {bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_server_name_with_interior_underscore() {
+        let cfg = Config::from_toml_str(
+            "[[upstream]]\nname = \"my_server\"\ntransport = \"stdio\"\ncommand = \"x\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.upstreams[0].name, "my_server");
+    }
+
+    #[test]
+    fn rejects_invalid_http_path() {
+        for bad in ["", "/", "mcp"] {
+            let toml = format!("[server.http]\nenabled = true\npath = \"{bad}\"\n");
+            let err = Config::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "http path {bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_default_and_custom_http_path() {
+        let cfg = Config::from_toml_str("[server.http]\nenabled = true\n").unwrap();
+        assert_eq!(cfg.server.http.unwrap().path, "/mcp");
+        let cfg =
+            Config::from_toml_str("[server.http]\nenabled = true\npath = \"/gateway\"\n").unwrap();
+        assert_eq!(cfg.server.http.unwrap().path, "/gateway");
     }
 }

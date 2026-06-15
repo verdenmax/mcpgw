@@ -61,7 +61,7 @@ pub struct MockEmbedder {
 ```rust
 pub struct CachingEmbedder {
     inner: Arc<dyn Embedder>,
-    cache: Mutex<HashMap<u64, Arc<[f32]>>>,
+    cache: Mutex<GenCache>,   // 两代有界缓存：current + previous，各上限 CACHE_GEN_CAP
 }
 
 impl CachingEmbedder {
@@ -73,7 +73,7 @@ impl Embedder for CachingEmbedder { /* embed + dim */ }
 ```
 
 包装任意 `Arc<dyn Embedder>` 的 **`Embedder` 装饰器**，按文本内容哈希记忆向量，使重复/未变的工具文本
-只被嵌入一次（跨快照重建复用）。
+只被嵌入一次（跨快照重建复用）。缓存由**两代有界缓存** `GenCache` 支撑，内存上界约 `2 * CACHE_GEN_CAP`。
 
 - `pub fn new(inner: Arc<dyn Embedder>) -> Self`：以空缓存包装内层 embedder。
 - `dim()`：直接透传 `inner.dim()`。
@@ -82,9 +82,17 @@ impl Embedder for CachingEmbedder { /* embed + dim */ }
 - **缓存键 = 文本内容哈希**（FNV-1a，`hash_text`）；相同内容 → 同一缓存项。
 - **仅嵌未命中**：先按内容哈希在缓存中查找，只把**唯一的未命中文本**（按首次出现顺序去重）转发给 `inner`，
   命中文本不再调用内层。
-- **保序还原**：最终结果按**原始输入顺序**重组（含重复项），同一文本得到同一向量。
+- **保序还原**：最终结果按**原始输入顺序**从调用内**本地 `resolved` map**（非有界缓存本身）重组（含重复项），
+  同一文本得到同一向量——故即便单批超大、嵌入途中触发缓存轮转/驱逐，每个输入仍拿到正确向量。
 - **全命中跳过内层**：若整批都命中缓存，则**完全不调用** `inner.embed`（节省一次网络往返）。
 - **错误不缓存**：`inner.embed` 返回 `Err` 时直接向上传播，缓存保持不变（不写入任何部分结果）。
+
+**两代有界缓存** `GenCache`（audit F4，修复旧的无界 `HashMap`/从不驱逐）：
+- `current` + `previous` 两个 `HashMap<u64, Arc<[f32]>>`，各上限 `CACHE_GEN_CAP = 2048`，常驻项数被界定在约 `2*CAP`。
+- **查找**：先看 `current`，未命中再看 `previous`；命中 `previous` 时把该项**提升回 `current`**（promote-on-hit），
+  使热键（每次 rebuild 重嵌的工具描述）持续驻留。
+- **轮转**：插入时若 `current` 已满（且不是更新已有键），则 `previous = current`、`current` 重置为空——旧 `previous` 整代丢弃；
+  临时的 query 向量因而不再无界累积。
 
 **锁纪律**：内层 `inner.embed().await` 发生在**两段独立的 `cache.lock()` 作用域之间**——绝不跨 `.await`
 持有 std `Mutex` guard（既是 `clippy::await_holding_lock` 错误，也是正确性隐患）。

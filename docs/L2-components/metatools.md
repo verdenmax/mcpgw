@@ -30,7 +30,7 @@
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
-| `search_tools` | `(&GatewaySnapshot, query: &str, top_k: usize) -> Vec<ToolSummary>` | 经策略检索，最多 `top_k` 条，最佳在前；`ScoredTool` → `ToolSummary` |
+| `search_tools` | `async (&GatewaySnapshot, query: &str, top_k: usize) -> Vec<ToolSummary>` | 经策略检索（`strategy.search(...).await`），最多 `top_k` 条，最佳在前；`ScoredTool` → `ToolSummary` |
 | `get_tool_details` | `<'a>(&'a GatewaySnapshot, name: &str) -> Option<&'a ToolDef>` | 按命名空间名在 catalog 中查完整定义 |
 | `call_tool` | `async (&GatewaySnapshot, &UpstreamRegistry, name: &str, args: Option<Map<String, Value>>) -> Result<CallToolResult, MetaError>` | 经 catalog 查到 `(server, tool)` 后转发到对应上游 |
 

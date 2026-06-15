@@ -95,12 +95,14 @@ async fn call_tool(
 ### `call_tool` 的调用观测（M6.T1）
 每次 `call_tool`（除「未知元工具名」早退分支外）都会构造一条 `observe::CallRecord` 并扇出给 `self.sinks`：
 
-1. 进入即 `let started = Instant::now()`；`arg_bytes = serde_json::to_string(&args).len()`（**仅 size**）。
+1. 进入即 `let started = Instant::now()`；`arg_bytes = json_len(&args)`（**仅 size**）。`json_len` 用一个仅计数的
+   私有 `CountingWriter` + `serde_json::to_writer` 量取序列化 JSON 字节长度，**不分配中间 `String`**（数值与旧的
+   `serde_json::to_string(&args).len()` 一致）。
 2. 分派 `match` 的每个臂产出五元组 `(response, meta_tool, target_tool, outcome, error_kind)`。`call_tool`
    臂的 `MetaError` 经私有 `classify` 映射；其余 `error_kind` 由内联臂直接给出（见下表）。
 3. `match` 结束后**立即** `latency_ms = started.elapsed()`——快照在结果再序列化/`upstream` 派生**之前**，
    故记录的延迟反映调用本身、不含记账开销。
-4. `result_bytes = serde_json::to_string(&response).len()`（`Err` 路径为 0，**仅 size**）；
+4. `result_bytes = json_len(&response)`（`Err` 路径为 0，**仅 size**；同样经 `CountingWriter` + `to_writer`，无中间 `String`）；
    `upstream = target_tool.split_once("__").map(|(s, _)| s)`（上游 server 前缀）。
 5. 构造 `CallRecord { ts_unix_ms: now_unix_ms(), meta_tool, target_tool, upstream, latency_ms, outcome,
    error_kind, arg_bytes, result_bytes }`，`for sink in self.sinks.iter() { sink.record(&rec); }` 同步扇出，

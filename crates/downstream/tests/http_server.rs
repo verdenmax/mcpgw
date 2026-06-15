@@ -131,3 +131,18 @@ async fn http_auth_allows_valid_key_full_flow() {
     assert_eq!(tools.len(), 3);
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn http_auth_rejects_empty_bearer_even_with_empty_configured_key() {
+    // Behavioral / defense-in-depth check: an empty configured key + empty presented bearer must
+    // still 401. (HTTP wire parsing trims the trailing OWS, so this also passes via the existing
+    // `strip_prefix` path; the true `.filter` regression guard is the http.rs unit test
+    // `presented_bearer_treats_empty_token_as_absent`.)
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    attach_mock(&state, "mock").await;
+    let url = spawn_http_gateway(state, vec![String::new()]).await;
+    assert_eq!(
+        post_init(&url, Some("")).await,
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+}

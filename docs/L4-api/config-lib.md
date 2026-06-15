@@ -24,13 +24,14 @@ pub struct Config {
 > 私有 `fn validate(&self) -> Result<(), ConfigError>`：校验 `strategy ∈ {bm25,vector,hybrid,subagent}`、
 > `top_k > 0`、`strategy ∈ {vector,hybrid}` 时必须有 `[retrieval.vector]` 段且其 `base_url`/`model`/`api_key_env`
 > 非空白、`strategy == "subagent"` 时必须有 `[retrieval.subagent]` 段且其 `base_url`/`model`/`api_key_env` 非空白且
-> `candidates != Some(0)`，以及每个 upstream 的 `name` 非空白、不含 `__`、不重复（否则 `Invalid`）。
+> `candidates != Some(0)`，以及每个 upstream 的 `name` 非空白、不含 `__`、**不以 `_` 开头或结尾**（边界下划线会重新拼出 `__` 分隔符）、不重复，
+> 且 `[server.http].path`（若有）必须以 `/` 开头且长于 `/`（拒绝 `""`/`"/"`/无前导斜杠，启动期在 axum 之前校验）——否则 `Invalid`。
 
 ## `struct UpstreamConfig`
 ```rust
 #[derive(Debug, Clone, PartialEq, Deserialize)]   // 注意：无 deny_unknown_fields（因 flatten）
 pub struct UpstreamConfig {
-    pub name: String,                                   // 命名空间前缀；非空白、禁止含 "__"
+    pub name: String,                                   // 命名空间前缀；非空白、禁止含 "__"、禁止以 "_" 开头或结尾
     #[serde(default = "default_call_timeout_ms")]
     pub call_timeout_ms: u64,                           // 默认 30_000
     #[serde(flatten)] pub transport: UpstreamTransport,
@@ -86,7 +87,7 @@ pub struct ServerConfig {
 pub struct HttpConfig {
     pub enabled: bool,                  // 默认 false（须显式开启）
     pub bind: String,                   // 默认 "127.0.0.1:8970"
-    pub path: String,                   // 默认 "/mcp"
+    pub path: String,                   // 默认 "/mcp"；validate() 要求以 "/" 开头且长于 "/"
     #[serde(rename = "api_key")]
     pub api_keys: Vec<ApiKeyConfig>,    // 对应 [[server.http.api_key]]，默认空
 }
@@ -186,6 +187,6 @@ pub enum ConfigError {
 }
 ```
 - `Parse`：TOML 语法错误或未知字段。
-- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`、upstream `name` 空白/含 `__`/重复）。
+- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`、upstream `name` 空白/含 `__`/以 `_` 开头或结尾/重复、`[server.http].path` 不以 `/` 开头或仅为 `/`）。
 
 > 行为细节见 L3：[config](../L3-details/config.md)

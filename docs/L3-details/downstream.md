@@ -5,7 +5,8 @@
 `build_router` 在 `api_keys` 非空时叠加一层 axum `from_fn_with_state` 中间件 `require_api_key`：
 
 - **Bearer 提取**：`presented_bearer` 从 `Authorization` 头读字符串，`strip_prefix("Bearer ")` 取出 key；
-  缺头/非 ASCII/无 `Bearer ` 前缀都视为「未呈现」。
+  缺头/非 ASCII/无 `Bearer ` 前缀都视为「未呈现」。**`Bearer ` 后为空串的 token 也经 `.filter(|t| !t.is_empty())`
+  视为「未呈现」**（audit F1，故 `Authorization: Bearer ` 这类空令牌一律 → 401，而非以空串去做密钥比较）。
 - **常量时间比较**：`key_authorized` 用 `subtle::ConstantTimeEq::ct_eq` 对每个配置 key 与呈现值逐字节比较，
   把结果按位 `|=` 累积成 `matched`（**不**在命中后提前 `return`，避免泄露「命中了第几个 key」的时序）。
   `ct_eq` 对长度不同的 `&[u8]` 会短路返回 `Choice(0)`——只泄露长度，可接受；长度相同时做常量时间比较。
@@ -58,8 +59,9 @@
 - **延迟测量基准**：进入即 `let started = Instant::now()`；`match` 一结束**立刻** `latency_ms =
   started.elapsed()`，**早于**结果再序列化（`result_bytes`）与 `upstream` 派生。故 `latency_ms` 反映
   **分派本身**，不含观测记账开销。
-- **`arg_bytes` / `result_bytes` 基准**：`arg_bytes = serde_json::to_string(&args).len()`（进入时算一次）；
-  `result_bytes = serde_json::to_string(&response).len()`，`Err`（协议错误）路径记 `0`。两者都是
+- **`arg_bytes` / `result_bytes` 基准**：经私有 `json_len(value)` 量取——一个仅计数的 `CountingWriter` 配合
+  `serde_json::to_writer`，量取序列化 JSON 字节长度而**不分配中间 `String`**（数值与旧的 `to_string().len()` 一致）。
+  `arg_bytes = json_len(&args)`（进入时算一次）；`result_bytes = json_len(&response)`，`Err`（协议错误）路径记 `0`。两者都是
   **字节数（size）**，**绝不含**任何参数/结果内容。
 - **`upstream` 派生**：`target_tool.split_once("__").map(|(s, _)| s)` 取 qualified name 的**上游 server 前缀**
   （如 `github__create_issue` → `github`）；只有 `call_tool` 成功/失败带 `target_tool` 时才有值。
