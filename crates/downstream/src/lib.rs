@@ -312,6 +312,11 @@ mod tests {
             serde_json::json!({"query": "weather", "top_k": 5}),
             serde_json::json!([1, 2, 3, {"nested": ["a", "b"]}, "unicode: café 日本語"]),
             serde_json::json!("plain string"),
+            serde_json::json!("escapes: \" \\ \n \t \u{0007}"),
+            serde_json::json!(null),
+            serde_json::json!(true),
+            serde_json::json!(3.5),
+            serde_json::json!(-42),
         ];
         for v in samples {
             let expected = serde_json::to_string(&v).unwrap().len();
