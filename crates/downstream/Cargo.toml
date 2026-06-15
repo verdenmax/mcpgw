@@ -8,6 +8,7 @@ gateway = { path = "../gateway" }
 metatools = { path = "../metatools" }
 observe = { path = "../observe" }
 rmcp = { workspace = true, features = ["server", "transport-io", "transport-streamable-http-server"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }
 subtle = "2"

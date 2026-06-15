@@ -49,6 +49,29 @@ fn classify(e: &metatools::MetaError) -> (observe::CallOutcome, Option<&'static 
     }
 }
 
+/// A `std::io::Write` that discards bytes and only counts them, so a value's serialized JSON
+/// length can be measured without allocating an intermediate `String`.
+struct CountingWriter(usize);
+
+impl std::io::Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Serialized JSON byte length of `value` without allocating a `String` (0 on serialize error).
+fn json_len<T: serde::Serialize>(value: &T) -> usize {
+    let mut counter = CountingWriter(0);
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        Err(_) => 0,
+    }
+}
+
 fn object_schema(json: serde_json::Value) -> Arc<serde_json::Map<String, serde_json::Value>> {
     match json {
         serde_json::Value::Object(m) => Arc::new(m),
@@ -121,7 +144,7 @@ impl ServerHandler for GatewayServer {
         use observe::{CallOutcome, CallRecord, MetaTool};
 
         let args = request.arguments.unwrap_or_default();
-        let arg_bytes = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0);
+        let arg_bytes = json_len(&args);
         // Start timing after argument-size bookkeeping so latency reflects dispatch,
         // not the observability accounting (symmetric with result_bytes below).
         let started = std::time::Instant::now();
@@ -239,7 +262,7 @@ impl ServerHandler for GatewayServer {
         // upstream derivation) so the recorded value reflects the call, not the recording.
         let latency_ms = started.elapsed().as_millis() as u64;
         let result_bytes = match &response {
-            Ok(r) => serde_json::to_string(r).map(|s| s.len()).unwrap_or(0),
+            Ok(r) => json_len(r),
             Err(_) => 0,
         };
         let upstream = target_tool
@@ -280,5 +303,19 @@ mod tests {
         assert!(props.get("top_k").is_some());
         let required = search.input_schema.get("required").unwrap();
         assert_eq!(required, &serde_json::json!(["query"]));
+    }
+
+    #[test]
+    fn json_len_matches_to_string_len() {
+        let samples = [
+            serde_json::json!({}),
+            serde_json::json!({"query": "weather", "top_k": 5}),
+            serde_json::json!([1, 2, 3, {"nested": ["a", "b"]}, "unicode: café 日本語"]),
+            serde_json::json!("plain string"),
+        ];
+        for v in samples {
+            let expected = serde_json::to_string(&v).unwrap().len();
+            assert_eq!(super::json_len(&v), expected, "json_len mismatch for {v}");
+        }
     }
 }
