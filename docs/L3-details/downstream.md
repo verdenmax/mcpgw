@@ -46,6 +46,45 @@
 - **协议级误用**（调用了一个根本不存在的元工具名）返回 `Err(McpError::invalid_params)`，即 JSON-RPC 错误。
   这区分了「这个工具运行失败」与「你叫错了工具」。
 
+## 调用观测（M6.T1，仅元数据）
+
+`call_tool` 在分派之外还**在调用边界构造一条 `observe::CallRecord` 并扇出给 `self.sinks`**——这是 T1
+（tracing）与 T3（审计 JSONL）共享的「instrument → multi-sink」埋点。**埋点只在 `downstream`**：
+`metatools` crate 保持纯函数、**不**依赖 `observe`。
+
+- **埋点位置**：埋点逻辑全在 `GatewayServer::call_tool` 内。分派 `match` 的每个臂返回五元组
+  `(response, meta_tool, target_tool, outcome, error_kind)`；`match` 之后统一构造记录、`for sink in
+  self.sinks.iter() { sink.record(&rec); }` 同步扇出，最后返回 `response`。空 `sinks` 即「不观测」。
+- **延迟测量基准**：进入即 `let started = Instant::now()`；`match` 一结束**立刻** `latency_ms =
+  started.elapsed()`，**早于**结果再序列化（`result_bytes`）与 `upstream` 派生。故 `latency_ms` 反映
+  **分派本身**，不含观测记账开销。
+- **`arg_bytes` / `result_bytes` 基准**：`arg_bytes = serde_json::to_string(&args).len()`（进入时算一次）；
+  `result_bytes = serde_json::to_string(&response).len()`，`Err`（协议错误）路径记 `0`。两者都是
+  **字节数（size）**，**绝不含**任何参数/结果内容。
+- **`upstream` 派生**：`target_tool.split_once("__").map(|(s, _)| s)` 取 qualified name 的**上游 server 前缀**
+  （如 `github__create_issue` → `github`）；只有 `call_tool` 成功/失败带 `target_tool` 时才有值。
+- **`outcome` / `error_kind` 分类**：`call_tool` 转发失败经私有 `classify(&MetaError)` 映射，其余由分派臂
+  内联给出（完整规范表以 L4 [downstream-lib](../L4-api/downstream-lib.md) 的「`error_kind` 取值表」为准）：
+
+  | 触发情形 | `outcome` | `error_kind` |
+  |----------|-----------|--------------|
+  | 任一元工具序列化结果失败（`McpError::internal_error`） | `error` | `internal` |
+  | `get_tool_details` 找不到工具（`None`） | `error` | `tool_not_found` |
+  | `call_tool` 缺 `name` | `error` | `invalid_params` |
+  | `MetaError::Timeout` | `timeout` | `timeout` |
+  | `MetaError::Call` | `error` | `upstream_call` |
+  | `MetaError::ToolNotFound` | `error` | `tool_not_found` |
+  | `MetaError::UpstreamUnavailable` | `error` | `upstream_unavailable` |
+  | 成功 | `ok` | `None` |
+
+- **仅元数据不变量**：记录的类型本身就装不下载荷——只有上述 size 与分类字段，故观测**绝不泄露
+  secret/PII**。`observe` 的单测把序列化 key 集合锁死为恰好这 9 个键。
+- **未知元工具名不记录**：调用了一个根本不存在的元工具名时，`call_tool` **早退** `Err(McpError::invalid_params)`
+  ——这是**协议误用**、不是一次网关工具调用，因此**不**构造记录、**不**扇出。
+- **默认 sink**：`mcpgw serve` 注入 `[observe::TracingSink]`，把每条记录发为结构化
+  `tracing::info!(meta_tool, target_tool, upstream, latency_ms, outcome, error_kind, arg_bytes,
+  result_bytes, "tool_call")` 事件（走 stderr，与日志同流）。stdio 与 HTTP 两条传输**共享同一切片**。
+
 ## 为何 `get_info` 只 `enable_tools`、不 `enable_tool_list_changed`
 
 下游对外暴露的工具列表是**静态的三件套**，永远不变。即便上游 `tools/list_changed` 触发网关重建快照，改变的
@@ -66,10 +105,16 @@
 - `list_changed_refreshes_what_search_can_find`：挂 `RevealingMockUpstream` + 真实 `run_rebuild_worker`，经网关
   调用 `reveal` → 上游发 `tools/list_changed` → handler → trigger → worker 重建 → 轮询直到 `search_tools`
   能搜到新冒出的 `mock__late_tool`。这条覆盖了 reveal → notify → rebuild → search 的完整闭环。
+- `meta_tool_calls_are_observed_with_metadata`：注入 `observe::CaptureSink`（经
+  `connect_to_gateway_with_sinks`），跑 `search_tools` + `call_tool`（命中 `mock__echo`）+ `call_tool`
+  （`mock__nope` → `tool_not_found`）+ 未知名，断言**恰好 3 条**记录（未知名不记录）、`target_tool`/`upstream`
+  正确派生、成功/失败的 `outcome`/`error_kind` 正确、`arg_bytes`/`result_bytes` 为正。
+
+> 测试线束的默认 sink 为空（`common::no_sinks()`），仅观测专项用例显式注入 `CaptureSink`。
 
 ## 相关
 
-- 接口见 L2：[downstream](../L2-components/downstream.md)
-- 逐文件 API 见 L4：[lib](../L4-api/downstream-lib.md)
+- 接口见 L2：[downstream](../L2-components/downstream.md) · [observe](../L2-components/observe.md)
+- 逐文件 API 见 L4：[lib](../L4-api/downstream-lib.md) · [observe-lib](../L4-api/observe-lib.md)
 - 元工具与错误见：[metatools L3](./metatools.md) · 重建/触发见：[gateway L3](./gateway.md) ·
   上游 list_changed 见：[upstream L3](./upstream.md)

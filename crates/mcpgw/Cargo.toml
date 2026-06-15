@@ -12,6 +12,7 @@ config = { path = "../config" }
 gateway = { path = "../gateway" }
 upstream = { path = "../upstream" }
 downstream = { path = "../downstream" }
+observe = { path = "../observe" }
 serde_json = { workspace = true }
 clap = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-io"] }

@@ -425,6 +425,7 @@ dependencies = [
  "axum",
  "gateway",
  "metatools",
+ "observe",
  "reqwest 0.12.28",
  "retrieval",
  "rmcp",
@@ -1085,6 +1086,7 @@ dependencies = [
  "embedder",
  "gateway",
  "metatools",
+ "observe",
  "retrieval",
  "rmcp",
  "serde_json",
@@ -1159,6 +1161,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "observe"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
