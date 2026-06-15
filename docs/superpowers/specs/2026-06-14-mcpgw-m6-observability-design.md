@@ -80,7 +80,7 @@ pub struct CallRecord {
     pub latency_ms: u64,
     pub outcome: CallOutcome,
     /// 有限集：timeout / upstream_call / tool_not_found / upstream_unavailable /
-    /// invalid_params / unknown_meta_tool。None 表示成功。
+    /// invalid_params / internal。None 表示成功。
     pub error_kind: Option<&'static str>,
     pub arg_bytes: usize,
     pub result_bytes: usize,
@@ -123,10 +123,13 @@ impl CallSink for TracingSink {
   | 成功 | Ok | None |
   | `MetaError::Timeout` | Timeout | `timeout` |
   | `MetaError::Call(..)` | Error | `upstream_call` |
-  | `MetaError::ToolNotFound` | Error | `tool_not_found` |
+  | `MetaError::ToolNotFound`（call / get_details「无此工具」）| Error | `tool_not_found` |
   | `MetaError::UpstreamUnavailable` | Error | `upstream_unavailable` |
-  | call/get_details 参数缺失（现有 `CallToolResult::error` 早退） | Error | `invalid_params` |
-  | 未知元工具名（现有 `McpError::invalid_params`） | Error | `unknown_meta_tool` |
+  | call 参数缺 `name`（现有 `CallToolResult::error` 早退） | Error | `invalid_params` |
+  | search/get_details 结果序列化失败（罕见） | Error | `internal` |
+
+  > **未知元工具名**走现有 `McpError::invalid_params`（协议层拒绝，发生在任何网关工作之前）——**不计入 `CallRecord`**。
+  > 故 `MetaTool` 仅 3 个变体，无需 `Option`/哨兵。
 
 - `upstream` = `target_tool` 按首个 `__` 切出的前缀（仅 CallTool）。
 - 处理体结束时（无论 Ok/Err）`for s in &self.sinks { s.record(&rec) }`。
