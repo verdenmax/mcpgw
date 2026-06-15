@@ -151,10 +151,12 @@ impl UpstreamHandle {
     }
 
     /// Cancel the underlying rmcp service via its cancellation token, WITHOUT consuming the
-    /// handle. Unlike `shutdown(self)`, this works on a shared `&self` (e.g. an
-    /// `Arc<UpstreamHandle>` still held by the rebuild worker or an in-flight call), so teardown
-    /// never silently skips a cancel. The child is ultimately reaped by the service's DropGuard
-    /// when the last clone drops.
+    /// handle. Unlike `shutdown(self)` — which awaits `client.cancel()` (drain + transport close) —
+    /// this is **fire-and-forget**: it signals cancellation and returns immediately without
+    /// awaiting cleanup. It works on a shared `&self` (e.g. an `Arc<UpstreamHandle>` still held by
+    /// the rebuild worker or an in-flight call), so teardown never silently skips a cancel.
+    /// Signalling the token stops the service loop, which closes the transport and (for
+    /// child-process upstreams) reaps the child — independent of when the last `Arc` clone drops.
     pub fn cancel(&self) {
         self.client.cancellation_token().cancel();
     }
