@@ -263,10 +263,22 @@ async fn meta_tool_calls_are_observed_with_metadata() {
         )
         .await
         .unwrap();
+    // An unknown meta-tool name is a protocol error, not a gateway call, and is NOT recorded.
+    let unknown = client
+        .call_tool(CallToolRequestParams::new("not_a_meta_tool"))
+        .await;
+    assert!(
+        unknown.is_err(),
+        "unknown meta-tool should be a protocol error"
+    );
     client.cancel().await.unwrap();
 
     let recs = cap.records();
-    assert_eq!(recs.len(), 3, "one record per meta-tool call");
+    assert_eq!(
+        recs.len(),
+        3,
+        "one record per gateway meta-tool call; the unknown name is not recorded"
+    );
 
     let search = &recs[0];
     assert_eq!(search.meta_tool, MetaTool::SearchTools);
@@ -280,6 +292,7 @@ async fn meta_tool_calls_are_observed_with_metadata() {
     assert_eq!(call_ok.target_tool.as_deref(), Some("mock__echo"));
     assert_eq!(call_ok.upstream.as_deref(), Some("mock"));
     assert!(call_ok.error_kind.is_none());
+    assert!(call_ok.result_bytes > 0);
 
     let call_err = &recs[2];
     assert_eq!(call_err.meta_tool, MetaTool::CallTool);

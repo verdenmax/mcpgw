@@ -233,6 +233,9 @@ impl ServerHandler for GatewayServer {
             }
         };
 
+        // Measure dispatch latency before observability bookkeeping (re-serialization,
+        // upstream derivation) so the recorded value reflects the call, not the recording.
+        let latency_ms = started.elapsed().as_millis() as u64;
         let result_bytes = match &response {
             Ok(r) => serde_json::to_string(r).map(|s| s.len()).unwrap_or(0),
             Err(_) => 0,
@@ -245,7 +248,7 @@ impl ServerHandler for GatewayServer {
             meta_tool,
             target_tool,
             upstream,
-            latency_ms: started.elapsed().as_millis() as u64,
+            latency_ms,
             outcome,
             error_kind,
             arg_bytes,
