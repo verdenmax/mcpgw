@@ -23,10 +23,21 @@ fn unique_temp(tag: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("mcpgw-{tag}-{nanos}"))
 }
 
+/// Removes the given paths on drop, so a panicking assertion can't leak temp files.
+struct TempCleanup(Vec<std::path::PathBuf>);
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        for p in &self.0 {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
 #[tokio::test]
 async fn serve_with_audit_enabled_writes_jsonl_for_a_meta_tool_call() {
     let audit_path = unique_temp("audit-it.jsonl");
     let cfg_path = unique_temp("audit-it-config.toml");
+    let _cleanup = TempCleanup(vec![audit_path.clone(), cfg_path.clone()]);
     {
         let mut f = std::fs::File::create(&cfg_path).unwrap();
         // stdio only (no http) so shutdown is driven purely by stdin EOF on client cancel.
@@ -38,13 +49,14 @@ async fn serve_with_audit_enabled_writes_jsonl_for_a_meta_tool_call() {
         .unwrap();
     }
 
-    // Spawn `mcpgw serve --config <cfg>` and connect an MCP client over its stdio.
-    let transport = TokioChildProcess::new(Command::new(bin()).configure(|c| {
-        c.arg("serve")
-            .arg("--config")
-            .arg(&cfg_path)
-            .stderr(Stdio::null()); // avoid stderr pipe backpressure during the test
+    // Spawn `mcpgw serve --config <cfg>` and connect an MCP client over its stdio. Use the builder
+    // (not `::new`) so stderr is actually suppressed — `::new` re-applies the inherit default and
+    // would let the child's logs through.
+    let (transport, _stderr) = TokioChildProcess::builder(Command::new(bin()).configure(|c| {
+        c.arg("serve").arg("--config").arg(&cfg_path);
     }))
+    .stderr(Stdio::null())
+    .spawn()
     .unwrap();
     let client = ().serve(transport).await.unwrap();
 
@@ -78,12 +90,16 @@ async fn serve_with_audit_enabled_writes_jsonl_for_a_meta_tool_call() {
         "expected at least one audit line; file was: {body:?}"
     );
     let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    // Positive metadata assertions (load-bearing line-shape check) ...
     assert_eq!(v["meta_tool"], "search_tools");
+    assert_eq!(v["outcome"], "ok");
+    assert!(
+        v.get("ts_unix_ms").is_some() && v.get("arg_bytes").is_some(),
+        "audit line must carry metadata fields: {v}"
+    );
+    // ... and the metadata-only invariant: no argument/result payload.
     assert!(
         v.get("arguments").is_none(),
         "audit line must not contain payloads"
     );
-
-    let _ = std::fs::remove_file(&audit_path);
-    let _ = std::fs::remove_file(&cfg_path);
 }

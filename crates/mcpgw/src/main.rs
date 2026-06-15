@@ -250,8 +250,8 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
 
     // Observation sinks shared by both stdio and http transports. Default = TracingSink;
     // when [audit].enabled, additionally append a JsonlSink backed by a background writer.
-    let mut sink_vec: Vec<std::sync::Arc<dyn observe::CallSink>> =
-        vec![std::sync::Arc::new(observe::TracingSink) as std::sync::Arc<dyn observe::CallSink>];
+    let mut sink_vec: Vec<Arc<dyn observe::CallSink>> =
+        vec![Arc::new(observe::TracingSink) as Arc<dyn observe::CallSink>];
     let audit_writer = if cfg.audit.enabled {
         let (sink, writer) = observe::spawn_writer(
             std::path::Path::new(&cfg.audit.path),
@@ -259,12 +259,12 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         )
         .map_err(|e| format!("open audit file {:?}: {e}", cfg.audit.path))?;
         tracing::info!(path = %cfg.audit.path, "audit log enabled");
-        sink_vec.push(std::sync::Arc::new(sink));
+        sink_vec.push(Arc::new(sink));
         Some(writer)
     } else {
         None
     };
-    let sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> = sink_vec.into();
+    let sinks: Arc<[Arc<dyn observe::CallSink>]> = sink_vec.into();
 
     // Pre-bind the HTTP listener (fail-fast on bind errors) before entering select!.
     let http_bound = if http_enabled {
@@ -312,10 +312,13 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         }
     };
 
-    // Drain the audit writer (if any): all GatewayServer sink clones were dropped when the
-    // select! branches were dropped, so dropping our own `sinks` releases the last JsonlSink
-    // clone and disconnects the channel; the writer then FIFO-drains, flushes, fsyncs, and exits.
-    // The bounded timeout covers a lingering in-flight HTTP connection that still holds a clone.
+    // Drain the audit writer (if any). All sinks share one `Arc<JsonlSink>` (one SyncSender), so
+    // the channel disconnects only when the last outer-Arc clone drops. On the stdio path the
+    // server is a select!-branch local already dropped here, so `drop(sinks)` releases the final
+    // clone and the writer drains+flushes+fsyncs immediately. The HTTP path mints per-session
+    // GatewayServers in detached tasks; an in-flight OR idle keep-alive session still holds a
+    // clone, so the bounded timeout backstops those (records already enqueued are flushed per
+    // batch regardless).
     drop(sinks);
     if let Some(writer) = audit_writer {
         if tokio::time::timeout(
