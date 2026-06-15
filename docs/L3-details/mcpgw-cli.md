@@ -13,7 +13,8 @@
   → 初始 `rebuild_snapshot()` → 返回 `(Arc<GatewayState>, rx)`。两步都 `tracing::info!` 出 connect/rebuild 摘要。
 - **`run_serve(cfg)`**：装 stderr tracing subscriber → 校验**至少启用一种传输**（`cfg.server.stdio` 或
   `[server.http].enabled`，均未启用则 `Err("no server transport enabled ...")`）→ **env 密钥启动期解析**
-  `resolve_api_keys` + `validate_upstream_http_env`（见下）→ `prepare_state` →
+  `resolve_api_keys` + `validate_upstream_http_env`（见下）→ **构造默认观测 sinks** `[observe::TracingSink]`
+  （M6.T1，stdio 与 HTTP 两个 `GatewayServer` 共享同一份 `Arc<[Arc<dyn CallSink>]>`）→ `prepare_state` →
   `tokio::spawn(run_rebuild_worker(state.clone(), rx))` → 预绑定 HTTP `TcpListener`（仅 http_enabled，bind 失败即
   `Err`）→ **并发关闭模型**（见下）→ best-effort 逐个 `remove` + `Arc::try_unwrap` + `shutdown().await` 上游子进程。
 

@@ -106,7 +106,7 @@ async fn call_tool(
    error_kind, arg_bytes, result_bytes }`，`for sink in self.sinks.iter() { sink.record(&rec); }` 同步扇出，
    再返回 `response`。
 
-**`error_kind` 取值表**（`classify` + 内联臂）：
+**`error_kind` 取值表**（`classify` + 内联臂）。注意：上方 `classify` 表的 `CallOutcome` 列是 **Rust 变体名**（`Timeout`/`Error`，即函数返回类型），本表 `outcome` 列是其 **序列化字符串值**（snake_case，如 `timeout`/`error`），两者指同一枚举：
 
 | 触发情形 | `outcome` | `error_kind` |
 |----------|-----------|--------------|

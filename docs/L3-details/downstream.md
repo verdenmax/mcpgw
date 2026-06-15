@@ -64,7 +64,7 @@
 - **`upstream` 派生**：`target_tool.split_once("__").map(|(s, _)| s)` 取 qualified name 的**上游 server 前缀**
   （如 `github__create_issue` → `github`）；只有 `call_tool` 成功/失败带 `target_tool` 时才有值。
 - **`outcome` / `error_kind` 分类**：`call_tool` 转发失败经私有 `classify(&MetaError)` 映射，其余由分派臂
-  内联给出：
+  内联给出（完整规范表以 L4 [downstream-lib](../L4-api/downstream-lib.md) 的「`error_kind` 取值表」为准）：
 
   | 触发情形 | `outcome` | `error_kind` |
   |----------|-----------|--------------|
