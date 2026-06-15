@@ -44,7 +44,7 @@ pub async fn connect_to_gateway_with_sinks(
     ().serve(client_io).await.expect("client connects")
 }
 
-/// Attach a MockUpstream (echo/greet/slow) into the state's registry under `name`,
+/// Attach a MockUpstream (echo/greet/slow/fail) into the state's registry under `name`,
 /// then rebuild the snapshot so its tools are searchable/callable.
 pub async fn attach_mock(state: &GatewayState, name: &str) {
     let (server_io, client_io) = tokio::io::duplex(8192);

@@ -324,9 +324,11 @@ async fn upstream_tool_error_is_recorded_as_error_outcome() {
     client.cancel().await.unwrap();
 
     let recs = cap.records();
-    let rec = recs.last().expect("a record for the call");
+    assert_eq!(recs.len(), 1, "exactly one record for the single call_tool");
+    let rec = &recs[0];
     assert_eq!(rec.meta_tool, MetaTool::CallTool);
     assert_eq!(rec.target_tool.as_deref(), Some("mock__fail"));
+    assert_eq!(rec.upstream.as_deref(), Some("mock"));
     assert_eq!(rec.outcome, CallOutcome::Error);
     assert_eq!(rec.error_kind, Some("upstream_tool_error"));
 }
