@@ -134,7 +134,7 @@ pub use capture::CaptureSink;
 ## 依赖与扩展点
 
 - 依赖：`serde` + `serde_json`（序列化）、`tracing`（`TracingSink`）。**无 HTTP、无存储、无 tokio**
-  （dev-only `tokio` 仅供测试）。
+  （测试均为同步 `#[test]`，亦无 `tokio` dev-dependency）。
 - **扩展点**：这是 T1/T3 共享的「instrument → multi-sink」接缝。未来的 **`MetricsSink`（M6.T2 用量指标）**
   与 **`JsonlSink`（M6.T3 审计落盘）** 都实现同一个 `CallSink` trait、被加进同一个 sinks 切片即可接入，
   无需改下游的构造/扇出逻辑。

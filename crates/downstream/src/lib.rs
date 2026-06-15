@@ -120,9 +120,11 @@ impl ServerHandler for GatewayServer {
     ) -> Result<CallToolResult, McpError> {
         use observe::{CallOutcome, CallRecord, MetaTool};
 
-        let started = std::time::Instant::now();
         let args = request.arguments.unwrap_or_default();
         let arg_bytes = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0);
+        // Start timing after argument-size bookkeeping so latency reflects dispatch,
+        // not the observability accounting (symmetric with result_bytes below).
+        let started = std::time::Instant::now();
 
         // Each arm yields: (response, meta_tool, target_tool, outcome, error_kind).
         // The unknown-meta-name case returns a protocol error and is NOT recorded.

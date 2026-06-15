@@ -53,8 +53,8 @@
 
 - `serde` + `serde_json`（`CallRecord`/枚举序列化）。
 - `tracing`（`TracingSink` 的结构化事件）。
-- dev：`tokio`（`rt` + `macros`）——仅供测试。
-- **无 `reqwest`/HTTP、无存储、无 tokio 运行时依赖**；**不依赖任何兄弟 crate**（`metatools` 也**不**反向
+- **无 `reqwest`/HTTP、无存储、无 tokio 运行时依赖**；测试均为同步 `#[test]`，故连 dev-dependency 也不需要 `tokio`。
+  **不依赖任何兄弟 crate**（`metatools` 也**不**反向
   依赖 `observe`，保持元工具逻辑纯净）。
 
 ## 被谁使用
