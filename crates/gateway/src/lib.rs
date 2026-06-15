@@ -1,6 +1,7 @@
 //! mcpgw `gateway`: holds the live, atomically-swappable `GatewaySnapshot` plus the
 //! registry of upstream connections, and rebuilds the snapshot from the upstreams.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -23,6 +24,29 @@ pub struct RebuildSummary {
     pub ingested: Vec<String>,
     /// Upstreams skipped this rebuild, with a short reason (timeout / call error).
     pub skipped: Vec<(String, String)>,
+}
+
+/// Resolve one `JoinSet::join_next` result: the joined value to process, or `None` if the task
+/// panicked/was cancelled. A `JoinError` is degraded to a skipped upstream (never re-panicked), so
+/// a single bad ingest task can't crash the initial build or kill the rebuild worker. The
+/// upstream is attributed via `names_by_id` (keyed by `task::Id`) when known.
+fn resolve_joined<T>(
+    joined: Result<T, tokio::task::JoinError>,
+    names_by_id: &HashMap<tokio::task::Id, String>,
+    summary: &mut RebuildSummary,
+) -> Option<T> {
+    match joined {
+        Ok(v) => Some(v),
+        Err(e) => {
+            let name = names_by_id
+                .get(&e.id())
+                .cloned()
+                .unwrap_or_else(|| "<ingest task>".to_string());
+            tracing::warn!(upstream = %name, error = %e, "ingest task panicked/cancelled; skipping");
+            summary.skipped.push((name, format!("task failed: {e}")));
+            None
+        }
+    }
 }
 
 /// Shared, cheaply-cloneable gateway state: an `ArcSwap` snapshot (read lock-free) and the
@@ -98,33 +122,29 @@ impl GatewayState {
         let _guard = self.rebuild_lock.lock().await;
 
         let mut set = tokio::task::JoinSet::new();
+        let mut names_by_id: HashMap<tokio::task::Id, String> = HashMap::new();
         for name in self.registry.server_names() {
             if let Some(handle) = self.registry.get(&name) {
                 let timeout = handle.call_timeout();
-                set.spawn(async move {
+                let task_name = name.clone();
+                let abort = set.spawn(async move {
                     let mut local = Catalog::new();
                     let outcome =
                         tokio::time::timeout(timeout, handle.ingest_into(&mut local)).await;
                     (name, outcome, local)
                 });
+                names_by_id.insert(abort.id(), task_name);
             }
         }
 
         let mut summary = RebuildSummary::default();
         let mut catalog = Catalog::new();
         while let Some(joined) = set.join_next().await {
-            // A panicked/cancelled ingest task must NOT crash the (initial) build or kill the
-            // rebuild worker — degrade it to a skipped upstream so crash isolation holds. The
-            // panicked task's upstream name is unrecoverable, so record a generic entry.
-            let (name, outcome, local) = match joined {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(error = %e, "ingest task panicked/cancelled; skipping");
-                    summary
-                        .skipped
-                        .push(("<ingest task>".to_string(), format!("task failed: {e}")));
-                    continue;
-                }
+            // A panicked/cancelled ingest task is degraded to a skipped upstream (see
+            // `resolve_joined`) so crash isolation holds at both startup and in the rebuild worker.
+            let Some((name, outcome, local)) = resolve_joined(joined, &names_by_id, &mut summary)
+            else {
+                continue;
             };
             match outcome {
                 Err(_elapsed) => summary.skipped.push((name, "ingest timed out".to_string())),
@@ -218,5 +238,51 @@ mod tests {
         assert!(metatools::search_tools(&state.snapshot(), "anything", 5)
             .await
             .is_empty());
+    }
+
+    /// A panicked ingest task (a real `JoinError`) must be degraded to a skipped upstream — never
+    /// re-panicked — and attributed to its upstream via the `task::Id` map.
+    #[tokio::test]
+    async fn resolve_joined_attributes_panicked_task_to_its_upstream() {
+        let h: tokio::task::JoinHandle<()> = tokio::spawn(async { panic!("boom") });
+        let id = h.id();
+        let join_err = h.await.expect_err("task must have panicked");
+        assert!(join_err.is_panic());
+
+        let mut names = std::collections::HashMap::new();
+        names.insert(id, "boomserver".to_string());
+        let mut summary = super::RebuildSummary::default();
+
+        let resolved: Option<()> = super::resolve_joined(Err(join_err), &names, &mut summary);
+        assert!(resolved.is_none(), "a JoinError must not yield a value");
+        assert_eq!(summary.skipped.len(), 1);
+        assert_eq!(summary.skipped[0].0, "boomserver");
+        assert!(summary.skipped[0].1.contains("task failed"));
+        assert!(summary.ingested.is_empty());
+    }
+
+    /// When the panicked task's id isn't in the map, it degrades to the generic name (still no panic).
+    #[tokio::test]
+    async fn resolve_joined_falls_back_to_generic_name_when_id_unknown() {
+        let h: tokio::task::JoinHandle<()> = tokio::spawn(async { panic!("boom") });
+        let join_err = h.await.expect_err("task must have panicked");
+
+        let names = std::collections::HashMap::new();
+        let mut summary = super::RebuildSummary::default();
+        let resolved: Option<()> = super::resolve_joined(Err(join_err), &names, &mut summary);
+
+        assert!(resolved.is_none());
+        assert_eq!(summary.skipped.len(), 1);
+        assert_eq!(summary.skipped[0].0, "<ingest task>");
+    }
+
+    /// The success path passes the joined value through unchanged.
+    #[test]
+    fn resolve_joined_passes_through_ok() {
+        let names = std::collections::HashMap::new();
+        let mut summary = super::RebuildSummary::default();
+        let resolved = super::resolve_joined(Ok(42u32), &names, &mut summary);
+        assert_eq!(resolved, Some(42));
+        assert!(summary.skipped.is_empty());
     }
 }
