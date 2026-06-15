@@ -79,3 +79,31 @@ pub fn build_router(
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+
+    fn req_with_auth(value: &str) -> Request {
+        axum::http::Request::builder()
+            .header(AUTHORIZATION, value)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[test]
+    fn presented_bearer_extracts_token() {
+        assert_eq!(
+            presented_bearer(&req_with_auth("Bearer sk-123")),
+            Some("sk-123".to_string())
+        );
+    }
+
+    #[test]
+    fn presented_bearer_treats_empty_token_as_absent() {
+        // Built directly, the header keeps its trailing space (no wire OWS trimming), so the
+        // token after `strip_prefix("Bearer ")` is empty -> must be treated as not presented.
+        assert_eq!(presented_bearer(&req_with_auth("Bearer ")), None);
+    }
+}
