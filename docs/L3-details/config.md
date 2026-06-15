@@ -83,8 +83,12 @@
 
 - `strategy` 必须 ∈ `["bm25", "vector", "hybrid"]`，否则 `Invalid`。
 - `top_k` 必须 `> 0`，否则 `Invalid`。
-- 每个 upstream 的 `name`：`trim()` 后非空（拒绝纯空白）、不含命名空间分隔符 `__`、在所有 upstream 中
+- 每个 upstream 的 `name`：`trim()` 后非空（拒绝纯空白）、不含命名空间分隔符 `__`、**不以 `_` 开头或结尾**、在所有 upstream 中
   唯一（重复 → `Invalid`）。
+  - **边界下划线**单独拒绝：`my_server` 这类内部下划线允许，但 `_svc`/`svc_` 会在拼接 `{server}__{tool}` 时与相邻的 `_`
+    重新拼出 `__` 分隔符，破坏命名空间唯一性，故 `starts_with('_') || ends_with('_')` → `Invalid`。
+- `[server.http].path`（若有 `[server.http]` 段）：必须以 `/` 开头且长于 `/`（即 `len >= 2`），否则 `Invalid`。
+  这在**启动期、axum `nest_service` 之前**校验，拒绝 `""`/`"/"`/无前导斜杠的挂载路径（避免 axum 在启动时 panic）；默认 `/mcp` 不受影响。
 
 > **已知的双清单**：`config::validate` 接受 `vector`/`hybrid`（"格式已知"），而 `retrieval::build_strategy`
 > 仅实现 `bm25`（"是否实现"）。两份清单独立、可能漂移。这是有意的职责划分（config 管"名字合不合法"，
@@ -110,7 +114,9 @@
 - `parses_stdio_upstreams` / `upstreams_default_to_empty`
 - `parses_explicit_call_timeout_through_flatten`（锁定 flatten 数值路径）
 - `rejects_unknown_transport`（`Parse`）/ `rejects_upstream_name_with_double_underscore` /
-  `rejects_blank_upstream_name` / `rejects_duplicate_upstream_names`（均 `Invalid`）
+  `rejects_blank_upstream_name` / `rejects_duplicate_upstream_names` /
+  `rejects_server_name_leading_or_trailing_underscore` / `accepts_server_name_with_interior_underscore`（均 `Invalid` / 接受内部下划线）
+- `rejects_invalid_http_path`（`""`/`"/"`/无前导斜杠均 `Invalid`）/ `accepts_default_and_custom_http_path`（`/mcp`、`/gateway` 通过）
 - `server_section_parses_and_defaults_to_stdio`（`[server]` 缺省 `stdio = true`、显式解析、未知键 → 错误）
 - `audit_defaults_disabled`（省略 `[audit]` → `enabled = false`、`path = "mcpgw-audit.jsonl"`）/
   `parses_audit_section`（显式 `enabled`/`path` 解析）/ `audit_rejects_unknown_field`（段内未知键 → `Parse`）/

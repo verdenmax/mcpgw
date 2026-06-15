@@ -31,7 +31,8 @@ pub fn build_router(
 
 - **`api_keys` 非空** → 在 router 上 `layer(from_fn_with_state(ApiKeys(...), require_api_key))` 挂一层
   Bearer 鉴权中间件。请求须带 `Authorization: Bearer <key>`，`<key>` 与某个配置的 key 相等（**常量时间比较**）
-  才放行进入 MCP 协议层；缺失或错误的 Bearer → **401 Unauthorized**（不回显期望的 key）。
+  才放行进入 MCP 协议层；缺失或错误的 Bearer → **401 Unauthorized**（不回显期望的 key）。**空令牌**（`Bearer ` 后为空串）
+  经 `presented_bearer` 的 `.filter(|t| !t.is_empty())` 视为「未呈现」，同样 → 401（audit F1）。
 - **`api_keys` 为空** → 不挂层，所有请求直接放行（依赖 localhost 绑定 + rmcp `allowed_hosts`）。
 
 **起服务**：调用方用 `axum::serve(TcpListener::bind(addr).await?, build_router(...)).await` 起监听。
