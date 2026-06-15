@@ -62,8 +62,10 @@
   `observe::spawn_writer` fail-fast 暴露（开不了即拒绝启动），而非配置解析期。
 - **无内建轮转 / 无 SIGHUP 重开**：`JsonlSink` 只对**单一打开的文件句柄**做 append，进程运行期**不**重开文件、
   **不**响应 `SIGHUP`，也无大小/时间轮转。文件轮转须交给**外部 logrotate**，两种姿势各有取舍：
-  - **① `copytruncate`**：无需停机（不重启进程），但**复制与截断之间写入的行可能丢失**（句柄 offset 被
-    truncate 后错位的小窗口）——可接受少量丢失时用。
+  - **① `copytruncate`**：无需停机（不重启进程），但**复制与截断之间写入的行可能丢失**（logrotate 复制完
+    旧文件、再 `truncate` 清空，这两步之间 writer 以 `O_APPEND` 追加的行既不在副本里、又被 truncate 抹掉）
+    ——可接受少量丢失时用。注：因以 `O_APPEND` 打开，每次写入前内核重定位到文件末尾，故**不会**出现非 append
+    句柄那种 truncate 后 offset 错位、写出稀疏/空洞文件的问题；唯一损失就是上述 copy↔truncate 竞态窗口。
   - **② 停—转—起（stop → rotate → restart）**：关停 mcpgw（关停时审计 writer 会优雅 drain+flush+fsync，见
     L4 [mcpgw-main](../L4-api/mcpgw-main.md)）→ 移动/压缩旧文件 → 重启（`create+append` 建新文件）。**零丢失**，
     代价是一次重启停机。

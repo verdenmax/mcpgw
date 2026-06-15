@@ -85,6 +85,9 @@ fn run_writer(rx: Receiver<String>, file: File)   // BufWriter<File> 包裹
 - **fsync 只在干净 drain 时一次**：`rx.recv()` 返回 `Err`（**所有 sender 已 drop** → channel 断连）即退出循环，
   做**最终 `flush` + `file.sync_all()`（fsync，落到稳定存储）**后线程结束。正常路径下 fsync 只发生一次（退出前），
   不在每批里。
+- **durability 取舍**：运行期每批只 `flush`（推到 OS page cache），稳定落盘的 fsync 只在干净 drain 时做一次。
+  即：进程**被强杀（SIGKILL）或断电**而未走干净 drain 时，已 `flush` 但未 fsync 的批次可能丢失（强杀下根本不会
+  fsync）。需要更强 durability 的场景应另加周期性 fsync——本任务范围外。
 - **写失败不退出 → 自愈**：每行写、每次 flush 的 `io::Error` 都只走 `rate_limited_write_error`（累计计数，**首次
   及每个 2 的幂次** warn 一条），**writer 继续运行**——瞬时故障（如一度写满后又清出空间的磁盘）能**自愈**，不会
   因一次写错而永久停摆、丢掉后续所有审计。
