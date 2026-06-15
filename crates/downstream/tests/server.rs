@@ -229,3 +229,61 @@ async fn runtime_upstream_crash_is_isolated_from_other_upstreams() {
 
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn meta_tool_calls_are_observed_with_metadata() {
+    use observe::{CallOutcome, MetaTool};
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    common::attach_mock(&state, "mock").await;
+
+    let cap = observe::CaptureSink::new();
+    let sinks: Arc<[Arc<dyn observe::CallSink>]> =
+        vec![Arc::new(cap.clone()) as Arc<dyn observe::CallSink>].into();
+    let client = common::connect_to_gateway_with_sinks(state, 8, sinks).await;
+
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("search_tools")
+                .with_arguments(args(json!({"query": "echo"}))),
+        )
+        .await
+        .unwrap();
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("call_tool").with_arguments(args(json!({
+                "name": "mock__echo", "arguments": {"text": "hi"}
+            }))),
+        )
+        .await
+        .unwrap();
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("call_tool")
+                .with_arguments(args(json!({"name": "mock__nope"}))),
+        )
+        .await
+        .unwrap();
+    client.cancel().await.unwrap();
+
+    let recs = cap.records();
+    assert_eq!(recs.len(), 3, "one record per meta-tool call");
+
+    let search = &recs[0];
+    assert_eq!(search.meta_tool, MetaTool::SearchTools);
+    assert_eq!(search.outcome, CallOutcome::Ok);
+    assert!(search.target_tool.is_none() && search.upstream.is_none());
+    assert!(search.arg_bytes > 0);
+
+    let call_ok = &recs[1];
+    assert_eq!(call_ok.meta_tool, MetaTool::CallTool);
+    assert_eq!(call_ok.outcome, CallOutcome::Ok);
+    assert_eq!(call_ok.target_tool.as_deref(), Some("mock__echo"));
+    assert_eq!(call_ok.upstream.as_deref(), Some("mock"));
+    assert!(call_ok.error_kind.is_none());
+
+    let call_err = &recs[2];
+    assert_eq!(call_err.meta_tool, MetaTool::CallTool);
+    assert_eq!(call_err.outcome, CallOutcome::Error);
+    assert_eq!(call_err.error_kind, Some("tool_not_found"));
+    assert_eq!(call_err.upstream.as_deref(), Some("mock"));
+}

@@ -14,20 +14,38 @@ use gateway::GatewayState;
 
 pub mod http;
 
-/// The downstream MCP server. Holds shared gateway state plus the default `top_k`
-/// used when a `search_tools` call omits it (sourced from `[retrieval].top_k`).
+/// The downstream MCP server. Holds shared gateway state, the default `top_k`, and the
+/// observation sinks each meta-tool call is reported to.
 #[derive(Clone)]
 pub struct GatewayServer {
     state: Arc<GatewayState>,
     default_top_k: usize,
+    sinks: Arc<[Arc<dyn observe::CallSink>]>,
 }
 
 impl GatewayServer {
-    pub fn new(state: Arc<GatewayState>, default_top_k: usize) -> Self {
+    pub fn new(
+        state: Arc<GatewayState>,
+        default_top_k: usize,
+        sinks: Arc<[Arc<dyn observe::CallSink>]>,
+    ) -> Self {
         Self {
             state,
             default_top_k,
+            sinks,
         }
+    }
+}
+
+/// Classify a meta-tool call failure for the observation record.
+fn classify(e: &metatools::MetaError) -> (observe::CallOutcome, Option<&'static str>) {
+    use metatools::MetaError as E;
+    use observe::CallOutcome as O;
+    match e {
+        E::Timeout => (O::Timeout, Some("timeout")),
+        E::Call(_) => (O::Error, Some("upstream_call")),
+        E::ToolNotFound(_) => (O::Error, Some("tool_not_found")),
+        E::UpstreamUnavailable(_) => (O::Error, Some("upstream_unavailable")),
     }
 }
 
@@ -100,8 +118,21 @@ impl ServerHandler for GatewayServer {
         request: CallToolRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        use observe::{CallOutcome, CallRecord, MetaTool};
+
+        let started = std::time::Instant::now();
         let args = request.arguments.unwrap_or_default();
-        match request.name.as_ref() {
+        let arg_bytes = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0);
+
+        // Each arm yields: (response, meta_tool, target_tool, outcome, error_kind).
+        // The unknown-meta-name case returns a protocol error and is NOT recorded.
+        let (response, meta_tool, target_tool, outcome, error_kind): (
+            Result<CallToolResult, McpError>,
+            MetaTool,
+            Option<String>,
+            CallOutcome,
+            Option<&'static str>,
+        ) = match request.name.as_ref() {
             "search_tools" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let top_k = args
@@ -111,42 +142,119 @@ impl ServerHandler for GatewayServer {
                     .unwrap_or(self.default_top_k);
                 let snap = self.state.snapshot();
                 let hits = metatools::search_tools(&snap, query, top_k).await;
-                let json = serde_json::to_string(&hits)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::text(json)]))
+                match serde_json::to_string(&hits) {
+                    Ok(json) => (
+                        Ok(CallToolResult::success(vec![Content::text(json)])),
+                        MetaTool::SearchTools,
+                        None,
+                        CallOutcome::Ok,
+                        None,
+                    ),
+                    Err(e) => (
+                        Err(McpError::internal_error(e.to_string(), None)),
+                        MetaTool::SearchTools,
+                        None,
+                        CallOutcome::Error,
+                        Some("internal"),
+                    ),
+                }
             }
             "get_tool_details" => {
                 let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let snap = self.state.snapshot();
                 match metatools::get_tool_details(&snap, name) {
-                    Some(def) => {
-                        let json = serde_json::to_string(def)
-                            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                        Ok(CallToolResult::success(vec![Content::text(json)]))
-                    }
-                    None => Ok(CallToolResult::error(vec![Content::text(format!(
-                        "no such tool: {name}"
-                    ))])),
+                    Some(def) => match serde_json::to_string(def) {
+                        Ok(json) => (
+                            Ok(CallToolResult::success(vec![Content::text(json)])),
+                            MetaTool::GetToolDetails,
+                            None,
+                            CallOutcome::Ok,
+                            None,
+                        ),
+                        Err(e) => (
+                            Err(McpError::internal_error(e.to_string(), None)),
+                            MetaTool::GetToolDetails,
+                            None,
+                            CallOutcome::Error,
+                            Some("internal"),
+                        ),
+                    },
+                    None => (
+                        Ok(CallToolResult::error(vec![Content::text(format!(
+                            "no such tool: {name}"
+                        ))])),
+                        MetaTool::GetToolDetails,
+                        None,
+                        CallOutcome::Error,
+                        Some("tool_not_found"),
+                    ),
                 }
             }
-            "call_tool" => {
-                let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
-                    return Ok(CallToolResult::error(vec![Content::text(
+            "call_tool" => match args.get("name").and_then(|v| v.as_str()) {
+                None => (
+                    Ok(CallToolResult::error(vec![Content::text(
                         "missing required 'name'",
-                    )]));
-                };
-                let inner = args.get("arguments").and_then(|v| v.as_object()).cloned();
-                let snap = self.state.snapshot();
-                match metatools::call_tool(&snap, self.state.registry(), name, inner).await {
-                    Ok(result) => Ok(result),
-                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                    )])),
+                    MetaTool::CallTool,
+                    None,
+                    CallOutcome::Error,
+                    Some("invalid_params"),
+                ),
+                Some(name) => {
+                    let inner = args.get("arguments").and_then(|v| v.as_object()).cloned();
+                    let snap = self.state.snapshot();
+                    match metatools::call_tool(&snap, self.state.registry(), name, inner).await {
+                        Ok(result) => (
+                            Ok(result),
+                            MetaTool::CallTool,
+                            Some(name.to_string()),
+                            CallOutcome::Ok,
+                            None,
+                        ),
+                        Err(e) => {
+                            let (outcome, kind) = classify(&e);
+                            (
+                                Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                                MetaTool::CallTool,
+                                Some(name.to_string()),
+                                outcome,
+                                kind,
+                            )
+                        }
+                    }
                 }
+            },
+            other => {
+                // Unknown meta-tool name: protocol error, not a gateway tool call -> not recorded.
+                return Err(McpError::invalid_params(
+                    format!("unknown tool: {other}"),
+                    None,
+                ));
             }
-            other => Err(McpError::invalid_params(
-                format!("unknown tool: {other}"),
-                None,
-            )),
+        };
+
+        let result_bytes = match &response {
+            Ok(r) => serde_json::to_string(r).map(|s| s.len()).unwrap_or(0),
+            Err(_) => 0,
+        };
+        let upstream = target_tool
+            .as_deref()
+            .and_then(|t| t.split_once("__").map(|(s, _)| s.to_string()));
+        let rec = CallRecord {
+            ts_unix_ms: CallRecord::now_unix_ms(),
+            meta_tool,
+            target_tool,
+            upstream,
+            latency_ms: started.elapsed().as_millis() as u64,
+            outcome,
+            error_kind,
+            arg_bytes,
+            result_bytes,
+        };
+        for sink in self.sinks.iter() {
+            sink.record(&rec);
         }
+        response
     }
 }
 

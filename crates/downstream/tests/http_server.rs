@@ -27,7 +27,8 @@ async fn attach_mock(state: &GatewayState, name: &str) {
 
 /// Bind the gateway's HTTP router on an ephemeral port; return the bound addr.
 async fn spawn_http_gateway(state: Arc<GatewayState>, api_keys: Vec<String>) -> String {
-    let router = downstream::http::build_router(state, 8, "/mcp", api_keys);
+    let sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> = Vec::new().into();
+    let router = downstream::http::build_router(state, 8, "/mcp", api_keys, sinks);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

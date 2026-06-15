@@ -12,14 +12,28 @@ use upstream::connection::UpstreamHandle;
 use upstream::testkit::MockUpstream;
 use upstream::testkit::RevealingMockUpstream;
 
+/// Build an empty sink list (no observation) for tests that don't assert on records.
+pub fn no_sinks() -> std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> {
+    Vec::new().into()
+}
+
 /// Spawn a GatewayServer (over duplex) with the given state; return a connected client.
 /// The server task is detached; the client drives the test.
 pub async fn connect_to_gateway(
     state: Arc<GatewayState>,
     default_top_k: usize,
 ) -> RunningService<RoleClient, ()> {
+    connect_to_gateway_with_sinks(state, default_top_k, no_sinks()).await
+}
+
+/// Like `connect_to_gateway` but with explicit observation sinks (e.g. a `CaptureSink`).
+pub async fn connect_to_gateway_with_sinks(
+    state: Arc<GatewayState>,
+    default_top_k: usize,
+    sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]>,
+) -> RunningService<RoleClient, ()> {
     let (client_io, server_io) = tokio::io::duplex(8192);
-    let server = GatewayServer::new(state, default_top_k);
+    let server = GatewayServer::new(state, default_top_k, sinks);
     tokio::spawn(async move {
         let svc = server
             .serve(server_io)
