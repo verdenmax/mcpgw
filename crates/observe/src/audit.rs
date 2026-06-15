@@ -1,8 +1,9 @@
-//! 可选的 JSONL 审计 sink。
+//! Optional JSONL audit sink.
 //!
-//! `JsonlSink` 是一个 `CallSink`：`record()` 把一条仅元数据的 `CallRecord` 序列化成一行 JSON 并
-//! `try_send` 进 bounded channel；一条专用 OS 线程持 receiver 做阻塞文件 I/O（append + 缓冲写），
-//! 故调用热路径绝不阻塞。保持仅元数据、std-only（不引入 tokio），`observe` 不新增依赖。
+//! `JsonlSink` is a `CallSink`: `record()` serializes one metadata-only `CallRecord` to a single
+//! JSON line and `try_send`s it into a bounded channel; a dedicated OS thread owns the receiver and
+//! does the blocking file I/O (append + buffered writes), so the call hot-path never blocks. Stays
+//! metadata-only and std-only (no tokio) — `observe` gains no new dependency.
 
 use crate::{CallRecord, CallSink};
 use std::fs::{File, OpenOptions};
@@ -13,10 +14,11 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-/// `JsonlSink::record` 与 writer 线程间的 bounded channel 容量。满则丢弃（绝不阻塞调用）。
+/// Bounded channel capacity between `JsonlSink::record` and the writer thread. When full, records
+/// are dropped (the call path is never blocked).
 pub const AUDIT_CHANNEL_CAPACITY: usize = 1024;
 
-/// 经后台 writer 线程把每条记录 append 成一行 JSON 的 `CallSink`。
+/// A `CallSink` that appends each record as one JSON line via a background writer thread.
 #[derive(Clone)]
 pub struct JsonlSink {
     tx: SyncSender<String>,
@@ -24,7 +26,7 @@ pub struct JsonlSink {
 }
 
 impl JsonlSink {
-    /// 至今因 channel 满/断连而丢弃的记录数。
+    /// Number of records dropped so far because the channel was full or disconnected.
     pub fn dropped_count(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -55,21 +57,21 @@ impl CallSink for JsonlSink {
     }
 }
 
-/// 后台 writer 线程句柄。`join` 阻塞直到 writer drain 完 channel、flush、fsync 并退出——这在每个
-/// `JsonlSink` 克隆都被 drop 后发生。
+/// Handle to the background writer thread. `join` blocks until the writer drains the channel,
+/// flushes, fsyncs, and exits — which happens once every `JsonlSink` clone has been dropped.
 pub struct AuditWriter {
     handle: JoinHandle<()>,
 }
 
 impl AuditWriter {
-    /// 阻塞直到 writer 线程结束。
+    /// Block until the writer thread finishes.
     pub fn join(self) {
         let _ = self.handle.join();
     }
 }
 
-/// 内部：造一个 `JsonlSink` 及配套 receiver。暴露给测试，以便其持有未消费的 receiver、确定性地
-/// 触发 channel-full 丢弃路径。
+/// Internal: build a `JsonlSink` and its matching receiver. Exposed to tests so they can hold the
+/// receiver unread and deterministically exercise the channel-full drop path.
 pub(crate) fn channel(capacity: usize) -> (JsonlSink, Receiver<String>) {
     let (tx, rx) = sync_channel(capacity);
     (
@@ -81,21 +83,22 @@ pub(crate) fn channel(capacity: usize) -> (JsonlSink, Receiver<String>) {
     )
 }
 
-/// 以 append 方式打开 `path`（不存在则创建），spawn writer 线程，返回 sink 与其句柄。打不开文件即
-/// `Err`（调用方据此 fail-fast）。
+/// Open `path` for append (creating it if absent), spawn the writer thread, and return the sink
+/// plus its handle. Returns `Err` if the file cannot be opened, or if the writer thread cannot be
+/// spawned (so the caller can fail-fast).
 pub fn spawn_writer(path: &Path, capacity: usize) -> std::io::Result<(JsonlSink, AuditWriter)> {
     let file = OpenOptions::new().create(true).append(true).open(path)?;
     let (sink, rx) = channel(capacity);
     let handle = std::thread::Builder::new()
         .name("audit-writer".into())
-        .spawn(move || run_writer(rx, file))
-        .expect("spawn audit-writer thread");
+        .spawn(move || run_writer(rx, file))?;
     Ok((sink, AuditWriter { handle }))
 }
 
-/// writer 主循环：逐行 append、批量 drain 已排队项、按批 flush；当 channel 断连（所有 sender 被 drop）
-/// 且队列已 FIFO drain 完，做最后一次 flush + fsync 后退出。写失败只限频 warn 且**不**退出——瞬时
-/// 故障（如满盘后清理）可自愈。
+/// Writer loop: append each line, batch-drain whatever is queued, flush per batch; when the channel
+/// disconnects (all senders dropped) and the queue is FIFO-drained, do a final flush + fsync and
+/// exit. Write errors only rate-limit-warn and do NOT stop the writer — transient faults (e.g. a
+/// full disk that later clears) self-heal.
 fn run_writer(rx: Receiver<String>, file: File) {
     let mut w = BufWriter::new(file);
     let mut write_errors: u64 = 0;
@@ -108,7 +111,9 @@ fn run_writer(rx: Receiver<String>, file: File) {
             rate_limited_write_error(&mut write_errors, &e);
         }
     }
-    let _ = w.flush();
+    if let Err(e) = w.flush() {
+        rate_limited_write_error(&mut write_errors, &e);
+    }
     if let Ok(file) = w.into_inner() {
         let _ = file.sync_all();
     }
