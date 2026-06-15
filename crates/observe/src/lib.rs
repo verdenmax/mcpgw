@@ -15,6 +15,18 @@ pub enum MetaTool {
     CallTool,
 }
 
+impl MetaTool {
+    /// The canonical snake_case token (identical to the serde representation), so the tracing and
+    /// JSONL sinks describe the same record with the same spelling.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MetaTool::SearchTools => "search_tools",
+            MetaTool::GetToolDetails => "get_tool_details",
+            MetaTool::CallTool => "call_tool",
+        }
+    }
+}
+
 /// The outcome of a meta-tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +34,17 @@ pub enum CallOutcome {
     Ok,
     Error,
     Timeout,
+}
+
+impl CallOutcome {
+    /// The canonical snake_case token (identical to the serde representation).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CallOutcome::Ok => "ok",
+            CallOutcome::Error => "error",
+            CallOutcome::Timeout => "timeout",
+        }
+    }
 }
 
 /// Metadata-only record of one meta-tool call. By construction it carries NO argument or result
@@ -66,11 +89,11 @@ pub struct TracingSink;
 impl CallSink for TracingSink {
     fn record(&self, r: &CallRecord) {
         tracing::info!(
-            meta_tool = ?r.meta_tool,
+            meta_tool = r.meta_tool.as_str(),
             target_tool = r.target_tool.as_deref(),
             upstream = r.upstream.as_deref(),
             latency_ms = r.latency_ms,
-            outcome = ?r.outcome,
+            outcome = r.outcome.as_str(),
             error_kind = r.error_kind,
             arg_bytes = r.arg_bytes,
             result_bytes = r.result_bytes,
@@ -132,14 +155,23 @@ mod tests {
         assert_eq!(v["outcome"], "ok");
         assert_eq!(v["target_tool"], "github__create_issue");
         assert_eq!(v["arg_bytes"], 42);
+        // as_str() must match the serde token exactly (both sinks agree on spelling).
+        assert_eq!(MetaTool::CallTool.as_str(), "call_tool");
+        assert_eq!(CallOutcome::Ok.as_str(), "ok");
     }
 
     #[test]
-    fn record_is_metadata_only_no_payload_keys() {
-        // The TYPE cannot carry argument/result content; lock that the serialized key set is a
-        // subset of the allowed metadata keys (no "arguments"/"args"/"result"/"content"/"text").
-        let v = serde_json::to_value(sample()).unwrap();
-        let allowed: std::collections::HashSet<&str> = [
+    fn record_is_metadata_only_exact_key_set() {
+        // The TYPE cannot carry argument/result content; lock the serialized key set to EXACTLY
+        // the allowed metadata keys (no "arguments"/"args"/"result"/"content"/"text"). Populate
+        // every Option so all keys serialize; exact equality means any added field must be
+        // deliberately acknowledged here.
+        let mut r = sample();
+        r.error_kind = Some("timeout");
+        let v = serde_json::to_value(r).unwrap();
+        let keys: std::collections::HashSet<String> =
+            v.as_object().unwrap().keys().cloned().collect();
+        let allowed: std::collections::HashSet<String> = [
             "ts_unix_ms",
             "meta_tool",
             "target_tool",
@@ -151,13 +183,12 @@ mod tests {
             "result_bytes",
         ]
         .into_iter()
+        .map(String::from)
         .collect();
-        for key in v.as_object().unwrap().keys() {
-            assert!(
-                allowed.contains(key.as_str()),
-                "unexpected key leaked: {key}"
-            );
-        }
+        assert_eq!(
+            keys, allowed,
+            "serialized key set must be exactly the metadata fields"
+        );
     }
 
     #[test]
