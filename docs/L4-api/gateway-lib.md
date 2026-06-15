@@ -18,7 +18,7 @@ pub enum GatewayError {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct RebuildSummary {
     pub ingested: Vec<String>,            // 工具被摄取进新快照的上游名（排序）
-    pub skipped: Vec<(String, String)>,   // 跳过的上游 + 原因（超时 / 调用错误，排序）
+    pub skipped: Vec<(String, String)>,   // 跳过的上游 + 原因（超时 / 调用错误 / 任务 panic，排序）
 }
 ```
 一次重建的遥测。
@@ -80,8 +80,11 @@ pub async fn rebuild_snapshot(&self) -> Result<RebuildSummary, GatewayError>
 
 1. `rebuild_lock.lock().await` 取得守卫。
 2. 对 `registry.server_names()` 的每个上游 `spawn` 一个 `JoinSet` 任务，在**任务私有** `Catalog` 上
-   `tokio::time::timeout(handle.call_timeout(), handle.ingest_into(&mut local)).await`。
-3. `join_next` 收集：超时 → `skipped("ingest timed out")`；调用错误 → `skipped(err)`；成功 → 把 `local` 工具
+   `tokio::time::timeout(handle.call_timeout(), handle.ingest_into(&mut local)).await`；同时把 `spawn` 返回的
+   `task::Id` → 上游名记入 `names_by_id`（用于 panic 归因）。
+3. `join_next` 收集：每个结果先经私有 `resolve_joined` 处理——任务 panic/取消（`JoinError`）按 `task::Id` 归因后
+   降级为 `skipped("task failed: …")` + 一条 `warn`（归因缺失则记 `"<ingest task>"`），返回 `None` 即跳过、**绝不** re-panic；
+   其余按 outcome：超时 → `skipped("ingest timed out")`；调用错误 → `skipped(err)`；成功 → 把 `local` 工具
    `upsert` 进最终 catalog 并记 `ingested`。两表均排序。
 4. `build_strategy(&self.strategy_name, &self.backends)?`（未知名/缺 embedder 或 chat 则 `Err(GatewayError::Strategy)`）→
    `strat.index(&catalog)`。复用 state 持有的 `backends`，故 `CachingEmbedder` 的缓存跨 rebuild 保留。
@@ -89,7 +92,8 @@ pub async fn rebuild_snapshot(&self) -> Result<RebuildSummary, GatewayError>
    `RebuildSummary`。
 
 读路径（`snapshot()`）全程无锁；重建经 `rebuild_lock` 串行化以保证 last-store-wins、不留陈旧快照；per-ingest
-超时使 hung/慢上游被隔离进 `skipped`，不拖死重建。
+超时使 hung/慢上游被隔离进 `skipped`，不拖死重建；单个 ingest 任务 panic/取消亦经 `resolve_joined` 降级为
+`skipped`（按 `task::Id` 归因），保住启动期（`prepare_state` 初次构建）与重建 worker 的崩溃隔离。
 
 ## `async fn run_rebuild_worker`
 ```rust

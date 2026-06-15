@@ -94,21 +94,21 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
 
 `CachingEmbedder`（`crates/retrieval/src/caching.rs`）是 `Embedder` 装饰器，包装任意 `Arc<dyn Embedder>`：
 
-- **缓存键 = 文本内容哈希**（FNV-1a）：相同文本内容映射到同一缓存项，与位置无关。
+- **缓存键 = 文本 `String` 本身**：相同文本内容映射到同一缓存项，与位置无关；键即文本，故**两个不同文本绝不会碰撞到同一缓存槽**。
 - **跨 rebuild 复用**：后续 `GatewayState` 持有 `Arc<CachingEmbedder>`，缓存在多次快照重建间持续存在；
   **`list_changed` 时只对新增工具文本调用内层 embedder**，未变工具直接命中缓存。
-- **仅嵌未命中 + 保序**：单次 `embed` 内先按哈希去重收集未命中文本（首见顺序），只把这些转发给内层，
+- **仅嵌未命中 + 保序**：单次 `embed` 内先按文本去重收集未命中文本（首见顺序），只把这些转发给内层，
   再按原始输入顺序还原向量；批内重复文本只嵌一次。还原读的是调用内**本地 `resolved` map**（非有界缓存本身），
   故即便单批超大、嵌入途中触发缓存轮转/驱逐，每个输入仍拿到正确向量。
 - **全命中跳过内层**：整批命中时完全不发起内层调用，省去网络往返。
 - **错误不缓存**：内层返回 `Err` 时原样传播，不写入任何部分结果。
 - **锁纪律**：内层 `.await` 处于两段独立 `cache.lock()` 之间，绝不跨 `.await` 持锁
   （避免 `clippy::await_holding_lock` 与死锁风险）。
-- **两代有界缓存（audit F4）**：缓存由 `current` + `previous` 两个 `HashMap` 组成，各上限 `CACHE_GEN_CAP = 2048`，
+- **两代有界缓存（audit F4）**：缓存由 `current` + `previous` 两个 `HashMap<String, Arc<[f32]>>` 组成，各上限 `CACHE_GEN_CAP = 2048`，
   常驻项数因而被界定在约 `2*CAP`。查找先看 `current`、再看 `previous`，命中 `previous` 时**提升回 `current`**（promote-on-hit）；
   当 `current` 写满时**轮转**——`previous = current`、`current` 重置为空，旧 `previous` 整代丢弃。
   热文本（工具描述每次 rebuild 都重嵌）凭 promote-on-hit 持续驻留，而临时的 query 向量不再无界累积。
-  缓存键为 **64 位内容哈希**，碰撞概率在本规模（目录小）下可忽略。
+  缓存键即文本 `String` 本身，**碰撞在结构上不可能**。
   （旧实现为**无界 `HashMap`、从不驱逐**，是本次审计修复的内存增长隐患。）
 
 ## 向量策略（M2-A T4）

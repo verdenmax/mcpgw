@@ -27,7 +27,7 @@ pub struct UpstreamRegistry {
 | `new` | `pub fn new() -> Self` | 空注册表（= `Default`） |
 | `insert` | `pub fn insert(&self, handle: Arc<UpstreamHandle>)` | 按 `handle.server()` 插入/替换；同名覆盖时旧 `Arc` 若无人持有则 drop 即取消其 rmcp 服务 |
 | `get` | `pub fn get(&self, server: &str) -> Option<Arc<UpstreamHandle>>` | 命中则返回 `Arc` 克隆 |
-| `remove` | `pub fn remove(&self, server: &str) -> Option<Arc<UpstreamHandle>>` | 摘除并返回 `Arc`；调用方可据此 graceful `shutdown().await`，丢弃则取消服务 |
+| `remove` | `pub fn remove(&self, server: &str) -> Option<Arc<UpstreamHandle>>` | 摘除并返回 `Arc`；`serve` 收尾据此按 `Arc::try_unwrap` 二分：独占 → `shutdown().await`、共享 → `cancel()`（fire-and-forget，不再静默跳过取消） |
 | `server_names` | `pub fn server_names(&self) -> Vec<String>` | 已注册 server 名，**升序排序** |
 
 - 锁仅在 map 操作期间持有，**不跨 await**；`unwrap()` 锁——遵守"不在持锁期间 panic"的约束。

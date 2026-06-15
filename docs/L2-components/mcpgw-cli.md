@@ -42,8 +42,9 @@
 `run()`：加载配置 → 按子命令分派。`search`/`get-details` 读 `--catalog` 后用 `build_strategy` + `index` +
 `search` 或 `catalog.get`；`serve` 起 tokio 运行时 `block_on(run_serve)`——fail-fast 解析 env 密钥 →
 构造默认观测 sinks `[observe::TracingSink]` → `prepare_state`（`connect_all` → 初始 `rebuild_snapshot`）→
-spawn `run_rebuild_worker` → `tokio::select!`
-并发跑 stdio（`serve(stdio())` → `waiting()`）/ HTTP（`axum::serve`）/ `ctrl_c` → 收尾 `shutdown` 上游。
+spawn `run_rebuild_worker` → 把 HTTP 起为带 `with_graceful_shutdown`（oneshot 驱动）的后台 task → `tokio::select!`
+等首个关停触发 stdio（`serve(stdio())` → `waiting()`）/ HTTP task 自行结束 / `ctrl_c` → 收尾：signal HTTP 优雅关停 +
+有界 `HTTP_SHUTDOWN_TIMEOUT` drain → `drop(sinks)` + 审计 drain → 拆卸上游（独占 → `shutdown().await`、共享 → `cancel()`）。
 `main()` 把 `Result` 映射为 `ExitCode`。
 
 ## 向下导航

@@ -35,7 +35,8 @@ pub fn build_router(
   经 `presented_bearer` 的 `.filter(|t| !t.is_empty())` 视为「未呈现」，同样 → 401（audit F1）。
 - **`api_keys` 为空** → 不挂层，所有请求直接放行（依赖 localhost 绑定 + rmcp `allowed_hosts`）。
 
-**起服务**：调用方用 `axum::serve(TcpListener::bind(addr).await?, build_router(...)).await` 起监听。
+**起服务**：调用方用 `axum::serve(TcpListener::bind(addr).await?, build_router(...)).await` 起监听（`mcpgw serve`
+则把它 spawn 为后台 task 并加 `.with_graceful_shutdown(oneshot)`，详见 [mcpgw-main](mcpgw-main.md)）。
 客户端用 `StreamableHttpClientTransport::from_uri("http://{addr}/mcp")` 连接（带 key 时用
 `StreamableHttpClientTransportConfig::with_uri(url).auth_header("<key>")`，注意 rmcp 会自行补 `Bearer ` 前缀）。
 
