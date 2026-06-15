@@ -80,7 +80,7 @@ impl Embedder for CachingEmbedder {
         // collect the unique miss texts. The lock is held only for synchronous map ops.
         let mut resolved: HashMap<String, Arc<[f32]>> = HashMap::new();
         let mut miss_texts: Vec<String> = Vec::new();
-        let mut miss_seen: HashSet<String> = HashSet::new();
+        let mut miss_seen: HashSet<&str> = HashSet::new();
         {
             let mut cache = self.cache.lock().unwrap();
             for t in texts {
@@ -89,7 +89,7 @@ impl Embedder for CachingEmbedder {
                 }
                 if let Some(v) = cache.get(t) {
                     resolved.insert(t.clone(), v);
-                } else if miss_seen.insert(t.clone()) {
+                } else if miss_seen.insert(t.as_str()) {
                     miss_texts.push(t.clone());
                 }
             }
@@ -99,10 +99,10 @@ impl Embedder for CachingEmbedder {
         if !miss_texts.is_empty() {
             let embedded = self.inner.embed(&miss_texts).await?;
             let mut cache = self.cache.lock().unwrap();
-            for (t, v) in miss_texts.iter().zip(embedded) {
+            for (t, v) in miss_texts.into_iter().zip(embedded) {
                 let arc: Arc<[f32]> = Arc::from(v.into_boxed_slice());
                 cache.insert(t.clone(), arc.clone());
-                resolved.insert(t.clone(), arc);
+                resolved.insert(t, arc);
             }
         }
 
@@ -185,6 +185,9 @@ mod tests {
 
     #[tokio::test]
     async fn distinct_texts_get_distinct_vectors() {
+        // Collision-freedom is now structural (the key IS the text); this guards the hit path:
+        // distinct inputs keep distinct vectors, and a fully-cached re-read returns each text's
+        // own vector (a swapped/wrong mapping would fail `assert_eq!(first, again)`).
         let inner = Arc::new(CountingEmbedder::new(2));
         let c = CachingEmbedder::new(inner);
         let first = c.embed(&["alpha".into(), "beta".into()]).await.unwrap();
@@ -216,12 +219,17 @@ mod tests {
         let inner = Arc::new(CountingEmbedder::new(2));
         let c = CachingEmbedder::new(inner.clone());
         c.embed(&["hot".into()]).await.unwrap();
+        // Churn >2 full generations of distinct keys, re-touching "hot" within each generation
+        // window so promote-on-hit keeps it resident.
         for i in 0..(CACHE_GEN_CAP * 3) {
             c.embed(&[format!("k{i}")]).await.unwrap();
             if i % (CACHE_GEN_CAP / 2) == 0 {
                 c.embed(&["hot".into()]).await.unwrap();
             }
         }
+        // Inner embedded "hot" once + each of the 3*CAP distinct k's once, nothing more. Without
+        // promote-on-hit "hot" would fall out of `previous` on a later rotation and be re-embedded
+        // once, making this 3*CAP + 2 — so this exact count actually guards promotion.
         assert_eq!(
             inner.calls.load(Ordering::Relaxed),
             CACHE_GEN_CAP * 3 + 1,
@@ -231,6 +239,9 @@ mod tests {
 
     #[tokio::test]
     async fn single_oversized_batch_stays_bounded_and_returns_all_vectors() {
+        // The headline fix: one embed() of a batch larger than 2*CAP rotates the cache several
+        // times mid-call, yet every input must still get its correct vector (reassembly reads the
+        // local `resolved` map, not the evicting cache) and the cache stays bounded.
         let inner = Arc::new(CountingEmbedder::new(2));
         let c = CachingEmbedder::new(inner.clone());
         let batch: Vec<String> = (0..(CACHE_GEN_CAP * 2 + 7))
