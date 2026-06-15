@@ -2,9 +2,9 @@
 
 源文件：`crates/observe/src/lib.rs`。**结构化、仅元数据**的网关元工具调用观测：定义 `CallRecord`
 （**不**含任何参数/结果载荷，只含 size）、`CallSink` trait 与 `TracingSink`。这是 M6.T1 落地的
-「在调用边界**构造一条记录 → 扇出到每个配置的 sink**」的**无存储、无 HTTP** 共享接缝：T1（tracing）与
+「在调用边界**构造一条记录 → 扇出到每个配置的 sink**」的**本文件自身无存储、无 HTTP** 共享接缝：T1（tracing）与
 T3（审计 JSONL）共用它——一条记录在 `downstream::GatewayServer::call_tool` 里构造一次，再被分发给
-每个 sink。
+每个 sink（M6.T3 的可选 JSONL 落盘 `JsonlSink` 在同 crate 的 `audit.rs`，见 [observe-audit](./observe-audit.md)）。
 
 ## `enum MetaTool`
 ```rust
@@ -133,10 +133,11 @@ pub use capture::CaptureSink;
 
 ## 依赖与扩展点
 
-- 依赖：`serde` + `serde_json`（序列化）、`tracing`（`TracingSink`）。**无 HTTP、无存储、无 tokio**
-  （测试均为同步 `#[test]`，亦无 `tokio` dev-dependency）。
-- **扩展点**：这是 T1/T3 共享的「instrument → multi-sink」接缝。未来的 **`MetricsSink`（M6.T2 用量指标）**
-  与 **`JsonlSink`（M6.T3 审计落盘）** 都实现同一个 `CallSink` trait、被加进同一个 sinks 切片即可接入，
+- 依赖：`serde` + `serde_json`（序列化）、`tracing`（`TracingSink`）。本文件 `lib.rs` **无 HTTP、无存储、无 tokio**
+  （测试均为同步 `#[test]`，亦无 `tokio` dev-dependency）；M6.T3 的可选 JSONL 落盘在同 crate 的 `audit.rs`，
+  **仅用 std 文件 I/O + 专用 writer 线程，仍不引入 tokio/HTTP**（见 [observe-audit](./observe-audit.md)）。
+- **扩展点**：这是 T1/T3 共享的「instrument → multi-sink」接缝，已被 **`JsonlSink`（M6.T3 审计落盘）** 复用；
+  未来的 **`MetricsSink`（M6.T2 用量指标）** 同样实现同一个 `CallSink` trait、被加进同一个 sinks 切片即可接入，
   无需改下游的构造/扇出逻辑。
 
 ## 测试

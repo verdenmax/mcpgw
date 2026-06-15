@@ -10,10 +10,11 @@ pub struct Config {
     #[serde(default)] pub retrieval: RetrievalConfig,
     #[serde(default, rename = "upstream")] pub upstreams: Vec<UpstreamConfig>,
     #[serde(default)] pub server: ServerConfig,
+    #[serde(default)] pub audit: AuditConfig,
 }
 ```
 `[[upstream]]` 数组通过 `rename = "upstream"` 映射到 `upstreams` 字段（缺省为空）；`[server]` 段缺省取
-`ServerConfig::default()`。
+`ServerConfig::default()`；`[audit]` 段缺省取 `AuditConfig::default()`（即审计关闭）。
 
 | 方法 | 签名 | 返回 / 说明 |
 |------|------|-------------|
@@ -106,6 +107,23 @@ pub struct ApiKeyConfig {
 ```
 一个被接受的 API key：密钥**只经 env 变量名引用**（`env`），配置里不出现明文密钥；`name` 仅用于
 日志/可观测性。
+
+## `struct AuditConfig`
+```rust
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuditConfig {
+    pub enabled: bool,   // 默认 false（须显式开启）
+    pub path: String,    // 默认 "mcpgw-audit.jsonl"
+}
+```
+`[audit]` 段（M6.T3）：可选的**仅追加 JSONL 审计日志**（每次元工具调用一行**仅元数据** `CallRecord`）。
+`enabled` 默认 `false`——**省略整个 `[audit]` 段 = 审计关闭**（经容器级 `#[serde(default)]` 取
+`AuditConfig::default()`）。`path` 是审计文件路径（create+append；默认 `"mcpgw-audit.jsonl"`，CWD 相对）；
+**每个网关进程需各自独立的 path**（同文件多进程并发写是误配，见 L3）。无 flatten，故
+`#[serde(default, deny_unknown_fields)]` 生效（段内未知键 → `Parse`）；实现 `Default`（`enabled=false`、
+`path="mcpgw-audit.jsonl"`）。`validate()` **不**校验 `path`（落盘失败在 `serve` 启动期由
+`observe::spawn_writer` 经 fail-fast 暴露）。
 
 ## `struct RetrievalConfig`
 ```rust

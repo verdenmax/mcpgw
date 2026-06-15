@@ -22,8 +22,10 @@
 - `serve` — 起活的 MCP 网关，按配置**并发**跑 stdio 与/或 HTTP 两个下游 server（共享一个 `GatewayState`）：
   eager-connect 上游 → 初始重建快照 → list_changed 重建 worker → `GatewayServer` 暴露 3 个元工具，
   通过 `tokio::select!` over {stdio / HTTP / ctrl_c} 统一关闭。启动期 fail-fast 解析所有 env 密钥（缺失即中止）。
-  装配处构造一份默认观测 sinks `[observe::TracingSink]`（M6.T1），注入 stdio 与 HTTP 两个 `GatewayServer` 共享，
-  每次元工具调用产出仅元数据的 `observe::CallRecord` 并 fan-out。
+  装配处构造以 `observe::TracingSink` 打底的观测 sinks（M6.T1），注入 stdio 与 HTTP 两个 `GatewayServer` 共享，
+  每次元工具调用产出仅元数据的 `observe::CallRecord` 并 fan-out。`[audit].enabled` 时还装配 `observe::JsonlSink`
+  （`spawn_writer` **打开文件 fail-fast**、追加进同一 sinks 切片）落盘 JSONL 审计，并在**关闭时有界优雅 drain**
+  审计 writer（`drop(sinks)` 触发断连 → 有时限地 join writer，超时兜底）。
   至少需启用一种传输（`[server].stdio` 或 `[server.http].enabled`）。日志走 **stderr**（stdout 留给 MCP 协议）。
 
 ### 退出码

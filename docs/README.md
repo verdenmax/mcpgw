@@ -30,7 +30,7 @@ spec、实现 plan、路线图等过程产物）相互独立。
 - **L1**：[L1-overview.md](./L1-overview.md)
 - **L2**：[catalog](./L2-components/catalog.md) · [retrieval](./L2-components/retrieval.md) · [embedder](./L2-components/embedder.md) · [chat](./L2-components/chat.md) · [config](./L2-components/config.md) · [mcpgw-cli](./L2-components/mcpgw-cli.md) · [upstream](./L2-components/upstream.md) · [metatools](./L2-components/metatools.md) · [gateway](./L2-components/gateway.md) · [downstream](./L2-components/downstream.md) · [observe](./L2-components/observe.md)
 - **L3**：[catalog](./L3-details/catalog.md) · [retrieval](./L3-details/retrieval.md) · [config](./L3-details/config.md) · [mcpgw-cli](./L3-details/mcpgw-cli.md) · [upstream](./L3-details/upstream.md) · [metatools](./L3-details/metatools.md) · [gateway](./L3-details/gateway.md) · [downstream](./L3-details/downstream.md)
-- **L4**：[catalog/lib.rs](./L4-api/catalog-lib.md) · [retrieval/lib.rs](./L4-api/retrieval-lib.md) · [retrieval/embedder.rs](./L4-api/retrieval-embedder.md) · [retrieval/vector.rs](./L4-api/retrieval-vector.md) · [retrieval/hybrid.rs](./L4-api/retrieval-hybrid.md) · [retrieval/subagent.rs](./L4-api/retrieval-subagent.md) · [embedder/lib.rs](./L4-api/embedder-openai.md) · [chat/lib.rs](./L4-api/chat-openai.md) · [config/lib.rs](./L4-api/config-lib.md) · [mcpgw/main.rs](./L4-api/mcpgw-main.md) · [upstream/mapping.rs](./L4-api/upstream-mapping.md) · [upstream/connection.rs](./L4-api/upstream-connection.md) · [upstream/connect.rs](./L4-api/upstream-connect.md) · [upstream/registry.rs](./L4-api/upstream-registry.md) · [metatools/tools.rs](./L4-api/metatools-tools.md) · [metatools/snapshot.rs](./L4-api/metatools-snapshot.md) · [gateway/lib.rs](./L4-api/gateway-lib.md) · [downstream/lib.rs](./L4-api/downstream-lib.md) · [downstream/http.rs](./L4-api/downstream-http.md) · [observe/lib.rs](./L4-api/observe-lib.md)
+- **L4**：[catalog/lib.rs](./L4-api/catalog-lib.md) · [retrieval/lib.rs](./L4-api/retrieval-lib.md) · [retrieval/embedder.rs](./L4-api/retrieval-embedder.md) · [retrieval/vector.rs](./L4-api/retrieval-vector.md) · [retrieval/hybrid.rs](./L4-api/retrieval-hybrid.md) · [retrieval/subagent.rs](./L4-api/retrieval-subagent.md) · [embedder/lib.rs](./L4-api/embedder-openai.md) · [chat/lib.rs](./L4-api/chat-openai.md) · [config/lib.rs](./L4-api/config-lib.md) · [mcpgw/main.rs](./L4-api/mcpgw-main.md) · [upstream/mapping.rs](./L4-api/upstream-mapping.md) · [upstream/connection.rs](./L4-api/upstream-connection.md) · [upstream/connect.rs](./L4-api/upstream-connect.md) · [upstream/registry.rs](./L4-api/upstream-registry.md) · [metatools/tools.rs](./L4-api/metatools-tools.md) · [metatools/snapshot.rs](./L4-api/metatools-snapshot.md) · [gateway/lib.rs](./L4-api/gateway-lib.md) · [downstream/lib.rs](./L4-api/downstream-lib.md) · [downstream/http.rs](./L4-api/downstream-http.md) · [observe/lib.rs](./L4-api/observe-lib.md) · [observe/audit.rs](./L4-api/observe-audit.md)
 
 > 当前文档覆盖 **M0（检索核心 / Plan 1）**、**M1-A（`upstream` 上游 I/O 层）**、**M1-B.1（`metatools` 元工具
 > 逻辑 + `gateway` 快照状态/重建）**、**M1-B.2（`downstream` 下游 MCP 服务 + eager-connect/`serve`）**、
@@ -39,8 +39,11 @@ spec、实现 plan、路线图等过程产物）相互独立。
 > **M2-B（hybrid RRF 融合 BM25+向量；默认仍 bm25）** 与 **M2.T5（subagent 重排策略 `SubagentStrategy`：BM25 预筛
 > + 小模型重排 + 透明降级；新增 `ChatModel` 抽象与 `chat` crate 的 `OpenAiChat`；默认仍 bm25，opt-in）** 与
 > **M6.T1（结构化调用日志/追踪：新 `observe` crate 的**仅元数据** `CallRecord` + `CallSink` + `TracingSink`，
-> 埋点在 `downstream::call_tool`，`mcpgw serve` 注入默认 `[TracingSink]`）**。注意
-> `embedder`、`chat` 与 `observe` crate 都只有 L2 + L4 文档（无独立 L3；`observe` 的细节并入 `downstream` L3）。
-> 后续里程碑（M3 OAuth/反向代理、M4 运行时密钥管理、M6.T3 审计落盘/M6.T2 用量指标等）
+> 埋点在 `downstream::call_tool`，`mcpgw serve` 注入默认 `[TracingSink]`）** 与
+> **M6.T3（审计落库 JSONL：`observe` 的 `JsonlSink` + 专用 OS 线程 writer + `spawn_writer`/`AuditWriter`、
+> 有界 channel 满则丢弃、关停优雅 drain+fsync；配置 `[audit]`，std-only，默认关闭）**。注意
+> `embedder`、`chat` 与 `observe` crate 都只有 L2 + L4 文档（无独立 L3；`observe` 的细节并入 `downstream` L3）；
+> `observe` 的 L4 有两篇（`observe-lib.md` 记录形状/sink 契约、`observe-audit.md` 审计落盘）。
+> 后续里程碑（M3 OAuth/反向代理、M4 运行时密钥管理、M6.T2 用量指标、M6.T4 code-mode 等）
 > 将按上述规则继续补充各层文档。
 > 里程碑路线图见 `docs/superpowers/plans/2026-06-08-mcpgw-program-roadmap.md`。

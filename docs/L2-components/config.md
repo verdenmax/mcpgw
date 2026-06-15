@@ -9,7 +9,7 @@
 
 ### 类型 `Config`
 顶层配置。`#[serde(deny_unknown_fields)]`；字段 `retrieval: RetrievalConfig`、`upstreams: Vec<UpstreamConfig>`
-（`rename = "upstream"`）、`server: ServerConfig`（均 `#[serde(default)]`）。
+（`rename = "upstream"`）、`server: ServerConfig`、`audit: AuditConfig`（均 `#[serde(default)]`）。
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
@@ -81,6 +81,18 @@
 `[[server.http.api_key]]`（`ApiKeyConfig`，`#[serde(deny_unknown_fields)]`）：每项 `name`（仅作日志/可观测标识，
 **绝不打印 key 值**）+ `env`（持有 key 明文的 env 变量名）。密钥明文只经 env 引用，配置里只存 env 变量名。
 
+### 类型 `AuditConfig`
+`[audit]` 段（M6.T3）。`#[serde(default, deny_unknown_fields)]`：可选的**仅追加 JSONL 审计落盘**（每次元工具
+调用一行**仅元数据** `CallRecord`）。
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `enabled` | `bool` | `false` | 须显式 opt-in 才落盘审计；**省略整个 `[audit]` 段 = 关闭** |
+| `path` | `String` | `"mcpgw-audit.jsonl"` | 审计文件路径（create+append）。**每进程需独立 path**；无内建轮转（rotation 运维见 L3） |
+
+`serve` 在 `enabled` 时经 `observe::spawn_writer(path, AUDIT_CHANNEL_CAPACITY)` 打开文件并起背景 writer 线程，
+打不开即**启动期 fail-fast**；`validate()` **不**校验 `path`。
+
 ### 错误 `ConfigError`
 `enum ConfigError { Parse(toml::de::Error), Invalid(String) }`（`thiserror`，`Parse` 带 `#[from]`）。
 - `Parse`：TOML 语法错误或未知字段（`deny_unknown_fields`）。
@@ -95,7 +107,9 @@
 
 - `mcpgw`：`load_config` 读取/默认配置；`search`/`get-details` 用 `cfg.retrieval`，`serve` 用 `cfg.upstreams`
   （eager-connect）、`cfg.server.stdio` 与 `cfg.server.http`（并发选择 stdio/HTTP 传输、解析 API-Key env）、
-  `cfg.retrieval.top_k`（下游默认 top_k）；`serve` 还按 `cfg.retrieval.strategy` 经 `build_backends` 装配检索后端
+  `cfg.retrieval.top_k`（下游默认 top_k）、`cfg.audit`（`enabled` 时 `observe::spawn_writer(&cfg.audit.path, …)`
+  装配 `JsonlSink` 审计 sink、持 `AuditWriter` 关停时优雅 drain）；`serve` 还按 `cfg.retrieval.strategy` 经
+  `build_backends` 装配检索后端
   （`vector`/`hybrid` → `cfg.retrieval.vector` 建 `OpenAiEmbedder → CachingEmbedder`；`subagent` →
   `cfg.retrieval.subagent` 建 `OpenAiChat` + `candidates`）并注入 `GatewayState::with_backends`（启动期 fail-fast
   读 `api_key_env`）。
