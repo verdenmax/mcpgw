@@ -113,7 +113,19 @@ impl GatewayState {
         let mut summary = RebuildSummary::default();
         let mut catalog = Catalog::new();
         while let Some(joined) = set.join_next().await {
-            let (name, outcome, local) = joined.expect("ingest task panicked");
+            // A panicked/cancelled ingest task must NOT crash the (initial) build or kill the
+            // rebuild worker — degrade it to a skipped upstream so crash isolation holds. The
+            // panicked task's upstream name is unrecoverable, so record a generic entry.
+            let (name, outcome, local) = match joined {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "ingest task panicked/cancelled; skipping");
+                    summary
+                        .skipped
+                        .push(("<ingest task>".to_string(), format!("task failed: {e}")));
+                    continue;
+                }
+            };
             match outcome {
                 Err(_elapsed) => summary.skipped.push((name, "ingest timed out".to_string())),
                 Ok(Err(e)) => summary.skipped.push((name, e.to_string())),
