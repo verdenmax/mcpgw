@@ -1,6 +1,7 @@
 //! In-memory mock upstream MCP servers for tests. Reusable by other crates via the
-//! `testkit` feature. `MockUpstream` exposes three static tools: `echo`, `greet`, and
-//! `slow` (sleeps to exercise per-call timeouts). `RevealingMockUpstream` is a
+//! `testkit` feature. `MockUpstream` exposes four static tools: `echo`, `greet`,
+//! `slow` (sleeps to exercise per-call timeouts), and `fail` (always returns a
+//! tool-level error). `RevealingMockUpstream` is a
 //! runtime-revealing mock whose tool list grows when `reveal` is called (emitting
 //! `tools/list_changed`), used to drive the gateway's list_changed refresh end-to-end.
 #![cfg(any(test, feature = "testkit"))]
@@ -53,6 +54,13 @@ impl MockUpstream {
     async fn slow(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         Ok(CallToolResult::success(vec![Content::text("done")]))
+    }
+
+    #[tool(description = "Always returns a tool-level error (is_error=true)")]
+    fn fail(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        Ok(CallToolResult::error(vec![Content::text(
+            "tool failed on purpose",
+        )]))
     }
 }
 

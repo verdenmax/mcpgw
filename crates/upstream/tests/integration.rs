@@ -24,10 +24,11 @@ async fn ingests_namespaced_tools_from_upstream() {
     let mut catalog = Catalog::new();
     handle.ingest_into(&mut catalog).await.unwrap();
 
-    assert_eq!(catalog.len(), 3);
+    assert_eq!(catalog.len(), 4);
     assert!(catalog.get("mock__echo").is_some());
     assert!(catalog.get("mock__greet").is_some());
     assert!(catalog.get("mock__slow").is_some());
+    assert!(catalog.get("mock__fail").is_some());
 
     handle.shutdown().await;
     server.abort();

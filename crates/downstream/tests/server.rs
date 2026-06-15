@@ -300,3 +300,33 @@ async fn meta_tool_calls_are_observed_with_metadata() {
     assert_eq!(call_err.error_kind, Some("tool_not_found"));
     assert_eq!(call_err.upstream.as_deref(), Some("mock"));
 }
+
+#[tokio::test]
+async fn upstream_tool_error_is_recorded_as_error_outcome() {
+    use observe::{CallOutcome, MetaTool};
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    common::attach_mock(&state, "mock").await;
+
+    let cap = observe::CaptureSink::new();
+    let sinks: Arc<[Arc<dyn observe::CallSink>]> =
+        vec![Arc::new(cap.clone()) as Arc<dyn observe::CallSink>].into();
+    let client = common::connect_to_gateway_with_sinks(state, 8, sinks).await;
+
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("call_tool")
+                .with_arguments(args(json!({"name": "mock__fail"}))),
+        )
+        .await
+        .unwrap();
+    // The tool-level error is forwarded to the client unchanged.
+    assert_eq!(r.is_error, Some(true));
+    client.cancel().await.unwrap();
+
+    let recs = cap.records();
+    let rec = recs.last().expect("a record for the call");
+    assert_eq!(rec.meta_tool, MetaTool::CallTool);
+    assert_eq!(rec.target_tool.as_deref(), Some("mock__fail"));
+    assert_eq!(rec.outcome, CallOutcome::Error);
+    assert_eq!(rec.error_kind, Some("upstream_tool_error"));
+}
