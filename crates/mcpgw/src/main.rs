@@ -8,6 +8,9 @@ use config::Config;
 use config::UpstreamTransport;
 use retrieval::{build_strategy, Backends};
 
+/// Upper bound on how long shutdown waits for the audit writer to drain + fsync.
+const AUDIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// mcpgw retrieval-core CLI: query a tool catalog with the configured strategy.
 #[derive(Parser)]
 #[command(name = "mcpgw", version)]
@@ -245,10 +248,23 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     let (state, rx) = prepare_state(&cfg).await?;
     tokio::spawn(gateway::run_rebuild_worker((*state).clone(), rx));
 
-    // Observation sinks shared by both stdio and http transports.
-    let sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> =
-        vec![std::sync::Arc::new(observe::TracingSink) as std::sync::Arc<dyn observe::CallSink>]
-            .into();
+    // Observation sinks shared by both stdio and http transports. Default = TracingSink;
+    // when [audit].enabled, additionally append a JsonlSink backed by a background writer.
+    let mut sink_vec: Vec<std::sync::Arc<dyn observe::CallSink>> =
+        vec![std::sync::Arc::new(observe::TracingSink) as std::sync::Arc<dyn observe::CallSink>];
+    let audit_writer = if cfg.audit.enabled {
+        let (sink, writer) = observe::spawn_writer(
+            std::path::Path::new(&cfg.audit.path),
+            observe::AUDIT_CHANNEL_CAPACITY,
+        )
+        .map_err(|e| format!("open audit file {:?}: {e}", cfg.audit.path))?;
+        tracing::info!(path = %cfg.audit.path, "audit log enabled");
+        sink_vec.push(std::sync::Arc::new(sink));
+        Some(writer)
+    } else {
+        None
+    };
+    let sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> = sink_vec.into();
 
     // Pre-bind the HTTP listener (fail-fast on bind errors) before entering select!.
     let http_bound = if http_enabled {
@@ -295,6 +311,23 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             Ok(())
         }
     };
+
+    // Drain the audit writer (if any): all GatewayServer sink clones were dropped when the
+    // select! branches were dropped, so dropping our own `sinks` releases the last JsonlSink
+    // clone and disconnects the channel; the writer then FIFO-drains, flushes, fsyncs, and exits.
+    // The bounded timeout covers a lingering in-flight HTTP connection that still holds a clone.
+    drop(sinks);
+    if let Some(writer) = audit_writer {
+        if tokio::time::timeout(
+            AUDIT_DRAIN_TIMEOUT,
+            tokio::task::spawn_blocking(move || writer.join()),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!("audit writer drain timed out; some records may be unflushed");
+        }
+    }
 
     // Best-effort graceful shutdown of upstream children (runs on clean exit AND error).
     for name in state.registry().server_names() {
