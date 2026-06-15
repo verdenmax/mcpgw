@@ -37,6 +37,7 @@ fn presented_bearer(req: &Request) -> Option<String> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty())
         .map(str::to_string)
 }
 

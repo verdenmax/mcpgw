@@ -116,6 +116,12 @@ fn resolve_api_keys(cfg: &config::Config) -> Result<Vec<String>, String> {
     for k in &http.api_keys {
         let secret = std::env::var(&k.env)
             .map_err(|_| format!("api_key {:?}: env {:?} is not set", k.name, k.env))?;
+        if secret.trim().is_empty() {
+            return Err(format!(
+                "api_key {:?}: env {:?} is set but empty",
+                k.name, k.env
+            ));
+        }
         keys.push(secret);
     }
     Ok(keys)
@@ -464,5 +470,23 @@ mod tests {
         let b = build_backends(&cfg).unwrap();
         assert!(b.chat.is_some() && b.embedder.is_none());
         assert_eq!(b.subagent_candidates, Some(15));
+    }
+
+    #[test]
+    fn resolve_api_keys_rejects_set_but_empty_env() {
+        std::env::set_var("MCPGW_AUDIT_EMPTY_KEY", "");
+        let cfg = config::Config::from_toml_str(
+            "[server.http]\nenabled = true\n[[server.http.api_key]]\nname=\"a\"\nenv=\"MCPGW_AUDIT_EMPTY_KEY\"\n",
+        )
+        .unwrap();
+        let err = resolve_api_keys(&cfg).unwrap_err();
+        assert!(
+            err.contains("empty"),
+            "error must explain the empty secret: {err}"
+        );
+        assert!(
+            !err.contains("MCPGW_AUDIT_EMPTY_KEY="),
+            "error must not leak the value"
+        );
     }
 }
