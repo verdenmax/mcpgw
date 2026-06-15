@@ -314,8 +314,8 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         })
     });
 
-    // Wait for the first shutdown trigger: stdio client disconnect, ctrl_c, or the HTTP server
-    // terminating on its own (a serve error, or — in HTTP-only mode — the only transport ending).
+    // Wait for the first shutdown trigger: stdio client disconnect, ctrl_c, or the HTTP serve task
+    // ending on its own (a serve error; axum doesn't return without a shutdown signal or error).
     let mut http_self_terminated = false;
     let outcome: Result<(), String> = tokio::select! {
         res = async {
@@ -331,6 +331,8 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         res = async {
             match http_task.as_mut() {
                 Some(t) => t.await.map_err(|e| e.to_string()).and_then(|r| r),
+                // Unreachable: this arm is gated by `if http_enabled`, and http_task is Some
+                // exactly when http_enabled. `pending()` is the safe no-op for the type-checker.
                 None => std::future::pending().await,
             }
         }, if http_enabled => {
