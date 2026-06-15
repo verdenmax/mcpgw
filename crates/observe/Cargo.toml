@@ -1,0 +1,19 @@
+[package]
+name = "observe"
+version = "0.1.0"
+edition = { workspace = true }
+
+[features]
+testkit = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[[test]]
+name = "capture"
+required-features = ["testkit"]
