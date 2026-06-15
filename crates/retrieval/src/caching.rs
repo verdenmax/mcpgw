@@ -5,7 +5,7 @@
 //! embedded. Frequently-seen texts (e.g. tool descriptions re-embedded each rebuild) stay
 //! warm via promote-on-hit. Only cache-miss texts are forwarded to `inner`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -90,7 +90,7 @@ impl Embedder for CachingEmbedder {
         // collect the unique misses to embed. The lock is held only for synchronous map ops.
         let mut resolved: HashMap<u64, Arc<[f32]>> = HashMap::new();
         let mut miss_texts: Vec<String> = Vec::new();
-        let mut miss_seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut miss_seen: HashSet<u64> = HashSet::new();
         {
             let mut cache = self.cache.lock().unwrap();
             for (h, t) in hashes.iter().zip(texts) {
@@ -200,24 +200,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promote_on_hit_keeps_hot_key_warm_across_churn() {
+    async fn promote_on_hit_prevents_re_embedding_a_hot_key() {
         let inner = Arc::new(CountingEmbedder::new(2));
         let c = CachingEmbedder::new(inner.clone());
         c.embed(&["hot".into()]).await.unwrap();
-        // Churn through >2 full generations of distinct keys, re-touching "hot" within each
-        // generation window so promote-on-hit keeps it resident.
+        // Churn through 3 full generations of distinct keys, re-touching "hot" within each
+        // generation window (every CAP/2 inserts) so promote-on-hit keeps it resident.
         for i in 0..(CACHE_GEN_CAP * 3) {
             c.embed(&[format!("k{i}")]).await.unwrap();
             if i % (CACHE_GEN_CAP / 2) == 0 {
                 c.embed(&["hot".into()]).await.unwrap();
             }
         }
-        let before = inner.calls.load(Ordering::Relaxed);
-        c.embed(&["hot".into()]).await.unwrap();
+        // Inner embedded "hot" once + each of the 3*CAP distinct k's once, and nothing more:
+        // promotion kept "hot" warm so it was never evicted/re-embedded. Without promote-on-hit
+        // "hot" would fall out of `previous` on a later rotation and be re-embedded once, making
+        // this count 3*CAP + 2 instead of 3*CAP + 1 — so this assertion actually guards promotion.
         assert_eq!(
             inner.calls.load(Ordering::Relaxed),
-            before,
-            "a periodically-touched hot key must survive churn (no re-embed)"
+            CACHE_GEN_CAP * 3 + 1,
+            "promotion must prevent any re-embed of the periodically-touched hot key"
+        );
+    }
+
+    #[tokio::test]
+    async fn single_oversized_batch_stays_bounded_and_returns_all_vectors() {
+        // The headline fix: one `embed` call with a batch larger than 2*CAP rotates the cache
+        // several times mid-call, yet every input must still get its correct vector (reassembly
+        // reads the local `resolved` map, not the evicting cache) and the cache stays bounded.
+        let inner = Arc::new(CountingEmbedder::new(2));
+        let c = CachingEmbedder::new(inner.clone());
+        let batch: Vec<String> = (0..(CACHE_GEN_CAP * 2 + 7))
+            .map(|i| format!("t{i}"))
+            .collect();
+        let out = c.embed(&batch).await.unwrap();
+
+        assert_eq!(out.len(), batch.len(), "one output vector per input");
+        for (t, v) in batch.iter().zip(&out) {
+            let mut expected = vec![0.0f32; 2];
+            expected[0] = hash_text(t) as f32;
+            assert_eq!(
+                v, &expected,
+                "vector for {t:?} must be correct despite mid-batch eviction"
+            );
+        }
+        assert!(
+            c.cache.lock().unwrap().len() <= 2 * CACHE_GEN_CAP,
+            "persistent cache must stay bounded even for an oversized batch"
         );
     }
 }
