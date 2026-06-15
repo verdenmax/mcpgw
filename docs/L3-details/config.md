@@ -81,7 +81,7 @@
 
 ## 校验逻辑 `validate`（私有）
 
-- `strategy` 必须 ∈ `["bm25", "vector", "hybrid"]`，否则 `Invalid`。
+- `strategy` 必须 ∈ `["bm25", "vector", "hybrid", "subagent"]`，否则 `Invalid`。
 - `top_k` 必须 `> 0`，否则 `Invalid`。
 - 每个 upstream 的 `name`：`trim()` 后非空（拒绝纯空白）、不含命名空间分隔符 `__`、**不以 `_` 开头或结尾**、在所有 upstream 中
   唯一（重复 → `Invalid`）。

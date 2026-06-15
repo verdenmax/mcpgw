@@ -108,8 +108,8 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
   常驻项数因而被界定在约 `2*CAP`。查找先看 `current`、再看 `previous`，命中 `previous` 时**提升回 `current`**（promote-on-hit）；
   当 `current` 写满时**轮转**——`previous = current`、`current` 重置为空，旧 `previous` 整代丢弃。
   热文本（工具描述每次 rebuild 都重嵌）凭 promote-on-hit 持续驻留，而临时的 query 向量不再无界累积。
-  （旧实现为**无界 `HashMap`、从不驱逐**，是本次审计修复的内存增长隐患。）缓存键为 **64 位内容哈希**，
-  碰撞概率在本规模（目录小）下可忽略。
+  缓存键为 **64 位内容哈希**，碰撞概率在本规模（目录小）下可忽略。
+  （旧实现为**无界 `HashMap`、从不驱逐**，是本次审计修复的内存增长隐患。）
 
 ## 向量策略（M2-A T4）
 
