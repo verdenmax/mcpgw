@@ -277,3 +277,22 @@ async fn revealing_mock_grows_its_tool_list_after_reveal() {
 
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn cancel_works_on_a_shared_handle() {
+    // The teardown path when Arc::try_unwrap can't take ownership: cancel through a clone.
+    let (handle, _server) = connect_mock("mock").await;
+    let handle = Arc::new(handle);
+    let shared = handle.clone();
+
+    shared.cancel(); // must not panic; works via &self on a shared Arc
+
+    // Once cancelled, the service is gone, so a forwarded call fails (and does not hang).
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        handle.call_tool("echo", None),
+    )
+    .await
+    .expect("call must not hang after cancel");
+    assert!(r.is_err(), "calls must fail once the service is cancelled");
+}

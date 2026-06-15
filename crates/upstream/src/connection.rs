@@ -149,4 +149,13 @@ impl UpstreamHandle {
     pub async fn shutdown(self) {
         let _ = self.client.cancel().await;
     }
+
+    /// Cancel the underlying rmcp service via its cancellation token, WITHOUT consuming the
+    /// handle. Unlike `shutdown(self)`, this works on a shared `&self` (e.g. an
+    /// `Arc<UpstreamHandle>` still held by the rebuild worker or an in-flight call), so teardown
+    /// never silently skips a cancel. The child is ultimately reaped by the service's DropGuard
+    /// when the last clone drops.
+    pub fn cancel(&self) {
+        self.client.cancellation_token().cancel();
+    }
 }

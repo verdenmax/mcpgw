@@ -339,11 +339,14 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         }
     }
 
-    // Best-effort graceful shutdown of upstream children (runs on clean exit AND error).
+    // Graceful shutdown of upstream children (runs on clean exit AND error). If we own the only
+    // reference, await a full graceful cancel; otherwise (rebuild worker / in-flight call still
+    // holds a clone) cancel via the service token so the upstream is never silently left running.
     for name in state.registry().server_names() {
         if let Some(handle) = state.registry().remove(&name) {
-            if let Ok(h) = Arc::try_unwrap(handle) {
-                h.shutdown().await;
+            match Arc::try_unwrap(handle) {
+                Ok(h) => h.shutdown().await,
+                Err(shared) => shared.cancel(),
             }
         }
     }
