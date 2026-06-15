@@ -12,6 +12,8 @@ pub struct Config {
     pub upstreams: Vec<UpstreamConfig>,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -119,6 +121,25 @@ impl Default for HttpConfig {
             bind: "127.0.0.1:8970".into(),
             path: "/mcp".into(),
             api_keys: Vec::new(),
+        }
+    }
+}
+
+/// `[audit]` section: optional append-only JSONL audit log of meta-tool calls (M6.T3).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuditConfig {
+    /// Write an audit line per meta-tool call. Defaults to false (must opt in).
+    pub enabled: bool,
+    /// Audit file path (append-only JSONL). Each gateway process needs its own path.
+    pub path: String,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: "mcpgw-audit.jsonl".into(),
         }
     }
 }
@@ -628,5 +649,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn audit_defaults_disabled() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(!cfg.audit.enabled);
+        assert_eq!(cfg.audit.path, "mcpgw-audit.jsonl");
+    }
+
+    #[test]
+    fn parses_audit_section() {
+        let cfg = Config::from_toml_str(
+            "[audit]\nenabled = true\npath = \"/var/log/mcpgw/audit.jsonl\"\n",
+        )
+        .unwrap();
+        assert!(cfg.audit.enabled);
+        assert_eq!(cfg.audit.path, "/var/log/mcpgw/audit.jsonl");
+    }
+
+    #[test]
+    fn audit_rejects_unknown_field() {
+        let err = Config::from_toml_str("[audit]\nbogus = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn audit_partial_fills_defaults() {
+        // 只给 enabled -> path 保持默认。
+        let cfg = Config::from_toml_str("[audit]\nenabled = true\n").unwrap();
+        assert!(cfg.audit.enabled);
+        assert_eq!(cfg.audit.path, "mcpgw-audit.jsonl");
     }
 }

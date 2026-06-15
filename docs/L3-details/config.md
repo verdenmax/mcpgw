@@ -49,6 +49,29 @@
 `bind`/`path` 取默认（`127.0.0.1:8970` / `/mcp`）、`api_keys` 为空。API key 密钥**只经 env 变量名引用**
 （`ApiKeyConfig.env`），`name` 仅作日志标签、绝非密钥值。
 
+### `[audit]` 段（M6.T3）
+
+`Config.audit: AuditConfig`（`#[serde(default, deny_unknown_fields)]`）开关网关的**仅追加 JSONL 审计落盘**：
+`enabled` 时每次元工具调用写一行**仅元数据** `CallRecord`（落盘细节见 L4
+[observe-audit](../L4-api/observe-audit.md)）。
+
+- **字段与默认**：`enabled: bool`（默认 `false`，须显式 opt-in）、`path: String`（默认 `"mcpgw-audit.jsonl"`，
+  CWD 相对）。**省略整个 `[audit]` 段 → `AuditConfig::default()`（关闭）**；只给 `enabled = true` 时 `path` 取
+  默认（`audit_partial_fills_defaults` 单测锁定）。无 flatten，故 `deny_unknown_fields` 生效（段内未知键如
+  `bogus` → `Parse`）。`validate()` **不**校验 `path`——文件能否打开在 `serve` 启动期由
+  `observe::spawn_writer` fail-fast 暴露（开不了即拒绝启动），而非配置解析期。
+- **无内建轮转 / 无 SIGHUP 重开**：`JsonlSink` 只对**单一打开的文件句柄**做 append，进程运行期**不**重开文件、
+  **不**响应 `SIGHUP`，也无大小/时间轮转。文件轮转须交给**外部 logrotate**，两种姿势各有取舍：
+  - **① `copytruncate`**：无需停机（不重启进程），但**复制与截断之间写入的行可能丢失**（logrotate 复制完
+    旧文件、再 `truncate` 清空，这两步之间 writer 以 `O_APPEND` 追加的行既不在副本里、又被 truncate 抹掉）
+    ——可接受少量丢失时用。注：因以 `O_APPEND` 打开，每次写入前内核重定位到文件末尾，故**不会**出现非 append
+    句柄那种 truncate 后 offset 错位、写出稀疏/空洞文件的问题；唯一损失就是上述 copy↔truncate 竞态窗口。
+  - **② 停—转—起（stop → rotate → restart）**：关停 mcpgw（关停时审计 writer 会优雅 drain+flush+fsync，见
+    L4 [mcpgw-main](../L4-api/mcpgw-main.md)）→ 移动/压缩旧文件 → 重启（`create+append` 建新文件）。**零丢失**，
+    代价是一次重启停机。
+- **单写者 / 每进程独立 path**：审计 writer 是**进程内唯一的单写者线程**；**多个进程写同一文件是误配**
+  （交错/损坏行、轮转语义破裂），每个网关进程应配独立 `path`。
+
 ## `env_passthrough` 的 allow-list 语义
 
 `env_passthrough` 不是「额外追加」而是「白名单」：`upstream::connect::build_command` 先 `c.env_clear()` 清空子进程
@@ -89,6 +112,9 @@
 - `rejects_unknown_transport`（`Parse`）/ `rejects_upstream_name_with_double_underscore` /
   `rejects_blank_upstream_name` / `rejects_duplicate_upstream_names`（均 `Invalid`）
 - `server_section_parses_and_defaults_to_stdio`（`[server]` 缺省 `stdio = true`、显式解析、未知键 → 错误）
+- `audit_defaults_disabled`（省略 `[audit]` → `enabled = false`、`path = "mcpgw-audit.jsonl"`）/
+  `parses_audit_section`（显式 `enabled`/`path` 解析）/ `audit_rejects_unknown_field`（段内未知键 → `Parse`）/
+  `audit_partial_fills_defaults`（只给 `enabled` 时 `path` 取默认）
 
 ## 相关
 

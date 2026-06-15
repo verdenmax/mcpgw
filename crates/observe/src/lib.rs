@@ -6,6 +6,9 @@
 
 use serde::Serialize;
 
+mod audit;
+pub use audit::{spawn_writer, AuditWriter, JsonlSink, AUDIT_CHANNEL_CAPACITY};
+
 /// Which meta-tool was invoked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
