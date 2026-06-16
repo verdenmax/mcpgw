@@ -180,7 +180,7 @@ pub fn build_dashboard_router(state: Arc<AppState>) -> axum::Router
 ### SPA（`assets/app.js` + `index.html` + `style.css`）
 零依赖原生 JS，每 `REFRESH_MS = 3000` 轮询 `/api/overview`、`/api/upstreams`、`/api/metrics`、
 `/api/traces`。**所有不可信字段**（`r.query`、`h.name`、`u.reason`、`u.name`、`u.transport`、`x.meta_tool`）
-经 `escapeHtml` 后才写入 `innerHTML`，防 stored XSS（crate 单测锁死这五处转义）。
+经 `escapeHtml` 后才写入 `innerHTML`，防 stored XSS（crate 单测锁死这六处转义）。
 
 ## 依赖与扩展点
 

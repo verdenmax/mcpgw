@@ -46,8 +46,8 @@ spec、实现 plan、路线图等过程产物）相互独立。
 > + per-upstream）+ `DiscoveryRingSink`（有界 ring + 可选发现 JSONL）+ history JSONL 回放 + `build_dashboard_router`
 > 的 6 个 `/api/*` + 3 个静态路由 + 零构建 vanilla-JS SPA；`observe` 新增 `DiscoveryRecord`/`DiscoverySink` 发现追踪
 > 契约；配置 `[dashboard]`，独立 port、localhost、无鉴权、默认关闭）**。注意
-> `embedder`、`chat`、`observe` 与 `dashboard` crate 都只有 L2 + L4 文档（无独立 L3；`observe` 的细节并入
-> `downstream` L3）；唯 `dashboard` 例外，另有独立 **L3**（进程模型 / 数据源 / 隐私边界 / 直方图算法）。
+> `embedder`、`chat`、`observe` crate 只有 L2 + L4 文档（无独立 L3；`observe` 的细节并入
+> `downstream` L3）；`dashboard` 则另有独立 **L3**（进程模型 / 数据源 / 隐私边界 / 直方图算法）。
 > `observe` 的 L4 有两篇（`observe-lib.md` 记录形状/sink 契约、`observe-audit.md` 审计落盘）。
 > 后续里程碑（M3 OAuth/反向代理、M4 运行时密钥管理、M6.T2 用量指标、M6.T4 code-mode 等）
 > 将按上述规则继续补充各层文档。
