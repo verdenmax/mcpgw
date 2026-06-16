@@ -4,6 +4,14 @@
 use catalog::{Catalog, ToolDef};
 use rmcp::model::Tool;
 
+/// Maximum number of tools accepted from a single upstream server per ingest. Extras are
+/// dropped (with a warn) to bound catalog/snapshot memory against a compromised upstream.
+pub const MAX_TOOLS_PER_SERVER: usize = 1024;
+
+/// Maximum bytes of a single tool's `description` + serialized `input_schema`. A tool over
+/// this is skipped (with a warn) so one upstream can't drive unbounded memory/embedding cost.
+pub const MAX_TOOL_TEXT_BYTES: usize = 64 * 1024;
+
 /// Convert one upstream `Tool` (under namespace `server`) into a `ToolDef`.
 pub fn tool_to_def(server: &str, tool: &Tool) -> ToolDef {
     ToolDef {
@@ -20,16 +28,44 @@ pub fn tool_to_def(server: &str, tool: &Tool) -> ToolDef {
 /// Dedup is per-call (intra-server, first-wins). Re-ingesting a server already present
 /// in the catalog overwrites its entries via `upsert`; the returned count reflects only
 /// collisions within `tools`, not against prior catalog state.
+///
+/// Tools beyond MAX_TOOLS_PER_SERVER, or whose description+schema exceeds
+/// MAX_TOOL_TEXT_BYTES, are dropped with a warn (not counted in the returned dupe count).
 pub fn ingest_tools(catalog: &mut Catalog, server: &str, tools: &[Tool]) -> usize {
     let mut seen = std::collections::HashSet::new();
     let mut dupes = 0;
-    for tool in tools {
+    let mut accepted = 0usize;
+    for (i, tool) in tools.iter().enumerate() {
+        if accepted >= MAX_TOOLS_PER_SERVER {
+            tracing::warn!(
+                server,
+                dropped = tools.len() - i,
+                max = MAX_TOOLS_PER_SERVER,
+                "upstream exceeds per-server tool cap; dropping extras"
+            );
+            break;
+        }
         if !seen.insert(tool.name.as_ref()) {
             dupes += 1;
             tracing::warn!(server, tool = %tool.name, "duplicate tool name from upstream; keeping first");
             continue;
         }
+        let text_bytes = tool.description.as_deref().unwrap_or("").len()
+            + serde_json::to_string(&*tool.input_schema)
+                .map(|s| s.len())
+                .unwrap_or(0);
+        if text_bytes > MAX_TOOL_TEXT_BYTES {
+            tracing::warn!(
+                server,
+                tool = %tool.name,
+                bytes = text_bytes,
+                max = MAX_TOOL_TEXT_BYTES,
+                "tool text exceeds size cap; skipping"
+            );
+            continue;
+        }
         catalog.upsert(tool_to_def(server, tool));
+        accepted += 1;
     }
     dupes
 }
@@ -96,5 +132,51 @@ mod tests {
         assert_eq!(cat.len(), 2);
         assert_eq!(cat.get("srv__a").unwrap().description, "first a"); // first kept
         assert!(cat.get("srv__b").is_some());
+    }
+
+    #[test]
+    fn ingest_tools_caps_per_server_tool_count() {
+        let mut cat = Catalog::new();
+        let tools: Vec<_> = (0..(MAX_TOOLS_PER_SERVER + 5))
+            .map(|i| tool(&format!("t{i}"), Some("d")))
+            .collect();
+        let dupes = ingest_tools(&mut cat, "srv", &tools);
+        assert_eq!(dupes, 0, "all names unique -> no intra-server dupes");
+        assert_eq!(
+            cat.len(),
+            MAX_TOOLS_PER_SERVER,
+            "extras beyond the per-server cap must be dropped"
+        );
+    }
+
+    #[test]
+    fn ingest_tools_skips_a_tool_over_the_text_byte_cap() {
+        let mut cat = Catalog::new();
+        // empty schema serializes to "{}" (2 bytes); description pushes total over the cap.
+        let huge = "a".repeat(MAX_TOOL_TEXT_BYTES + 1);
+        let tools = vec![
+            tool("small", Some("ok")),
+            tool("huge", Some(&huge)),
+            tool("also_small", Some("ok2")),
+        ];
+        let dupes = ingest_tools(&mut cat, "srv", &tools);
+        assert_eq!(dupes, 0);
+        assert_eq!(cat.len(), 2, "the oversize tool is skipped, others kept");
+        assert!(cat.get("srv__small").is_some());
+        assert!(cat.get("srv__also_small").is_some());
+        assert!(cat.get("srv__huge").is_none(), "oversize tool excluded");
+    }
+
+    #[test]
+    fn ingest_tools_accepts_a_tool_exactly_at_the_text_byte_cap() {
+        let mut cat = Catalog::new();
+        // desc bytes + 2 ("{}") == MAX is NOT over the cap (strict `>`), so it is accepted.
+        let at_limit = "a".repeat(MAX_TOOL_TEXT_BYTES - 2);
+        let tools = vec![tool("edge", Some(&at_limit))];
+        ingest_tools(&mut cat, "srv", &tools);
+        assert!(
+            cat.get("srv__edge").is_some(),
+            "a tool exactly at the byte cap must be accepted"
+        );
     }
 }
