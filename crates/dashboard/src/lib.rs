@@ -3,3 +3,6 @@
 
 mod metrics;
 pub use metrics::{MetaToolMetrics, MetricsSink, MetricsSnapshot, UpstreamMetrics};
+
+mod trace;
+pub use trace::{DiscoveryRingSink, DiscoveryWriter};
