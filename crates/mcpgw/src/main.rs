@@ -360,6 +360,25 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         None
     };
 
+    // Pre-bind the dashboard listener (fail-fast on bind errors) BEFORE spawning any serve task,
+    // so a dashboard bind failure can't orphan an already-running HTTP task or skip upstream teardown
+    // (symmetric to the HTTP listener pre-bind above).
+    let dash_listener = if cfg.dashboard.enabled {
+        let listener = tokio::net::TcpListener::bind(&cfg.dashboard.bind)
+            .await
+            .map_err(|e| format!("bind dashboard {:?}: {e}", cfg.dashboard.bind))?;
+        tracing::info!(bind = %cfg.dashboard.bind, "dashboard listening");
+        if unauthenticated_public_bind(&cfg.dashboard.bind, false) {
+            tracing::warn!(
+                bind = %cfg.dashboard.bind,
+                "dashboard is UNAUTHENTICATED and bound to a non-loopback address; bind to localhost"
+            );
+        }
+        Some(listener)
+    } else {
+        None
+    };
+
     let stdio_enabled = cfg.server.stdio;
     let state_for_stdio = state.clone();
     let top_k = cfg.retrieval.top_k;
@@ -385,17 +404,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     let (dash_shutdown_tx, dash_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let dashboard_enabled = cfg.dashboard.enabled;
     let mut dash_self_terminated = false;
-    let mut dash_task = if dashboard_enabled {
-        let listener = tokio::net::TcpListener::bind(&cfg.dashboard.bind)
-            .await
-            .map_err(|e| format!("bind dashboard {:?}: {e}", cfg.dashboard.bind))?;
-        tracing::info!(bind = %cfg.dashboard.bind, "dashboard listening");
-        if unauthenticated_public_bind(&cfg.dashboard.bind, false) {
-            tracing::warn!(
-                bind = %cfg.dashboard.bind,
-                "dashboard is UNAUTHENTICATED and bound to a non-loopback address; bind to localhost"
-            );
-        }
+    let mut dash_task = if let Some(listener) = dash_listener {
         let app_state = Arc::new(dashboard::AppState {
             gateway: state.clone(),
             metrics: dashboard_metrics
