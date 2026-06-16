@@ -102,6 +102,9 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
   故即便单批超大、嵌入途中触发缓存轮转/驱逐，每个输入仍拿到正确向量。
 - **全命中跳过内层**：整批命中时完全不发起内层调用，省去网络往返。
 - **错误不缓存**：内层返回 `Err` 时原样传播，不写入任何部分结果。
+- **数量不符即 `Err`（audit N1）**：内层 embedder 对 `miss_texts` 返回的向量数与输入数**不一致**（契约违例）时，
+  `embed` 直接返回 `Err(EmbedError::Provider("embedder returned N vectors for M inputs"))`——还原步骤**不再**
+  `expect`-panic；契约违例被压成可传播的错误而非崩溃。
 - **锁纪律**：内层 `.await` 处于两段独立 `cache.lock()` 之间，绝不跨 `.await` 持锁
   （避免 `clippy::await_holding_lock` 与死锁风险）。
 - **两代有界缓存（audit F4）**：缓存由 `current` + `previous` 两个 `HashMap<String, Arc<[f32]>>` 组成，各上限 `CACHE_GEN_CAP = 2048`，
@@ -127,6 +130,8 @@ idf(t) = ln( 1 + (N − df + 0.5) / (df + 0.5) )
      `tracing::warn!` 记录、清空 `vectors`、置 `degraded = true`，此后所有查询走 BM25。
   2. **per-query（查询期）**：未降级时每次查询先嵌入 query，若该次嵌入失败则**仅本次**回退 BM25
      （不改变 `degraded` 状态）；若 `degraded` 或 `vectors` 为空也直接走 BM25。
+- **空 `Ok` 也优雅降级（audit N1）**：query 嵌入返回**空 `Ok`**（嵌入器违反「每输入一向量」契约）时，与 `Err`
+  同样**仅本次回退 BM25**（`tracing::warn!` 记录），而**不再** `v.remove(0)` panic——契约违例被当作降级而非崩溃。
 
 ## 混合策略 `HybridStrategy`（RRF）
 

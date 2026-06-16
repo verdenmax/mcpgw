@@ -41,8 +41,9 @@ pub struct GatewayState {
 ```rust
 pub fn new(strategy_name: &str) -> Result<Self, GatewayError>
 ```
-建空状态：用 `build_strategy(strategy_name, &Backends::default())` 新建策略、对空 `Catalog` `index`，装入
-`ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))`；`backends` 为空（`Backends::default()`），注册表与重建锁均为空/新建。策略名未知（或需要
+建空状态：用 `build_strategy(strategy_name, &Backends::default())` 新建策略，**不在构造时索引**——直接把空 `Catalog`
+装入 `ArcSwap::from_pointee(GatewaySnapshot::new(empty, strat))`（`index` 仅由首个 `rebuild_snapshot` 调用，故首次重建前
+`search` 返回空）；`backends` 为空（`Backends::default()`），注册表与重建锁均为空/新建。策略名未知（或需要
 embedder/chat 却未提供）时返回 `Err(GatewayError::Strategy)`。
 
 ### `GatewayState::with_embedder`
