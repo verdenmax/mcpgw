@@ -323,6 +323,13 @@ impl Config {
                     http.path
                 )));
             }
+            if http.path.contains(['{', '}', '*']) {
+                return Err(ConfigError::Invalid(format!(
+                    "[server.http].path {:?} must not contain wildcard/parameter segments \
+                     ('{{', '}}', '*'); use a plain literal path",
+                    http.path
+                )));
+            }
         }
         Ok(())
     }
@@ -729,6 +736,28 @@ mod tests {
                 matches!(err, ConfigError::Invalid(_)),
                 "http path {bad:?} must be rejected"
             );
+        }
+    }
+
+    #[test]
+    fn rejects_wildcard_or_param_http_path() {
+        for bad in ["/{id}", "/{*rest}", "/a*b", "/x{y}", "/a/{seg}/b"] {
+            let toml = format!("[server.http]\nenabled = true\npath = \"{bad}\"\n");
+            let err = Config::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "http path {bad:?} must be rejected (wildcard/param segment)"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_plain_literal_http_paths() {
+        for ok in ["/mcp", "/a/b/c", "/mcp-v1", "/v1.0/mcp", "/gateway_v2"] {
+            let toml = format!("[server.http]\nenabled = true\npath = \"{ok}\"\n");
+            let cfg = Config::from_toml_str(&toml)
+                .unwrap_or_else(|e| panic!("http path {ok:?} must be accepted: {e}"));
+            assert_eq!(cfg.server.http.unwrap().path, ok);
         }
     }
 
