@@ -1,7 +1,4 @@
-// `DiscoveryHit` is used only by the test module (via `super::*`); keep it in the public-facing
-// import block for this discovery module and silence the non-test unused-import lint.
-#[allow(unused_imports)]
-use observe::{DiscoveryHit, DiscoveryRecord, DiscoverySink};
+use observe::{DiscoveryRecord, DiscoverySink};
 use std::collections::VecDeque;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -117,6 +114,7 @@ fn run_writer(rx: Receiver<String>, file: std::fs::File) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use observe::DiscoveryHit;
 
     fn rec(q: &str) -> DiscoveryRecord {
         DiscoveryRecord {
