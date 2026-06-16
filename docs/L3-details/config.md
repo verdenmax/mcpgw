@@ -87,8 +87,10 @@
   唯一（重复 → `Invalid`）。
   - **边界下划线**单独拒绝：`my_server` 这类内部下划线允许，但 `_svc`/`svc_` 会在拼接 `{server}__{tool}` 时与相邻的 `_`
     重新拼出 `__` 分隔符，破坏命名空间唯一性，故 `starts_with('_') || ends_with('_')` → `Invalid`。
-- `[server.http].path`（若有 `[server.http]` 段）：必须以 `/` 开头且长于 `/`（即 `len >= 2`），否则 `Invalid`。
-  这在**启动期、axum `nest_service` 之前**校验，拒绝 `""`/`"/"`/无前导斜杠的挂载路径（避免 axum 在启动时 panic）；默认 `/mcp` 不受影响。
+- `[server.http].path`（若有 `[server.http]` 段）：必须以 `/` 开头且长于 `/`（即 `len >= 2`），且**不得含通配/参数段**
+  （不含 `{`、`}`、`*`），否则 `Invalid`。这在**启动期、axum `nest_service` 之前**校验，拒绝 `""`/`"/"`/无前导斜杠的挂载路径，
+  以及 `/{id}`、`/{*rest}`、`/a*b` 这类含动态段的路径——否则 axum 会在构建路由时 panic（`/{*rest}`）或把 MCP 静默挂到
+  动态捕获段（`/{id}`）上；默认 `/mcp` 与 `/a/b/c`、`/mcp-v1` 等普通字面量路径不受影响。
 
 > **已知的双清单**：`config::validate` 接受 `vector`/`hybrid`（"格式已知"），而 `retrieval::build_strategy`
 > 仅实现 `bm25`（"是否实现"）。两份清单独立、可能漂移。这是有意的职责划分（config 管"名字合不合法"，
@@ -116,7 +118,7 @@
 - `rejects_unknown_transport`（`Parse`）/ `rejects_upstream_name_with_double_underscore` /
   `rejects_blank_upstream_name` / `rejects_duplicate_upstream_names` /
   `rejects_server_name_leading_or_trailing_underscore` / `accepts_server_name_with_interior_underscore`（均 `Invalid` / 接受内部下划线）
-- `rejects_invalid_http_path`（`""`/`"/"`/无前导斜杠均 `Invalid`）/ `accepts_default_and_custom_http_path`（`/mcp`、`/gateway` 通过）
+- `rejects_invalid_http_path`（`""`/`"/"`/无前导斜杠均 `Invalid`）/ `rejects_wildcard_or_param_http_path`（`/{id}`、`/{*rest}`、`/a*b` 等含 `{`/`}`/`*` 均 `Invalid`）/ `accepts_plain_literal_http_paths`（`/mcp`、`/a/b/c`、`/mcp-v1` 等普通路径通过）/ `accepts_default_and_custom_http_path`（`/mcp`、`/gateway` 通过）
 - `server_section_parses_and_defaults_to_stdio`（`[server]` 缺省 `stdio = true`、显式解析、未知键 → 错误）
 - `audit_defaults_disabled`（省略 `[audit]` → `enabled = false`、`path = "mcpgw-audit.jsonl"`）/
   `parses_audit_section`（显式 `enabled`/`path` 解析）/ `audit_rejects_unknown_field`（段内未知键 → `Parse`）/

@@ -29,5 +29,10 @@ pub fn ingest_tools(catalog: &mut catalog::Catalog, server: &str, tools: &[rmcp:
   - 用 `HashSet` 去重，**first-dupe-wins**：首次见到的名 `upsert`，同名再现 → warn + skip + 计数。
   - 去重是**每次调用内**（intra-server）的；重复摄取一个已在 catalog 中的 server 会经 `upsert` 覆盖既有条目，
     返回计数**仅**反映 `tools` 内部的碰撞，不与既有 catalog 状态比较。
+  - **两个公开上限 `pub const`**，把目录/快照内存与嵌入开销对**半可信上游**封顶（既有的 per-ingest 超时只封时间、不封体量）：
+    - `MAX_TOOLS_PER_SERVER = 1024`：单 server 单次摄取**被接受**的工具数上限；超出部分（按切片顺序）整体丢弃 + `tracing::warn!`。
+    - `MAX_TOOL_TEXT_BYTES = 64 * 1024`（= 64 KiB）：单个工具 `description` 字节数 + 序列化 `input_schema` 字节数之和的上限；
+      超限的工具被跳过 + `tracing::warn!`。
+    - 因上限丢弃/跳过的工具**不计入返回的重复计数**（返回值只统计 intra-server 同名碰撞）。
 
 > 详见 L3：[upstream](../L3-details/upstream.md)
