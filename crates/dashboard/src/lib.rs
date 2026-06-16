@@ -104,4 +104,22 @@ mod asset_tests {
         assert!(APP_JS.contains("/api/overview"), "app.js polls the API");
         assert!(STYLE_CSS.contains("{"), "style.css is non-empty CSS");
     }
+
+    #[test]
+    fn untrusted_trace_fields_are_html_escaped() {
+        // The discovery trace renders client/upstream-controlled strings (query text and tool
+        // names) into innerHTML, so they must go through escapeHtml to avoid stored XSS.
+        assert!(
+            APP_JS.contains("escapeHtml(r.query)"),
+            "trace query is escaped"
+        );
+        assert!(
+            APP_JS.contains("escapeHtml(h.name)"),
+            "trace tool name is escaped"
+        );
+        assert!(
+            APP_JS.contains("escapeHtml(u.reason)"),
+            "upstream skip reason is escaped"
+        );
+    }
 }
