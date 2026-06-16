@@ -86,8 +86,15 @@ pub struct MetricsSnapshot {
     pub per_upstream: Vec<UpstreamMetrics>,
 }
 
-/// In-memory aggregator of `CallRecord`s. Implements `observe::CallSink`; bounded (fixed bucket
-/// and key sets). The lock is a plain `Mutex` held only for the short aggregation/snapshot work.
+/// Cap on distinct per-upstream keys tracked. The `upstream` of a `CallRecord` is derived from a
+/// client-supplied `call_tool` name (the `{prefix}__name` before resolution), so a client flooding
+/// bogus names would otherwise grow `per_upstream` without bound. Real deployments have far fewer
+/// upstreams than this, so the cap only ever bites under abuse.
+const MAX_UPSTREAM_KEYS: usize = 1024;
+
+/// In-memory aggregator of `CallRecord`s. Implements `observe::CallSink`; bounded — `per_meta` is
+/// keyed on the finite meta-tool set and `per_upstream` is capped at `MAX_UPSTREAM_KEYS`. The lock
+/// is a plain `Mutex` held only for the short aggregation/snapshot work.
 pub struct MetricsSink {
     state: Mutex<MetricsState>,
 }
@@ -145,10 +152,15 @@ impl CallSink for MetricsSink {
             .or_default()
             .observe(rec.latency_ms, is_error);
         if let Some(up) = &rec.upstream {
-            let agg = st.per_upstream.entry(up.clone()).or_default();
-            agg.calls += 1;
-            if is_error {
-                agg.errors += 1;
+            // Update an existing key, or insert a new one only while under the cap, so a flood of
+            // distinct (possibly client-controlled) upstream names can't grow the map without bound.
+            let map = &mut st.per_upstream;
+            if map.contains_key(up.as_str()) || map.len() < MAX_UPSTREAM_KEYS {
+                let agg = map.entry(up.clone()).or_default();
+                agg.calls += 1;
+                if is_error {
+                    agg.errors += 1;
+                }
             }
         }
     }
@@ -253,6 +265,30 @@ mod tests {
             .find(|u| u.upstream == "github")
             .unwrap();
         assert_eq!(gh.errors, 1);
+    }
+
+    #[test]
+    fn per_upstream_keys_are_capped() {
+        let sink = MetricsSink::new();
+        for i in 0..(MAX_UPSTREAM_KEYS + 50) {
+            sink.record(&rec(
+                MetaTool::CallTool,
+                CallOutcome::Ok,
+                1,
+                Some(&format!("u{i}")),
+            ));
+        }
+        let snap = sink.snapshot();
+        assert_eq!(
+            snap.per_upstream.len(),
+            MAX_UPSTREAM_KEYS,
+            "distinct upstream keys are bounded"
+        );
+        assert_eq!(
+            snap.total_calls,
+            (MAX_UPSTREAM_KEYS + 50) as u64,
+            "all calls are still counted even past the upstream cap"
+        );
     }
 
     #[test]
