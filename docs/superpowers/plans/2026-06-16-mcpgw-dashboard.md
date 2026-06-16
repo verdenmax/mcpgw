@@ -1251,6 +1251,21 @@ fn discovery_record_for_search(
                 }
 ```
 
+**同时修复 `upstream` 归因的安全隐患（audit pass-2 后续 / dashboard 评审发现）**：当前 `upstream` 由
+`target_tool.split_once("__")` 派生，而 `target_tool` 在 `ToolNotFound` 路径上是**客户端原样提供的名字**，故
+一个恶意客户端用 `aaaa0001__x`、`aaaa0002__x`… 反复调 `call_tool` 会让 `upstream` 取到无界的不同前缀（被
+内存聚合器 `MetricsSink` 分桶即内存 DoS）。把 record 构造处（`let upstream = target_tool...` 那几行）改为
+**只对已解析的工具归因 upstream**——经快照 catalog 查名取真实 `server`，查不到则 `None`（顺带避免「裸拆 `__`」）：
+
+```rust
+        let upstream = target_tool.as_deref().and_then(|t| {
+            self.state.snapshot().catalog.get(t).map(|def| def.server.clone())
+        });
+```
+
+这样 `upstream` 恒为配置内的真实 server（受 ingest 上限约束），消除客户端可控的无界值。若现有 downstream 测试
+断言了 `ToolNotFound` 情况下的 `upstream` 值，相应更新为 `None`。
+
 在 `crates/downstream/src/http.rs` 的 `build_router` 加参并传入闭包：
 
 ```rust
