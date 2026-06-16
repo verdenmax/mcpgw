@@ -1799,14 +1799,14 @@ async function refresh() {
 
     const ups = await j("/api/upstreams");
     $("#upstreams tbody").innerHTML = ups.map((u) =>
-      `<tr><td>${u.name}</td><td>${u.transport}</td>` +
-      `<td><span class="badge ${u.status}">${u.status}</span>${u.reason ? " " + u.reason : ""}</td>` +
+      `<tr><td>${escapeHtml(u.name)}</td><td>${escapeHtml(u.transport)}</td>` +
+      `<td><span class="badge ${u.status}">${u.status}</span>${u.reason ? " " + escapeHtml(u.reason) : ""}</td>` +
       `<td>${u.tools}</td><td>${u.calls}</td><td>${u.errors}</td></tr>`).join("");
 
     const m = await j("/api/metrics");
     const maxCalls = Math.max(1, ...m.per_meta_tool.map((x) => x.calls));
     $("#metrics").innerHTML = m.per_meta_tool.map((x) =>
-      `<div><b>${x.meta_tool}</b> calls ${x.calls} · err ${x.errors} · p50 ${x.p50_ms}ms · p95 ${x.p95_ms}ms` +
+      `<div><b>${escapeHtml(x.meta_tool)}</b> calls ${x.calls} · err ${x.errors} · p50 ${x.p50_ms}ms · p95 ${x.p95_ms}ms` +
       `<div class="bar"><span style="width:${(100 * x.calls / maxCalls).toFixed(0)}%"></span></div></div>`).join("");
 
     const src = $("#trace-source").value;
@@ -1815,7 +1815,7 @@ async function refresh() {
       ? `<p class="muted">history unavailable (enable [dashboard].trace_path)</p>`
       : t.traces.map((r) =>
           `<div class="trace"><div class="q">${escapeHtml(r.query)}</div>` +
-          r.results.map((h) => `<span class="hit">${h.name} (${h.score.toFixed(2)})</span>`).join(" · ") +
+          r.results.map((h) => `<span class="hit">${escapeHtml(h.name)} (${h.score.toFixed(2)})</span>`).join(" · ") +
           `</div>`).join("");
   } catch (e) {
     console.error(e);
@@ -1823,7 +1823,7 @@ async function refresh() {
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) =>
+  return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
