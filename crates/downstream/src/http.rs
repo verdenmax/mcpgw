@@ -32,13 +32,12 @@ fn key_authorized(keys: &[String], presented: &[u8]) -> bool {
 }
 
 fn presented_bearer(req: &Request) -> Option<String> {
-    req.headers()
-        .get(AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
+    let value = req.headers().get(AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() {
+        return None;
+    }
+    Some(token.to_string())
 }
 
 async fn require_api_key(State(keys): State<ApiKeys>, req: Request, next: Next) -> Response {
@@ -102,8 +101,43 @@ mod tests {
 
     #[test]
     fn presented_bearer_treats_empty_token_as_absent() {
-        // Built directly, the header keeps its trailing space (no wire OWS trimming), so the
-        // token after `strip_prefix("Bearer ")` is empty -> must be treated as not presented.
+        // "Bearer " splits into scheme="Bearer", token="" -> empty token is treated as not presented.
         assert_eq!(presented_bearer(&req_with_auth("Bearer ")), None);
+    }
+
+    #[test]
+    fn presented_bearer_scheme_is_case_insensitive() {
+        for header in [
+            "Bearer sk-123",
+            "bearer sk-123",
+            "BEARER sk-123",
+            "BeArEr sk-123",
+        ] {
+            assert_eq!(
+                presented_bearer(&req_with_auth(header)),
+                Some("sk-123".to_string()),
+                "scheme name must be case-insensitive: {header:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn presented_bearer_rejects_other_schemes() {
+        for header in ["Basic sk-123", "Token sk-123", "sk-123", "Bearersk-123"] {
+            assert_eq!(
+                presented_bearer(&req_with_auth(header)),
+                None,
+                "non-bearer scheme must be rejected: {header:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn presented_bearer_token_value_stays_case_sensitive() {
+        // Only the scheme is case-insensitive; the token itself is returned verbatim.
+        assert_eq!(
+            presented_bearer(&req_with_auth("bearer SK-Abc")),
+            Some("SK-Abc".to_string())
+        );
     }
 }
