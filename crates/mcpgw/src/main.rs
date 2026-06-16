@@ -467,14 +467,25 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             http_self_terminated = true;
             res
         }
-        res = async {
-            match dash_task.as_mut() {
-                Some(t) => t.await.map_err(|e| e.to_string()).and_then(|r| r),
-                None => std::future::pending().await,
+        _ = async {
+            // The dashboard is a non-critical, read-only diagnostic subsystem. If its serve task
+            // ends (only on a serve/accept error — graceful shutdown is via its own oneshot), log
+            // and keep the gateway running rather than triggering a global shutdown.
+            if let Some(t) = dash_task.as_mut() {
+                match t.await {
+                    Ok(Ok(())) => tracing::info!("dashboard server stopped"),
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "dashboard server error; gateway continues")
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "dashboard task panicked; gateway continues")
+                    }
+                }
+                dash_self_terminated = true;
             }
+            std::future::pending::<()>().await
         }, if dashboard_enabled => {
-            dash_self_terminated = true;
-            res
+            Ok(())
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("received ctrl-c; shutting down");

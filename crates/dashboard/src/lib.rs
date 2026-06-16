@@ -50,7 +50,16 @@ async fn h_traces(
 ) -> Json<api::TracesResponse> {
     let limit = qparam_usize(&q, "limit", 100).min(MAX_HISTORY_LIMIT);
     let source = q.get("source").cloned().unwrap_or_else(|| "live".into());
-    Json(api::traces(&s, limit, &source))
+    // The live path reads the in-memory ring (fast); the history path reads a JSONL file, so run it
+    // on the blocking pool to avoid stalling a runtime worker that also serves live MCP traffic.
+    if source == "history" {
+        let resp = tokio::task::spawn_blocking(move || api::traces(&s, limit, &source))
+            .await
+            .expect("traces history replay task");
+        Json(resp)
+    } else {
+        Json(api::traces(&s, limit, &source))
+    }
 }
 async fn h_metrics_history(
     State(s): State<Arc<AppState>>,
@@ -61,7 +70,11 @@ async fn h_metrics_history(
         .get("bucket_ms")
         .and_then(|v| v.parse().ok())
         .unwrap_or(60_000u64);
-    Json(api::metrics_history(&s, limit, bucket_ms))
+    // Reads the audit JSONL from disk; offload to the blocking pool (see h_traces).
+    let resp = tokio::task::spawn_blocking(move || api::metrics_history(&s, limit, bucket_ms))
+        .await
+        .expect("audit metrics history replay task");
+    Json(resp)
 }
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
