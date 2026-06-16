@@ -1526,7 +1526,7 @@ pub fn overview(state: &AppState) -> Overview {
         strategy: state.strategy.clone(),
         upstreams_total: state.upstreams.len(),
         upstreams_connected: ups.iter().filter(|u| u.status == "connected").count(),
-        tools_total: snap.catalog.len(),
+        tools_total: snap.catalog().len(),
         total_calls: m.total_calls,
         last_rebuild_skipped: state.gateway.last_summary().map(|s| s.skipped.len()).unwrap_or(0),
     }
@@ -1552,7 +1552,7 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
                     }
                 }
             };
-            let tools = snap.catalog.iter().filter(|t| t.server == info.name).count();
+            let tools = snap.catalog().iter().filter(|t| t.server == info.name).count();
             let um = m.per_upstream.iter().find(|u| u.upstream == info.name);
             UpstreamView {
                 name: info.name.clone(),
