@@ -14,6 +14,8 @@ mod api;
 pub use api::{AppState, UpstreamInfo};
 
 use axum::extract::{Query, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Json;
 use std::collections::HashMap;
@@ -62,6 +64,20 @@ async fn h_metrics_history(
     Json(api::metrics_history(&s, limit, bucket_ms))
 }
 
+const INDEX_HTML: &str = include_str!("../assets/index.html");
+const APP_JS: &str = include_str!("../assets/app.js");
+const STYLE_CSS: &str = include_str!("../assets/style.css");
+
+async fn h_index() -> impl IntoResponse {
+    Html(INDEX_HTML)
+}
+async fn h_app_js() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "application/javascript")], APP_JS)
+}
+async fn h_style_css() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "text/css")], STYLE_CSS)
+}
+
 /// Build the dashboard's API router (static assets added in Task 10).
 pub fn build_dashboard_router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
@@ -71,5 +87,21 @@ pub fn build_dashboard_router(state: Arc<AppState>) -> axum::Router {
         .route("/api/metrics", get(h_metrics))
         .route("/api/traces", get(h_traces))
         .route("/api/metrics/history", get(h_metrics_history))
+        .route("/", get(h_index))
+        .route("/app.js", get(h_app_js))
+        .route("/style.css", get(h_style_css))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::{APP_JS, INDEX_HTML, STYLE_CSS};
+
+    #[test]
+    fn embedded_assets_are_present_and_wired() {
+        assert!(INDEX_HTML.contains("<title>"), "index has a title");
+        assert!(INDEX_HTML.contains("app.js"), "index loads app.js");
+        assert!(APP_JS.contains("/api/overview"), "app.js polls the API");
+        assert!(STYLE_CSS.contains("{"), "style.css is non-empty CSS");
+    }
 }

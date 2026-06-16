@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mcpgw dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header><h1>mcpgw dashboard</h1><span id="uptime" class="muted"></span></header>
+  <section id="overview" class="cards"></section>
+  <section><h2>Upstreams</h2><table id="upstreams"><thead><tr>
+    <th>name</th><th>transport</th><th>status</th><th>tools</th><th>calls</th><th>errors</th></tr></thead>
+    <tbody></tbody></table></section>
+  <section><h2>Meta-tool metrics</h2><div id="metrics"></div></section>
+  <section><h2>Query traces</h2>
+    <label>source:
+      <select id="trace-source"><option value="live">live</option><option value="history">history</option></select>
+    </label>
+    <div id="traces"></div></section>
+  <script src="/app.js"></script>
+</body>
+</html>
