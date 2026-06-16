@@ -74,11 +74,13 @@ listener 在进入 `select!` **之前**预绑定（fail-fast 暴露端口占用/
   `[[server.http.api_key]]` 的密钥，任一缺失即 `Err`。**解析出的密钥若为空/纯空白（`trim().is_empty()`）也 fail-fast 拒绝**（审计 F1：避免一个空 env 静默变成「无鉴权」）。错误消息仅含 `name`/`env` **名**，**绝不含密钥值**。
 - **`validate_upstream_http_env(&cfg)`**：遍历 HTTP 上游，校验 `bearer_env` 与 `headers` 各引用的 env 均已设置；
   缺失即 `Err`（消息仅含上游名/header 名/env 名）。目的：缺凭证时**启动即失败**，而非运行期静默退化成 401 循环。
-- **公网无鉴权暴露告警（audit N2）**：HTTP server 监听**非 loopback** 地址（如 `0.0.0.0`/`[::]`/公网 IP）**且无任何
-  `[[server.http.api_key]]`** 时，启动期经辅助函数 `unauthenticated_public_bind` 判定并打一条**醒目 `tracing::warn!`**
-  （提示「未鉴权且绑定非 loopback；请配置 `[[server.http.api_key]]` 或改绑 localhost」）。**非破坏性**：仅告警、不拒绝启动；
-  `localhost` 主机名与各 loopback 地址被视为安全、不告警。
-- 两者均在连接任何上游、绑定任何端口**之前**执行，确保配置/凭证问题以清晰消息尽早暴露。
+- 上述**两个校验函数**均在连接任何上游、绑定任何端口**之前**执行，确保配置/凭证问题以清晰消息尽早暴露。
+
+**公网无鉴权暴露告警（audit N2）**：与上面两个 *fail-fast* 校验不同，这是一条**非破坏性**的启动告警，且在
+`TcpListener::bind` **成功之后**才触发——HTTP server 监听**非 loopback** 地址（如 `0.0.0.0`/`[::]`/公网 IP）**且无任何
+`[[server.http.api_key]]`** 时，经辅助函数 `unauthenticated_public_bind` 判定并打一条**醒目 `tracing::warn!`**
+（提示「未鉴权且绑定非 loopback；请配置 `[[server.http.api_key]]` 或改绑 localhost」）。仅告警、不拒绝启动；
+`localhost` 主机名与各 loopback 地址被视为安全、不告警。
 
 **日志走 stderr**：`tracing_subscriber::fmt().with_writer(std::io::stderr)`（`try_init`，已初始化则忽略），
 默认 `EnvFilter` `info`（可经 `RUST_LOG` 覆盖）。stdout 必须留给 MCP 协议帧，故日志严格走 stderr。
