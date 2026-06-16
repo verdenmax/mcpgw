@@ -102,16 +102,14 @@ impl RetrievalStrategy for VectorStrategy {
         }
         let qv = match self.embedder.embed(&[query.to_string()]).await {
             Ok(mut v) if !v.is_empty() => normalize(v.remove(0)),
-            // Empty `Ok` (contract violation) is treated like an error: degrade to BM25 rather
-            // than panicking on `v.remove(0)`.
-            other => {
-                if let Err(e) = other {
-                    tracing::warn!(error = %e, "vector query embedding failed; falling back to BM25");
-                } else {
-                    tracing::warn!(
-                        "vector query embedding returned no vector; falling back to BM25"
-                    );
-                }
+            // Empty `Ok` (a contract violation) degrades to BM25 just like an error, rather than
+            // panicking on `v.remove(0)`.
+            Ok(_) => {
+                tracing::warn!("vector query embedding returned no vector; falling back to BM25");
+                return self.bm25.search(query, top_k).await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "vector query embedding failed; falling back to BM25");
                 return self.bm25.search(query, top_k).await;
             }
         };
