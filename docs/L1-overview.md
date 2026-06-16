@@ -319,13 +319,13 @@ get-details 子命令：catalog.get(qualified_name) ──► 该工具完整 JS
 
 ```bash
 cargo build                 # 构建工作区（产出 target/debug/mcpgw）
-cargo test --all-features   # 全部测试（189 passed / 3 ignored：catalog 4 / config 35 /
+cargo test --all-features   # 全部测试（198 passed / 3 ignored：catalog 4 / config 37 /
                             #   retrieval 22 + caching 4 + embedder 3 + golden 1 + hybrid 6 + subagent 7 + vector 6 /
                             #   embedder(openai) 5 + chat(openai) 4 / mcpgw main 13 + cli 5 + audit 1 /
-                            #   upstream 11 + 集成 11 + http_connect 1 /
+                            #   upstream 15 + 集成 11 + http_connect 1 /
                             #   metatools 3 + call_tool 4 / gateway 7 + rebuild 8 /
                             #   observe 8 + capture 1 /
-                            #   downstream 4 + e2e(stdio) 10 + e2e(http) 5 ·
+                            #   downstream 7 + e2e(stdio) 10 + e2e(http) 5 ·
                             #   3 ignored = 门控真实冒烟：stdio + http + vector）
                             # 注：upstream 集成测试、mock-stdio 二进制与 HTTP e2e 需 testkit feature，故用 --all-features
 cargo clippy --all-targets --all-features -- -D warnings   # 静态检查，零告警

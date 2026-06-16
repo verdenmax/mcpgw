@@ -4,9 +4,11 @@
 
 `build_router` 在 `api_keys` 非空时叠加一层 axum `from_fn_with_state` 中间件 `require_api_key`：
 
-- **Bearer 提取**：`presented_bearer` 从 `Authorization` 头读字符串，`strip_prefix("Bearer ")` 取出 key；
-  缺头/非 ASCII/无 `Bearer ` 前缀都视为「未呈现」。**`Bearer ` 后为空串的 token 也经 `.filter(|t| !t.is_empty())`
-  视为「未呈现」**（audit F1，故 `Authorization: Bearer ` 这类空令牌一律 → 401，而非以空串去做密钥比较）。
+- **Bearer 提取**：`presented_bearer` 从 `Authorization` 头读字符串，用 `split_once(' ')` 拆成 `scheme` 与 `token`；
+  **scheme 经 `scheme.eq_ignore_ascii_case("bearer")` 大小写不敏感匹配**（故 `Bearer`/`bearer`/`BEARER` 均接受），
+  **token 值仍大小写敏感**地原样取出。缺头/非 ASCII/无空格分隔/scheme 非 `bearer` 都视为「未呈现」。**`Bearer ` 后为空串的
+  token 也经 `token.is_empty()` 判定视为「未呈现」**（audit F1，故 `Authorization: Bearer ` 这类空令牌一律 → 401，
+  而非以空串去做密钥比较）。
 - **常量时间比较**：`key_authorized` 用 `subtle::ConstantTimeEq::ct_eq` 对每个配置 key 与呈现值逐字节比较，
   把结果按位 `|=` 累积成 `matched`（**不**在命中后提前 `return`，避免泄露「命中了第几个 key」的时序）。
   `ct_eq` 对长度不同的 `&[u8]` 会短路返回 `Choice(0)`——只泄露长度，可接受；长度相同时做常量时间比较。

@@ -75,6 +75,18 @@ connect/initialize 握手加界——子进程**起得来但从不应答**（hun
 - 返回值是被跳过的 intra-server 重复数（仅统计本次 `tools` 内的冲突，不与 catalog 既有状态比较；
   重复摄取同 server 会经 `upsert` 覆盖既有条目）。
 
+### 摄取体量上限（半可信上游封顶）
+
+`ingest_tools` 另设两个公开 `pub const` 上限，把目录/快照内存与嵌入开销对**半可信上游**封顶——`gateway` 的 per-ingest
+超时（见上文与 [gateway L3](./gateway.md)）只封**时间**、不封**体量**，故还需对数量与单条文本大小另行设界：
+
+- `MAX_TOOLS_PER_SERVER = 1024`：单 server 单次摄取**被接受**的工具数上限。计数达到上限后，切片中剩余工具整体丢弃 +
+  `tracing::warn!`（含 `server`、`dropped`、`max`）。
+- `MAX_TOOL_TEXT_BYTES = 64 * 1024`（= 64 KiB）：单个工具 `name` + `description` + 序列化 `input_schema` 字节数之和的上限；
+  超限的工具被跳过 + `tracing::warn!`（含 `server`、`tool`、`bytes`、`max`）。**`name` 计入**：它在快照中被持久化两次
+  （`ToolDef.name` 与 `{server}__{name}` 目录键），不计入则内存上限不完整。
+- 因上限丢弃/跳过的工具**不计入返回的重复计数**——返回值始终只反映 intra-server 同名碰撞。
+
 ## 注册表并发模型
 
 `UpstreamRegistry` = `Arc<RwLock<HashMap<String, Arc<UpstreamHandle>>>>`（`Clone + Default`）：

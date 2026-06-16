@@ -25,7 +25,10 @@ pub struct Config {
 > `top_k > 0`、`strategy ∈ {vector,hybrid}` 时必须有 `[retrieval.vector]` 段且其 `base_url`/`model`/`api_key_env`
 > 非空白、`strategy == "subagent"` 时必须有 `[retrieval.subagent]` 段且其 `base_url`/`model`/`api_key_env` 非空白且
 > `candidates != Some(0)`，以及每个 upstream 的 `name` 非空白、不含 `__`、**不以 `_` 开头或结尾**（边界下划线会重新拼出 `__` 分隔符）、不重复，
-> 且 `[server.http].path`（若有）必须以 `/` 开头且长于 `/`（拒绝 `""`/`"/"`/无前导斜杠，启动期在 axum 之前校验）——否则 `Invalid`。
+> 且 `[server.http].path`（若有）必须以 `/` 开头且长于 `/`（拒绝 `""`/`"/"`/无前导斜杠），
+> 且**不得含通配/参数段**（即不含 `{`、`}`、`*`，如 `/{id}`、`/{*rest}`、`/a*b`）——否则 `Invalid`。
+> 后者同样在启动期、axum 之前校验：含这类段的路径会让 axum 在 `nest_service` 构建路由时 panic（`/{*rest}`），
+> 或把 MCP 静默挂到动态捕获段（`/{id}`）上。
 
 ## `struct UpstreamConfig`
 ```rust
@@ -87,7 +90,7 @@ pub struct ServerConfig {
 pub struct HttpConfig {
     pub enabled: bool,                  // 默认 false（须显式开启）
     pub bind: String,                   // 默认 "127.0.0.1:8970"
-    pub path: String,                   // 默认 "/mcp"；validate() 要求以 "/" 开头且长于 "/"
+    pub path: String,                   // 默认 "/mcp"；validate() 要求以 "/" 开头、长于 "/"，且不含 {}/* 通配段
     #[serde(rename = "api_key")]
     pub api_keys: Vec<ApiKeyConfig>,    // 对应 [[server.http.api_key]]，默认空
 }

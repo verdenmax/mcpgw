@@ -30,9 +30,11 @@ pub fn build_router(
 **鉴权语义（参数 `api_keys`）**：
 
 - **`api_keys` 非空** → 在 router 上 `layer(from_fn_with_state(ApiKeys(...), require_api_key))` 挂一层
-  Bearer 鉴权中间件。请求须带 `Authorization: Bearer <key>`，`<key>` 与某个配置的 key 相等（**常量时间比较**）
-  才放行进入 MCP 协议层；缺失或错误的 Bearer → **401 Unauthorized**（不回显期望的 key）。**空令牌**（`Bearer ` 后为空串）
-  经 `presented_bearer` 的 `.filter(|t| !t.is_empty())` 视为「未呈现」，同样 → 401（audit F1）。
+  Bearer 鉴权中间件。请求须带 `Authorization: Bearer <key>`，其中 **scheme 大小写不敏感**（`presented_bearer` 用
+  `split_once(' ')` 拆出 scheme 与 token，再 `scheme.eq_ignore_ascii_case("bearer")`，故 `bearer`/`BEARER` 等写法均接受），
+  而 **token 值仍大小写敏感**；`<key>` 与某个配置的 key 相等（**常量时间比较**）才放行进入 MCP 协议层；缺失或错误的
+  Bearer → **401 Unauthorized**（不回显期望的 key）。**空令牌**（`Bearer ` 后为空串）经 `token.is_empty()` 判定
+  视为「未呈现」，同样 → 401（audit F1）。
 - **`api_keys` 为空** → 不挂层，所有请求直接放行（依赖 localhost 绑定 + rmcp `allowed_hosts`）。
 
 **起服务**：调用方用 `axum::serve(TcpListener::bind(addr).await?, build_router(...)).await` 起监听（`mcpgw serve`
