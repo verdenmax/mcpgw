@@ -101,11 +101,22 @@ pub fn spawn_writer(path: &Path, capacity: usize) -> std::io::Result<(JsonlSink,
 /// full disk that later clears) self-heal.
 fn run_writer(rx: Receiver<String>, file: File) {
     let mut w = BufWriter::new(file);
+    write_loop(&rx, &mut w);
+    // fsync is File-specific: only the production path commits to stable storage.
+    if let Ok(file) = w.into_inner() {
+        let _ = file.sync_all();
+    }
+}
+
+/// The append-and-flush loop, generic over the sink so the write-error self-heal is testable.
+/// Returns when the channel disconnects (all senders dropped). Write/flush errors only
+/// rate-limit-warn and never stop the loop — transient faults self-heal.
+fn write_loop<W: Write>(rx: &Receiver<String>, w: &mut W) {
     let mut write_errors: u64 = 0;
     while let Ok(line) = rx.recv() {
-        write_line(&mut w, &line, &mut write_errors);
+        write_line(w, &line, &mut write_errors);
         while let Ok(more) = rx.try_recv() {
-            write_line(&mut w, &more, &mut write_errors);
+            write_line(w, &more, &mut write_errors);
         }
         if let Err(e) = w.flush() {
             rate_limited_write_error(&mut write_errors, &e);
@@ -114,12 +125,9 @@ fn run_writer(rx: Receiver<String>, file: File) {
     if let Err(e) = w.flush() {
         rate_limited_write_error(&mut write_errors, &e);
     }
-    if let Ok(file) = w.into_inner() {
-        let _ = file.sync_all();
-    }
 }
 
-fn write_line(w: &mut BufWriter<File>, line: &str, errors: &mut u64) {
+fn write_line<W: Write>(w: &mut W, line: &str, errors: &mut u64) {
     if let Err(e) = w
         .write_all(line.as_bytes())
         .and_then(|_| w.write_all(b"\n"))
@@ -198,5 +206,50 @@ mod tests {
     fn spawn_writer_open_failure_returns_err() {
         let bad = std::path::Path::new("/nonexistent-dir-mcpgw-xyz/audit.jsonl");
         assert!(spawn_writer(bad, 8).is_err());
+    }
+
+    /// A `Write` that fails its first `fail_first` writes, then succeeds — to exercise the
+    /// writer's keep-alive-on-error self-heal.
+    struct FlakyWriter {
+        fail_first: usize,
+        writes: usize,
+        data: Vec<u8>,
+    }
+    impl std::io::Write for FlakyWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            if self.writes <= self.fail_first {
+                return Err(std::io::Error::other("transient write error"));
+            }
+            self.data.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_loop_self_heals_after_write_errors() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(8);
+        for i in 0..4 {
+            tx.send(format!("line{i}")).unwrap();
+        }
+        drop(tx); // disconnect so write_loop drains and returns
+
+        // Fail the first 3 writes (line0..line2 lost), then succeed: line3 must still land —
+        // proving the loop kept going rather than exiting on the first error.
+        let mut w = FlakyWriter {
+            fail_first: 3,
+            writes: 0,
+            data: Vec::new(),
+        };
+        super::write_loop(&rx, &mut w);
+
+        let out = String::from_utf8(w.data).unwrap();
+        assert!(
+            out.contains("line3"),
+            "writer must self-heal and keep writing after errors; got {out:?}"
+        );
     }
 }
