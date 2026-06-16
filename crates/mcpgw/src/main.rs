@@ -131,16 +131,21 @@ fn resolve_api_keys(cfg: &config::Config) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
-/// True when an HTTP server with NO api keys is bound to a non-loopback (public) address — an
-/// unauthenticated public exposure worth a loud warning. Unparseable binds (e.g. `host:port`)
-/// can't be proven loopback, so they warn conservatively.
+/// True when an HTTP server with NO api keys is bound to a non-loopback address (reachable off
+/// this host) — an unauthenticated exposure worth a loud warning. A bind that doesn't parse as a
+/// `SocketAddr` (a `host:port` form; DNS is not resolved here) warns conservatively, except the
+/// well-known `localhost` hostname, which is loopback.
 fn unauthenticated_public_bind(bind: &str, has_keys: bool) -> bool {
     if has_keys {
         return false;
     }
     match bind.parse::<std::net::SocketAddr>() {
         Ok(addr) => !addr.ip().is_loopback(),
-        Err(_) => true,
+        Err(_) => {
+            // Can't prove it's loopback without DNS; treat only the literal `localhost` as safe.
+            let host = bind.rsplit_once(':').map_or(bind, |(h, _)| h);
+            host != "localhost"
+        }
     }
 }
 
@@ -558,9 +563,15 @@ mod tests {
         assert!(!f("0.0.0.0:9000", true), "public bind WITH key -> ok");
         assert!(!f("127.0.0.1:8970", false), "loopback v4 -> ok");
         assert!(!f("[::1]:9000", false), "loopback v6 -> ok");
+        assert!(f("[::]:9000", false), "v6 all-interfaces -> warn");
+        assert!(f("203.0.113.5:9000", false), "routable public IP -> warn");
+        assert!(
+            !f("localhost:9000", false),
+            "localhost hostname is loopback -> ok"
+        );
         assert!(
             f("example.com:9000", false),
-            "unparseable host + no key -> conservatively warn"
+            "unparseable non-localhost host + no key -> conservatively warn"
         );
     }
 }
