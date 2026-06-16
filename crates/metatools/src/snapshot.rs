@@ -18,7 +18,8 @@ impl GatewaySnapshot {
     }
 }
 
-/// One `search_tools` hit: the namespaced tool name and its one-line description.
+/// One `search_tools` hit: the namespaced tool name, its one-line description, and the
+/// retrieval relevance `score` (higher is better; hits are returned in descending score order).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ToolSummary {
     pub name: String,
