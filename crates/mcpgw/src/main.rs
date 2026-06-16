@@ -14,6 +14,9 @@ const AUDIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// Upper bound on how long shutdown waits for the HTTP server to drain in-flight requests.
 const HTTP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Upper bound on how long shutdown waits for the dashboard server to drain.
+const DASHBOARD_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// mcpgw retrieval-core CLI: query a tool catalog with the configured strategy.
 #[derive(Parser)]
 #[command(name = "mcpgw", version)]
@@ -146,6 +149,14 @@ fn unauthenticated_public_bind(bind: &str, has_keys: bool) -> bool {
             let host = bind.rsplit_once(':').map_or(bind, |(h, _)| h);
             host != "localhost"
         }
+    }
+}
+
+/// Map an upstream transport variant to its short string label for the dashboard's upstream list.
+fn transport_str(t: &UpstreamTransport) -> String {
+    match t {
+        UpstreamTransport::Stdio { .. } => "stdio".into(),
+        UpstreamTransport::Http { .. } => "http".into(),
     }
 }
 
@@ -292,8 +303,35 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     } else {
         None
     };
+    // Dashboard's metrics sink (only when enabled) joins the CallSink fan-out.
+    let dashboard_metrics = if cfg.dashboard.enabled {
+        let m = Arc::new(dashboard::MetricsSink::new());
+        sink_vec.push(m.clone() as Arc<dyn observe::CallSink>);
+        Some(m)
+    } else {
+        None
+    };
     let sinks: Arc<[Arc<dyn observe::CallSink>]> = sink_vec.into();
-    let no_discovery: Arc<[Arc<dyn observe::DiscoverySink>]> = Arc::from(Vec::new());
+
+    // Opt-in discovery capture (query -> tools). Ring buffer for live; optional JSONL for history.
+    let (discovery_ring, discovery_writer) = if cfg.dashboard.enabled && cfg.dashboard.trace_queries
+    {
+        let (ring, writer) = dashboard::DiscoveryRingSink::spawn(
+            cfg.dashboard.trace_buffer,
+            cfg.dashboard
+                .trace_path
+                .as_deref()
+                .map(std::path::Path::new),
+        )
+        .map_err(|e| format!("open discovery trace file: {e}"))?;
+        (Some(Arc::new(ring)), writer)
+    } else {
+        (None, None)
+    };
+    let discovery_sinks: Arc<[Arc<dyn observe::DiscoverySink>]> = match &discovery_ring {
+        Some(r) => Arc::from(vec![r.clone() as Arc<dyn observe::DiscoverySink>]),
+        None => Arc::from(Vec::new()),
+    };
 
     // Pre-bind the HTTP listener (fail-fast on bind errors) before entering select!.
     let http_bound = if http_enabled {
@@ -315,7 +353,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             &h.path,
             api_keys,
             sinks.clone(),
-            no_discovery.clone(),
+            discovery_sinks.clone(),
         );
         Some((listener, router))
     } else {
@@ -341,6 +379,55 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         })
     });
 
+    // Run the read-only dashboard as a separate task on its own port (only when enabled), with
+    // graceful shutdown driven by its own oneshot so it releases its AppState (and thereby its
+    // DiscoveryRingSink clone) promptly during the shutdown sequence below.
+    let (dash_shutdown_tx, dash_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let dashboard_enabled = cfg.dashboard.enabled;
+    let mut dash_self_terminated = false;
+    let mut dash_task = if dashboard_enabled {
+        let listener = tokio::net::TcpListener::bind(&cfg.dashboard.bind)
+            .await
+            .map_err(|e| format!("bind dashboard {:?}: {e}", cfg.dashboard.bind))?;
+        tracing::info!(bind = %cfg.dashboard.bind, "dashboard listening");
+        if unauthenticated_public_bind(&cfg.dashboard.bind, false) {
+            tracing::warn!(
+                bind = %cfg.dashboard.bind,
+                "dashboard is UNAUTHENTICATED and bound to a non-loopback address; bind to localhost"
+            );
+        }
+        let app_state = Arc::new(dashboard::AppState {
+            gateway: state.clone(),
+            metrics: dashboard_metrics
+                .clone()
+                .expect("metrics present when dashboard enabled"),
+            discovery: discovery_ring.clone(),
+            upstreams: cfg
+                .upstreams
+                .iter()
+                .map(|u| dashboard::UpstreamInfo {
+                    name: u.name.clone(),
+                    transport: transport_str(&u.transport),
+                })
+                .collect(),
+            strategy: cfg.retrieval.strategy.clone(),
+            audit_path: cfg.audit.enabled.then(|| PathBuf::from(&cfg.audit.path)),
+            discovery_path: cfg.dashboard.trace_path.as_ref().map(PathBuf::from),
+            started_at: std::time::Instant::now(),
+        });
+        let router = dashboard::build_dashboard_router(app_state);
+        Some(tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = dash_shutdown_rx.await;
+                })
+                .await
+                .map_err(|e| e.to_string())
+        }))
+    } else {
+        None
+    };
+
     // Wait for the first shutdown trigger: stdio client disconnect, ctrl_c, or the HTTP serve task
     // ending on its own (a serve error; axum doesn't return without a shutdown signal or error).
     let mut http_self_terminated = false;
@@ -350,7 +437,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
                 state_for_stdio,
                 top_k,
                 sinks.clone(),
-                no_discovery.clone(),
+                discovery_sinks.clone(),
             );
             let service = server.serve(stdio()).await.map_err(|e| e.to_string())?;
             service.waiting().await.map_err(|e| e.to_string())
@@ -369,6 +456,15 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             }
         }, if http_enabled => {
             http_self_terminated = true;
+            res
+        }
+        res = async {
+            match dash_task.as_mut() {
+                Some(t) => t.await.map_err(|e| e.to_string()).and_then(|r| r),
+                None => std::future::pending().await,
+            }
+        }, if dashboard_enabled => {
+            dash_self_terminated = true;
             res
         }
         _ = tokio::signal::ctrl_c() => {
@@ -392,6 +488,20 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         }
     }
 
+    // Signal the dashboard to drain and await it (bounded) before dropping the sinks, so its
+    // AppState clone of the DiscoveryRingSink is released ahead of the discovery writer drain.
+    let _ = dash_shutdown_tx.send(());
+    if !dash_self_terminated {
+        if let Some(task) = dash_task {
+            if tokio::time::timeout(DASHBOARD_SHUTDOWN_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                tracing::warn!("dashboard graceful shutdown timed out");
+            }
+        }
+    }
+
     // Drain the audit writer (if any). With the HTTP sessions now closed and the stdio server
     // dropped, `drop(sinks)` releases the last JsonlSink clone, disconnecting the channel so the
     // writer FIFO-drains, flushes, fsyncs, and exits — promptly, not at the timeout.
@@ -405,6 +515,22 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         .is_err()
         {
             tracing::warn!("audit writer drain timed out; some records may be unflushed");
+        }
+    }
+
+    // Release every DiscoveryRingSink clone (downstream sinks dropped with `sinks`, the dashboard
+    // task already joined) so the writer's channel disconnects, then drain it.
+    drop(discovery_sinks);
+    drop(discovery_ring);
+    if let Some(writer) = discovery_writer {
+        if tokio::time::timeout(
+            AUDIT_DRAIN_TIMEOUT,
+            tokio::task::spawn_blocking(move || writer.join()),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!("discovery writer drain timed out; some traces may be unflushed");
         }
     }
 

@@ -13,6 +13,7 @@ gateway = { path = "../gateway" }
 upstream = { path = "../upstream" }
 downstream = { path = "../downstream" }
 observe = { path = "../observe" }
+dashboard = { path = "../dashboard" }
 serde_json = { workspace = true }
 clap = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-io"] }
@@ -26,3 +27,4 @@ upstream = { path = "../upstream", features = ["testkit"] }
 metatools = { path = "../metatools" }
 rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tokio = { workspace = true, features = ["full"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
