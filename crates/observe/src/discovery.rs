@@ -2,17 +2,17 @@
 //! Kept SEPARATE from the metadata-only `CallRecord` so query text never leaks into the
 //! privacy-clean call sinks (tracing/audit).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One returned tool in a discovery trace: its namespaced name and relevance score.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryHit {
     pub name: String,
     pub score: f32,
 }
 
 /// One `search_tools` call: the raw query and the tools it surfaced (with scores).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryRecord {
     pub ts_unix_ms: u64,
     pub query: String,

@@ -6,3 +6,6 @@ pub use metrics::{MetaToolMetrics, MetricsSink, MetricsSnapshot, UpstreamMetrics
 
 mod trace;
 pub use trace::{DiscoveryRingSink, DiscoveryWriter};
+
+mod history;
+pub use history::{replay_audit_metrics, replay_discovery, MetricBucket};
