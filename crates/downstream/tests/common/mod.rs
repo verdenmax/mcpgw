@@ -60,6 +60,29 @@ pub async fn attach_mock(state: &GatewayState, name: &str) {
     state.rebuild_snapshot().await.unwrap();
 }
 
+/// Like `attach_mock` but with a short per-call timeout, so calling the `slow` tool reliably
+/// trips `MetaError::Timeout`.
+pub async fn attach_mock_with_timeout(
+    state: &GatewayState,
+    name: &str,
+    timeout: std::time::Duration,
+) {
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        let svc = MockUpstream::new()
+            .serve(server_io)
+            .await
+            .expect("mock upstream serves");
+        let _ = svc.waiting().await;
+    });
+    let handle = UpstreamHandle::connect(name, client_io)
+        .await
+        .unwrap()
+        .with_call_timeout(timeout);
+    state.registry().insert(std::sync::Arc::new(handle));
+    state.rebuild_snapshot().await.unwrap();
+}
+
 /// Attach a RevealingMockUpstream WITH a list_changed trigger, spawn the gateway's rebuild
 /// worker, and build the initial snapshot. The worker lives for the duration of the test.
 pub async fn attach_revealing_mock_with_worker(state: &Arc<GatewayState>, name: &str) {

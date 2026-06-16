@@ -75,16 +75,22 @@ pub fn spawn_writer(path: &Path, capacity: usize) -> std::io::Result<(JsonlSink,
 - 内部经 `pub(crate) fn channel(capacity)` 构造 sink + 接收端；该 `channel` 仅对**测试**暴露，使其能持有未读
   接收端、确定性地撑满 channel 来验证「满则丢弃」路径。
 
-## writer loop 语义（私有 `run_writer`）
+## writer loop 语义（私有 `run_writer` / 泛型 `write_loop<W: Write>`）
 
 ```rust
-fn run_writer(rx: Receiver<String>, file: File)   // BufWriter<File> 包裹
+fn run_writer(rx: Receiver<String>, file: File)        // BufWriter<File> 包裹 + File 专属 fsync
+fn write_loop<W: Write>(rx: &Receiver<String>, w: &mut W)   // 通用 append/flush 循环（可测试）
+fn write_line<W: Write>(w: &mut W, line: &str, errors: &mut u64)
 ```
-- **批量 drain + 每批 flush**：阻塞 `rx.recv()` 取首条 → 写一行 → `while rx.try_recv()` 把当下排队的全部续写
+- **职责拆分（audit N5a）**：`run_writer` 把 `file` 包成 `BufWriter::new(file)` 后委托泛型 `write_loop`；循环返回后
+  `w.into_inner()` 取回 `File` 并做**仅 `File` 专属的 `sync_all()`（fsync）**。append/flush 主体被抽到泛型
+  `write_loop<W: Write>`（与逐行的 `write_line<W: Write>`），**只为可测试**——单测可注入任意 `Write`（如会注入写错误的
+  假 sink）验证 write-error/flush-error 自愈，无需真实文件。**行为不变**。
+- **批量 drain + 每批 flush**：`write_loop` 阻塞 `rx.recv()` 取首条 → 写一行 → `while rx.try_recv()` 把当下排队的全部续写
   （摊销系统调用）→ 每批末尾 `w.flush()`（把 `BufWriter` 推到 OS）。
-- **fsync 只在干净 drain 时一次**：`rx.recv()` 返回 `Err`（**所有 sender 已 drop** → channel 断连）即退出循环，
-  做**最终 `flush` + `file.sync_all()`（fsync，落到稳定存储）**后线程结束。正常路径下 fsync 只发生一次（退出前），
-  不在每批里。
+- **fsync 只在干净 drain 时一次**：`rx.recv()` 返回 `Err`（**所有 sender 已 drop** → channel 断连）即 `write_loop` 退出、
+  做**最终 `flush`**；随后 `run_writer` 经 `into_inner()` 对底层 `File` 做一次 `sync_all()`（fsync，落到稳定存储）后线程结束。
+  fsync 是 `File` 专属、只在生产路径发生，故只有 `run_writer`（而非泛型循环）承担它；正常路径下整个生命周期只 fsync 一次（退出前）。
 - **durability 取舍**：运行期每批只 `flush`（推到 OS page cache），稳定落盘的 fsync 只在干净 drain 时做一次。
   即：进程**被强杀（SIGKILL）或断电**而未走干净 drain 时，已 `flush` 但未 fsync 的批次可能丢失（强杀下根本不会
   fsync）。需要更强 durability 的场景应另加周期性 fsync——本任务范围外。
@@ -104,6 +110,9 @@ fn run_writer(rx: Receiver<String>, file: File)   // BufWriter<File> 包裹
     drain/flush/fsync/退出后 `join`，断言文件恰 5 行合法 JSON、键为 `call_tool` 元数据且**无 `arguments`**。
   - `channel_full_increments_dropped_without_blocking` —— 持容量 1 的未读接收端，撑满后再发两条 → `dropped_count() == 2`、不阻塞。
   - `spawn_writer_open_failure_returns_err` —— 不存在的目录路径 → `Err`（fail-fast 入口）。
+  - `write_loop_self_heals_after_write_errors` —— 向注入写错误的假 `Write` 跑 `write_loop`，断言写失败后 writer 不退出、
+    后续行仍被写出（瞬时故障自愈）。
+  - `write_loop_survives_flush_errors` —— 假 `Write` 的 `flush()` 返回错误时同样不停摆、续行照写（flush-error 自愈路径）。
 - `crates/mcpgw/tests/audit.rs`（集成）：`serve_with_audit_enabled_writes_jsonl_for_a_meta_tool_call` —— 起真实
   `mcpgw serve --config`（`[audit].enabled`），经 stdio 客户端调一次 `search_tools`，断开触发优雅 drain 后，断言审计
   文件首行是 `meta_tool == "search_tools"` / `outcome == "ok"` 的元数据行且**不含 payload**。

@@ -131,6 +131,24 @@ fn resolve_api_keys(cfg: &config::Config) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
+/// True when an HTTP server with NO api keys is bound to a non-loopback address (reachable off
+/// this host) — an unauthenticated exposure worth a loud warning. A bind that doesn't parse as a
+/// `SocketAddr` (a `host:port` form; DNS is not resolved here) warns conservatively, except the
+/// well-known `localhost` hostname, which is loopback.
+fn unauthenticated_public_bind(bind: &str, has_keys: bool) -> bool {
+    if has_keys {
+        return false;
+    }
+    match bind.parse::<std::net::SocketAddr>() {
+        Ok(addr) => !addr.ip().is_loopback(),
+        Err(_) => {
+            // Can't prove it's loopback without DNS; treat only the literal `localhost` as safe.
+            let host = bind.rsplit_once(':').map_or(bind, |(h, _)| h);
+            host != "localhost"
+        }
+    }
+}
+
 /// Verify every env referenced by an HTTP upstream (bearer + headers) is present, so a
 /// missing credential fails startup rather than silently degrading to a 401 loop.
 fn validate_upstream_http_env(cfg: &config::Config) -> Result<(), String> {
@@ -283,6 +301,13 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             .await
             .map_err(|e| format!("bind {:?}: {e}", h.bind))?;
         tracing::info!(bind = %h.bind, path = %h.path, auth = !api_keys.is_empty(), "http server listening");
+        if unauthenticated_public_bind(&h.bind, !api_keys.is_empty()) {
+            tracing::warn!(
+                bind = %h.bind,
+                "HTTP server is UNAUTHENTICATED and bound to a non-loopback address; \
+                 configure [[server.http.api_key]] or bind to localhost"
+            );
+        }
         let router = downstream::http::build_router(
             state.clone(),
             cfg.retrieval.top_k,
@@ -528,6 +553,25 @@ mod tests {
         assert!(
             !err.contains("MCPGW_AUDIT_EMPTY_KEY="),
             "error must not leak the value"
+        );
+    }
+
+    #[test]
+    fn unauthenticated_public_bind_flags_only_public_no_key() {
+        use super::unauthenticated_public_bind as f;
+        assert!(f("0.0.0.0:9000", false), "public bind + no key -> warn");
+        assert!(!f("0.0.0.0:9000", true), "public bind WITH key -> ok");
+        assert!(!f("127.0.0.1:8970", false), "loopback v4 -> ok");
+        assert!(!f("[::1]:9000", false), "loopback v6 -> ok");
+        assert!(f("[::]:9000", false), "v6 all-interfaces -> warn");
+        assert!(f("203.0.113.5:9000", false), "routable public IP -> warn");
+        assert!(
+            !f("localhost:9000", false),
+            "localhost hostname is loopback -> ok"
+        );
+        assert!(
+            f("example.com:9000", false),
+            "unparseable non-localhost host + no key -> conservatively warn"
         );
     }
 }
