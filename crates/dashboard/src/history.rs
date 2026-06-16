@@ -64,7 +64,9 @@ pub fn replay_audit_metrics(
             let start = a.ts_unix_ms - (a.ts_unix_ms % bucket_ms);
             let e = buckets.entry(start).or_insert((0, 0));
             e.0 += 1;
-            if a.outcome == "error" {
+            // Any non-"ok" outcome (e.g. "error" or "timeout") counts as an error, matching the
+            // live MetricsSink so the live and historical error counts stay consistent.
+            if a.outcome != "ok" {
                 e.1 += 1;
             }
         }
@@ -136,6 +138,26 @@ mod tests {
                 calls: 1,
                 errors: 0
             }
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn replay_audit_counts_timeout_as_an_error() {
+        let body = "{\"ts_unix_ms\":0,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"timeout\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n";
+        let p = write("audit-timeout.jsonl", body);
+        let (buckets, ok) = replay_audit_metrics(&p, 100, 1000);
+        assert!(ok);
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(
+            buckets[0],
+            MetricBucket {
+                bucket_start_ms: 0,
+                calls: 2,
+                errors: 1
+            },
+            "a timeout outcome counts as an error, matching the live metrics"
         );
         let _ = std::fs::remove_file(&p);
     }
