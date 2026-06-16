@@ -355,8 +355,11 @@ async fn timeout_call_is_recorded_with_timeout_error_kind() {
     client.cancel().await.unwrap();
 
     let recs = cap.records();
-    let rec = recs.last().expect("a record for the call");
+    assert_eq!(recs.len(), 1, "exactly one record for the single call_tool");
+    let rec = &recs[0];
     assert_eq!(rec.meta_tool, MetaTool::CallTool);
+    assert_eq!(rec.target_tool.as_deref(), Some("mock__slow"));
+    assert_eq!(rec.upstream.as_deref(), Some("mock"));
     assert_eq!(rec.outcome, CallOutcome::Timeout);
     assert_eq!(rec.error_kind, Some("timeout"));
 }
@@ -380,8 +383,11 @@ async fn missing_name_is_recorded_with_invalid_params_error_kind() {
     client.cancel().await.unwrap();
 
     let recs = cap.records();
-    let rec = recs.last().expect("a record for the call");
+    assert_eq!(recs.len(), 1, "exactly one record for the single call_tool");
+    let rec = &recs[0];
     assert_eq!(rec.meta_tool, MetaTool::CallTool);
+    // The invalid_params arm fires before any target tool is resolved.
+    assert!(rec.target_tool.is_none());
     assert_eq!(rec.outcome, CallOutcome::Error);
     assert_eq!(rec.error_kind, Some("invalid_params"));
 }
