@@ -136,7 +136,8 @@ impl Default for MetricsSink {
 
 impl CallSink for MetricsSink {
     fn record(&self, rec: &CallRecord) {
-        let is_error = matches!(rec.outcome, CallOutcome::Error);
+        // Any non-Ok outcome (Error or Timeout) counts as an error for the dashboard.
+        let is_error = !matches!(rec.outcome, CallOutcome::Ok);
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         st.total += 1;
         st.per_meta
@@ -227,6 +228,31 @@ mod tests {
         assert!(s.p50_ms <= s.p95_ms, "p50 <= p95");
         assert!(s.p95_ms <= s.max_ms, "p95 <= max");
         assert_eq!(s.max_ms, 400);
+    }
+
+    #[test]
+    fn timeout_outcome_counts_as_an_error() {
+        let sink = MetricsSink::new();
+        sink.record(&rec(
+            MetaTool::CallTool,
+            CallOutcome::Timeout,
+            50,
+            Some("github"),
+        ));
+        let snap = sink.snapshot();
+        let ct = snap
+            .per_meta_tool
+            .iter()
+            .find(|m| m.meta_tool == "call_tool")
+            .unwrap();
+        assert_eq!(ct.calls, 1);
+        assert_eq!(ct.errors, 1, "a Timeout outcome is an error");
+        let gh = snap
+            .per_upstream
+            .iter()
+            .find(|u| u.upstream == "github")
+            .unwrap();
+        assert_eq!(gh.errors, 1);
     }
 
     #[test]
