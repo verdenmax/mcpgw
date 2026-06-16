@@ -33,7 +33,9 @@ pub async fn connect_to_gateway_with_sinks(
     sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]>,
 ) -> RunningService<RoleClient, ()> {
     let (client_io, server_io) = tokio::io::duplex(8192);
-    let server = GatewayServer::new(state, default_top_k, sinks);
+    let discovery: std::sync::Arc<[std::sync::Arc<dyn observe::DiscoverySink>]> =
+        std::sync::Arc::from(Vec::new());
+    let server = GatewayServer::new(state, default_top_k, sinks, discovery);
     tokio::spawn(async move {
         let svc = server
             .serve(server_io)

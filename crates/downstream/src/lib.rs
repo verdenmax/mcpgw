@@ -21,6 +21,7 @@ pub struct GatewayServer {
     state: Arc<GatewayState>,
     default_top_k: usize,
     sinks: Arc<[Arc<dyn observe::CallSink>]>,
+    discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
 }
 
 impl GatewayServer {
@@ -28,11 +29,13 @@ impl GatewayServer {
         state: Arc<GatewayState>,
         default_top_k: usize,
         sinks: Arc<[Arc<dyn observe::CallSink>]>,
+        discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
     ) -> Self {
         Self {
             state,
             default_top_k,
             sinks,
+            discovery,
         }
     }
 }
@@ -46,6 +49,29 @@ fn classify(e: &metatools::MetaError) -> (observe::CallOutcome, Option<&'static 
         E::Call(_) => (O::Error, Some("upstream_call")),
         E::ToolNotFound(_) => (O::Error, Some("tool_not_found")),
         E::UpstreamUnavailable(_) => (O::Error, Some("upstream_unavailable")),
+    }
+}
+
+/// Build a discovery trace from a completed `search_tools` call (pure; used when discovery sinks
+/// are attached).
+fn discovery_record_for_search(
+    query: &str,
+    top_k: usize,
+    hits: &[metatools::ToolSummary],
+    latency_ms: u64,
+) -> observe::DiscoveryRecord {
+    observe::DiscoveryRecord {
+        ts_unix_ms: observe::CallRecord::now_unix_ms(),
+        query: query.to_string(),
+        top_k,
+        results: hits
+            .iter()
+            .map(|h| observe::DiscoveryHit {
+                name: h.name.clone(),
+                score: h.score,
+            })
+            .collect(),
+        latency_ms,
     }
 }
 
@@ -167,6 +193,17 @@ impl ServerHandler for GatewayServer {
                     .unwrap_or(self.default_top_k);
                 let snap = self.state.snapshot();
                 let hits = metatools::search_tools(&snap, query, top_k).await;
+                if !self.discovery.is_empty() {
+                    let drec = discovery_record_for_search(
+                        query,
+                        top_k,
+                        &hits,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    for sink in self.discovery.iter() {
+                        sink.record(&drec);
+                    }
+                }
                 match serde_json::to_string(&hits) {
                     Ok(json) => (
                         Ok(CallToolResult::success(vec![Content::text(json)])),
@@ -275,9 +312,12 @@ impl ServerHandler for GatewayServer {
             Ok(r) => json_len(r),
             Err(_) => 0,
         };
-        let upstream = target_tool
-            .as_deref()
-            .and_then(|t| t.split_once("__").map(|(s, _)| s.to_string()));
+        // Attribute `upstream` only to a tool that actually resolves in the catalog (its real
+        // `server`), never by splitting a possibly client-supplied name — otherwise an unknown
+        // call_tool name (ToolNotFound) would inject an unbounded, attacker-controlled `upstream`.
+        let upstream = target_tool.as_deref().and_then(|t| {
+            metatools::get_tool_details(&self.state.snapshot(), t).map(|def| def.server.clone())
+        });
         let rec = CallRecord {
             ts_unix_ms: CallRecord::now_unix_ms(),
             meta_tool,
@@ -313,6 +353,29 @@ mod tests {
         assert!(props.get("top_k").is_some());
         let required = search.input_schema.get("required").unwrap();
         assert_eq!(required, &serde_json::json!(["query"]));
+    }
+
+    #[test]
+    fn discovery_record_maps_query_and_scored_hits() {
+        let hits = vec![
+            metatools::ToolSummary {
+                name: "a__x".into(),
+                description: "d".into(),
+                score: 2.0,
+            },
+            metatools::ToolSummary {
+                name: "b__y".into(),
+                description: "d".into(),
+                score: 1.0,
+            },
+        ];
+        let rec = discovery_record_for_search("find", 5, &hits, 7);
+        assert_eq!(rec.query, "find");
+        assert_eq!(rec.top_k, 5);
+        assert_eq!(rec.latency_ms, 7);
+        assert_eq!(rec.results.len(), 2);
+        assert_eq!(rec.results[0].name, "a__x");
+        assert_eq!(rec.results[0].score, 2.0);
     }
 
     #[test]

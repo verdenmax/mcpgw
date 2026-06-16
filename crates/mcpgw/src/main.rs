@@ -293,6 +293,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
         None
     };
     let sinks: Arc<[Arc<dyn observe::CallSink>]> = sink_vec.into();
+    let no_discovery: Arc<[Arc<dyn observe::DiscoverySink>]> = Arc::from(Vec::new());
 
     // Pre-bind the HTTP listener (fail-fast on bind errors) before entering select!.
     let http_bound = if http_enabled {
@@ -314,6 +315,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             &h.path,
             api_keys,
             sinks.clone(),
+            no_discovery.clone(),
         );
         Some((listener, router))
     } else {
@@ -344,7 +346,12 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     let mut http_self_terminated = false;
     let outcome: Result<(), String> = tokio::select! {
         res = async {
-            let server = downstream::GatewayServer::new(state_for_stdio, top_k, sinks.clone());
+            let server = downstream::GatewayServer::new(
+                state_for_stdio,
+                top_k,
+                sinks.clone(),
+                no_discovery.clone(),
+            );
             let service = server.serve(stdio()).await.map_err(|e| e.to_string())?;
             service.waiting().await.map_err(|e| e.to_string())
         }, if stdio_enabled => {
