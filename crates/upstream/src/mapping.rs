@@ -8,8 +8,10 @@ use rmcp::model::Tool;
 /// dropped (with a warn) to bound catalog/snapshot memory against a compromised upstream.
 pub const MAX_TOOLS_PER_SERVER: usize = 1024;
 
-/// Maximum bytes of a single tool's `description` + serialized `input_schema`. A tool over
-/// this is skipped (with a warn) so one upstream can't drive unbounded memory/embedding cost.
+/// Maximum bytes of a single tool's `name` + `description` + serialized `input_schema`. A tool
+/// over this is skipped (with a warn) so one upstream can't drive unbounded memory/embedding cost.
+/// The `name` is included because it is persisted twice in the snapshot (as `ToolDef.name` and as
+/// the `{server}__{name}` catalog key), so the bound would otherwise be incomplete.
 pub const MAX_TOOL_TEXT_BYTES: usize = 64 * 1024;
 
 /// Convert one upstream `Tool` (under namespace `server`) into a `ToolDef`.
@@ -29,7 +31,7 @@ pub fn tool_to_def(server: &str, tool: &Tool) -> ToolDef {
 /// in the catalog overwrites its entries via `upsert`; the returned count reflects only
 /// collisions within `tools`, not against prior catalog state.
 ///
-/// Tools beyond MAX_TOOLS_PER_SERVER, or whose description+schema exceeds
+/// Tools beyond MAX_TOOLS_PER_SERVER, or whose name+description+schema exceeds
 /// MAX_TOOL_TEXT_BYTES, are dropped with a warn (not counted in the returned dupe count).
 pub fn ingest_tools(catalog: &mut Catalog, server: &str, tools: &[Tool]) -> usize {
     let mut seen = std::collections::HashSet::new();
@@ -50,7 +52,8 @@ pub fn ingest_tools(catalog: &mut Catalog, server: &str, tools: &[Tool]) -> usiz
             tracing::warn!(server, tool = %tool.name, "duplicate tool name from upstream; keeping first");
             continue;
         }
-        let text_bytes = tool.description.as_deref().unwrap_or("").len()
+        let text_bytes = tool.name.len()
+            + tool.description.as_deref().unwrap_or("").len()
             + serde_json::to_string(&*tool.input_schema)
                 .map(|s| s.len())
                 .unwrap_or(0);
@@ -170,13 +173,33 @@ mod tests {
     #[test]
     fn ingest_tools_accepts_a_tool_exactly_at_the_text_byte_cap() {
         let mut cat = Catalog::new();
-        // desc bytes + 2 ("{}") == MAX is NOT over the cap (strict `>`), so it is accepted.
-        let at_limit = "a".repeat(MAX_TOOL_TEXT_BYTES - 2);
-        let tools = vec![tool("edge", Some(&at_limit))];
+        // text_bytes = name + description + serialized schema. Empty schema is "{}" (2 bytes);
+        // with name "edge" (4 bytes), a description of MAX-6 lands exactly at MAX, which is NOT
+        // over the cap (strict `>`), so it is accepted.
+        let name = "edge";
+        let at_limit = "a".repeat(MAX_TOOL_TEXT_BYTES - 2 - name.len());
+        let tools = vec![tool(name, Some(&at_limit))];
         ingest_tools(&mut cat, "srv", &tools);
         assert!(
             cat.get("srv__edge").is_some(),
             "a tool exactly at the byte cap must be accepted"
         );
+    }
+
+    #[test]
+    fn ingest_tools_skips_a_tool_with_an_oversize_name() {
+        let mut cat = Catalog::new();
+        // The byte cap includes the name (persisted as ToolDef.name and the catalog key), so a
+        // tiny-description tool with a huge name is still skipped.
+        let huge_name = "n".repeat(MAX_TOOL_TEXT_BYTES + 1);
+        let tools = vec![tool("small", Some("ok")), tool(&huge_name, Some("d"))];
+        let dupes = ingest_tools(&mut cat, "srv", &tools);
+        assert_eq!(dupes, 0);
+        assert_eq!(
+            cat.len(),
+            1,
+            "the oversize-name tool is skipped, the small one kept"
+        );
+        assert!(cat.get("srv__small").is_some());
     }
 }
