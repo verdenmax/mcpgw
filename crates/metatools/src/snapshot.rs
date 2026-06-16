@@ -23,4 +23,5 @@ impl GatewaySnapshot {
 pub struct ToolSummary {
     pub name: String,
     pub description: String,
+    pub score: f32,
 }
