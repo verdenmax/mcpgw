@@ -98,6 +98,15 @@ impl Embedder for CachingEmbedder {
         // Embed only the misses (skip the call entirely if everything was cached).
         if !miss_texts.is_empty() {
             let embedded = self.inner.embed(&miss_texts).await?;
+            // Defend the reassembly invariant: a conforming Embedder returns one vector per input.
+            // A short/long return would otherwise leave a miss unresolved and panic below.
+            if embedded.len() != miss_texts.len() {
+                return Err(EmbedError::Provider(format!(
+                    "embedder returned {} vectors for {} inputs",
+                    embedded.len(),
+                    miss_texts.len()
+                )));
+            }
             let mut cache = self.cache.lock().unwrap();
             for (t, v) in miss_texts.into_iter().zip(embedded) {
                 let arc: Arc<[f32]> = Arc::from(v.into_boxed_slice());
@@ -261,6 +270,36 @@ mod tests {
         assert!(
             c.cache.lock().unwrap().len() <= 2 * CACHE_GEN_CAP,
             "persistent cache must stay bounded even for an oversized batch"
+        );
+    }
+
+    /// An embedder that returns FEWER vectors than inputs (a contract violation) must surface as
+    /// an `Err`, not a panic in the reassembly step.
+    struct ShortEmbedder {
+        dim: usize,
+    }
+    #[async_trait]
+    impl Embedder for ShortEmbedder {
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+            // One fewer vector than asked for.
+            Ok(texts
+                .iter()
+                .skip(1)
+                .map(|_| vec![0.0f32; self.dim])
+                .collect())
+        }
+        fn dim(&self) -> usize {
+            self.dim
+        }
+    }
+
+    #[tokio::test]
+    async fn short_inner_return_errors_instead_of_panicking() {
+        let c = CachingEmbedder::new(Arc::new(ShortEmbedder { dim: 2 }));
+        let r = c.embed(&["a".into(), "b".into()]).await;
+        assert!(
+            matches!(r, Err(EmbedError::Provider(_))),
+            "a short inner return must be an Err, not a panic"
         );
     }
 }

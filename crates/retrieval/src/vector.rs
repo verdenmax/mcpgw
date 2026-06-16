@@ -101,9 +101,17 @@ impl RetrievalStrategy for VectorStrategy {
             return self.bm25.search(query, top_k).await;
         }
         let qv = match self.embedder.embed(&[query.to_string()]).await {
-            Ok(mut v) => normalize(v.remove(0)),
-            Err(e) => {
-                tracing::warn!(error = %e, "vector query embedding failed; falling back to BM25");
+            Ok(mut v) if !v.is_empty() => normalize(v.remove(0)),
+            // Empty `Ok` (contract violation) is treated like an error: degrade to BM25 rather
+            // than panicking on `v.remove(0)`.
+            other => {
+                if let Err(e) = other {
+                    tracing::warn!(error = %e, "vector query embedding failed; falling back to BM25");
+                } else {
+                    tracing::warn!(
+                        "vector query embedding returned no vector; falling back to BM25"
+                    );
+                }
                 return self.bm25.search(query, top_k).await;
             }
         };
@@ -125,5 +133,75 @@ impl RetrievalStrategy for VectorStrategy {
         });
         scored.truncate(top_k);
         scored
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EmbedError;
+    use catalog::ToolDef;
+    use serde_json::Value;
+
+    fn tool(server: &str, name: &str, desc: &str) -> ToolDef {
+        ToolDef {
+            server: server.into(),
+            name: name.into(),
+            description: desc.into(),
+            input_schema: Value::Null,
+        }
+    }
+
+    /// Indexes fine (multi-element batches → proper vectors) but returns an empty `Ok` for the
+    /// single-element query embed — a contract violation that must degrade, not panic.
+    struct EmptyOnSingleQuery {
+        dim: usize,
+    }
+    #[async_trait]
+    impl Embedder for EmptyOnSingleQuery {
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+            if texts.len() == 1 {
+                Ok(Vec::new())
+            } else {
+                Ok(texts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| {
+                        let mut v = vec![0.0f32; self.dim];
+                        v[i % self.dim] = 1.0;
+                        v
+                    })
+                    .collect())
+            }
+        }
+        fn dim(&self) -> usize {
+            self.dim
+        }
+    }
+
+    #[tokio::test]
+    async fn search_degrades_to_bm25_on_empty_query_embedding() {
+        let catalog = Catalog::from_tooldefs(vec![
+            tool(
+                "slack",
+                "post_message",
+                "Send a chat message to a Slack channel",
+            ),
+            tool(
+                "weather",
+                "get_forecast",
+                "Get the weather forecast for a location",
+            ),
+            tool(
+                "github",
+                "create_issue",
+                "Create a new issue in a GitHub repository",
+            ),
+        ]);
+        let mut s = VectorStrategy::new(Arc::new(EmptyOnSingleQuery { dim: 64 }));
+        s.index(&catalog).await; // 3-element batch -> indexes, not degraded
+                                 // Single-element query embed returns empty Ok -> must fall back to BM25, not panic.
+        let hits = s.search("weather forecast location", 3).await;
+        assert_eq!(hits[0].qualified_name, "weather__get_forecast");
     }
 }
