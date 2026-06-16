@@ -128,15 +128,15 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
 
 pub fn tools(state: &AppState, q: Option<&str>) -> Vec<ToolView> {
     let snap = state.gateway.snapshot();
+    let needle = q.filter(|n| !n.is_empty()).map(|n| n.to_lowercase());
     snap.catalog()
         .iter()
-        .filter(|t| match q {
-            Some(needle) if !needle.is_empty() => {
-                let n = needle.to_lowercase();
-                t.qualified_name().to_lowercase().contains(&n)
-                    || t.description.to_lowercase().contains(&n)
+        .filter(|t| match &needle {
+            Some(n) => {
+                t.qualified_name().to_lowercase().contains(n.as_str())
+                    || t.description.to_lowercase().contains(n.as_str())
             }
-            _ => true,
+            None => true,
         })
         .map(|t| ToolView {
             name: t.qualified_name(),

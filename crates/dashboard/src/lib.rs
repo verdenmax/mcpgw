@@ -19,6 +19,10 @@ use axum::Json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Upper clamp on a client-supplied `limit` for history replay, so a hostile/accidental huge
+/// value can't make `tail_lines` buffer an unbounded number of lines from a large JSONL file.
+const MAX_HISTORY_LIMIT: usize = 50_000;
+
 fn qparam_usize(q: &HashMap<String, String>, key: &str, default: usize) -> usize {
     q.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
@@ -42,7 +46,7 @@ async fn h_traces(
     State(s): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Json<api::TracesResponse> {
-    let limit = qparam_usize(&q, "limit", 100);
+    let limit = qparam_usize(&q, "limit", 100).min(MAX_HISTORY_LIMIT);
     let source = q.get("source").cloned().unwrap_or_else(|| "live".into());
     Json(api::traces(&s, limit, &source))
 }
@@ -50,7 +54,7 @@ async fn h_metrics_history(
     State(s): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Json<api::HistoryResponse> {
-    let limit = qparam_usize(&q, "limit", 5000);
+    let limit = qparam_usize(&q, "limit", 5000).min(MAX_HISTORY_LIMIT);
     let bucket_ms = q
         .get("bucket_ms")
         .and_then(|v| v.parse().ok())
