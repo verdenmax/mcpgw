@@ -20,4 +20,4 @@ observe = { path = "../observe", features = ["testkit"] }
 rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-streamable-http-client-reqwest"] }
 tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
