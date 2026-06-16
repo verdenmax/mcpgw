@@ -332,3 +332,56 @@ async fn upstream_tool_error_is_recorded_as_error_outcome() {
     assert_eq!(rec.outcome, CallOutcome::Error);
     assert_eq!(rec.error_kind, Some("upstream_tool_error"));
 }
+
+#[tokio::test]
+async fn timeout_call_is_recorded_with_timeout_error_kind() {
+    use observe::{CallOutcome, MetaTool};
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    common::attach_mock_with_timeout(&state, "mock", std::time::Duration::from_millis(50)).await;
+
+    let cap = observe::CaptureSink::new();
+    let sinks: Arc<[Arc<dyn observe::CallSink>]> =
+        vec![Arc::new(cap.clone()) as Arc<dyn observe::CallSink>].into();
+    let client = common::connect_to_gateway_with_sinks(state, 8, sinks).await;
+
+    // `slow` sleeps ~10s server-side; the 50ms call timeout trips MetaError::Timeout.
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("call_tool")
+                .with_arguments(args(json!({"name": "mock__slow"}))),
+        )
+        .await
+        .unwrap();
+    client.cancel().await.unwrap();
+
+    let recs = cap.records();
+    let rec = recs.last().expect("a record for the call");
+    assert_eq!(rec.meta_tool, MetaTool::CallTool);
+    assert_eq!(rec.outcome, CallOutcome::Timeout);
+    assert_eq!(rec.error_kind, Some("timeout"));
+}
+
+#[tokio::test]
+async fn missing_name_is_recorded_with_invalid_params_error_kind() {
+    use observe::{CallOutcome, MetaTool};
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    common::attach_mock(&state, "mock").await;
+
+    let cap = observe::CaptureSink::new();
+    let sinks: Arc<[Arc<dyn observe::CallSink>]> =
+        vec![Arc::new(cap.clone()) as Arc<dyn observe::CallSink>].into();
+    let client = common::connect_to_gateway_with_sinks(state, 8, sinks).await;
+
+    // call_tool with no "name" -> the invalid_params arm.
+    let _ = client
+        .call_tool(CallToolRequestParams::new("call_tool").with_arguments(args(json!({}))))
+        .await
+        .unwrap();
+    client.cancel().await.unwrap();
+
+    let recs = cap.records();
+    let rec = recs.last().expect("a record for the call");
+    assert_eq!(rec.meta_tool, MetaTool::CallTool);
+    assert_eq!(rec.outcome, CallOutcome::Error);
+    assert_eq!(rec.error_kind, Some("invalid_params"));
+}
