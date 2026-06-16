@@ -16,6 +16,11 @@ impl GatewaySnapshot {
     pub fn new(catalog: Catalog, strategy: Box<dyn RetrievalStrategy>) -> Self {
         Self { catalog, strategy }
     }
+
+    /// Read-only access to the aggregated tool catalog (e.g. for the dashboard API).
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
 }
 
 /// One `search_tools` hit: the namespaced tool name, its one-line description, and the
