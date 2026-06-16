@@ -121,5 +121,13 @@ mod asset_tests {
             APP_JS.contains("escapeHtml(u.reason)"),
             "upstream skip reason is escaped"
         );
+        assert!(
+            APP_JS.contains("escapeHtml(u.name)") && APP_JS.contains("escapeHtml(u.transport)"),
+            "upstream name and transport are escaped"
+        );
+        assert!(
+            APP_JS.contains("escapeHtml(x.meta_tool)"),
+            "meta-tool name is escaped"
+        );
     }
 }
