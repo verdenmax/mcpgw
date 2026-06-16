@@ -4,8 +4,11 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-/// Read up to the last `limit` lines of a file (memory bounded to `limit` lines regardless of
-/// file size). Oldest-first; `None` if the file can't be opened.
+/// Read the last `limit` newline-delimited lines of a file, keeping at most `limit` lines in
+/// memory at once (so a large file with well-formed JSONL — one bounded record per line — uses
+/// bounded memory). Oldest-first; `None` if the file can't be opened. A line-read error
+/// (non-UTF-8 / IO) ends the tail early, yielding the lines read so far (the JSONL we write is
+/// always valid UTF-8, so this only matters for externally-corrupted files).
 fn tail_lines(path: &Path, limit: usize) -> Option<Vec<String>> {
     let file = std::fs::File::open(path).ok()?;
     let limit = limit.max(1);
