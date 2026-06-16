@@ -6,7 +6,8 @@
   返回 `RunningService<RoleClient, ()>`。`UpstreamHandle` 持有它。
 - **列工具**：`client.list_all_tools().await` —— 自动翻页拉全量 `Vec<rmcp::model::Tool>`。
 - **调用**：`client.call_tool(CallToolRequestParams::new(name).with_arguments(args)).await`。
-- **关闭**：`client.cancel().await` —— 优雅取消运行中的服务。
+- **关闭**：`shutdown(self)` 走 `client.cancel().await` 优雅取消运行中的服务（drain + 关闭传输）；`cancel(&self)`
+  则经 `client.cancellation_token().cancel()` **fire-and-forget** 取消、**不消费 handle**（供共享 `Arc` 的拆卸路径）。
 
 ## transport-generic `connect`（rmcp `IntoTransport`）
 
@@ -80,8 +81,8 @@ connect/initialize 握手加界——子进程**起得来但从不应答**（hun
 
 - **锁不跨 await**：`get`/`insert`/`remove` 在锁内只做 map 操作，立刻 `cloned()`/返回后释放锁；任何 `.await`
   （`ingest_into`/`call_tool`）都发生在锁外，避免持锁挂起。
-- `get` 返回 `Option<Arc<UpstreamHandle>>`（克隆 `Arc`），`remove` 返回 `Option<Arc<…>>`，调用方可据此 graceful
-  `shutdown().await` 或直接丢弃。
+- `get` 返回 `Option<Arc<UpstreamHandle>>`（克隆 `Arc`），`remove` 返回 `Option<Arc<…>>`；`serve` 收尾据此按
+  `Arc::try_unwrap` 二分：**独占** → `shutdown().await`、**共享** → `cancel()`（fire-and-forget，不再静默跳过取消）。
 - **Arc-drop 即取消**：rmcp 的 `RunningService` 内含 `DropGuard`；当最后一个 `Arc<UpstreamHandle>` 被丢弃
   （如 `insert` 同名覆盖、`remove` 后不持有），底层服务在 drop 时被取消。
 - `server_names` 返回**排序**后的名字列表，结果确定、可断言。

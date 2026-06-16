@@ -20,7 +20,8 @@
 | `call_timeout` | `(&self) -> Duration` | 该 handle 的每调用超时（网关用它给每个并发 `ingest_into` 加界） |
 | `ingest_into` | `async (&self, &mut Catalog) -> Result<usize, UpstreamError>` | 拉取该 server 工具，命名空间化后摄取进 catalog；返回跳过的重复数 |
 | `call_tool` | `async (&self, tool: &str, args: Option<serde_json::Map<String, Value>>) -> Result<CallToolResult, UpstreamError>` | 转发调用（带 `call_timeout` 超时）；`tool` 是**原始**（未命名空间化）名 |
-| `shutdown` | `async (self)` | 取消底层 rmcp 服务 |
+| `shutdown` | `async (self)` | 消费 `self`，`client.cancel().await` 取消底层 rmcp 服务并 await 清理（独占拆卸路径） |
+| `cancel` | `(&self)` | 经 rmcp `cancellation_token().cancel()` **fire-and-forget** 取消，**不消费 handle**（`&self`）；用于共享 `Arc<UpstreamHandle>` 的拆卸，永不静默跳过取消 |
 
 ### list_changed 转发：`RebuildTrigger` / `UpstreamClientHandler`（`connection.rs`）
 - `RebuildTrigger = tokio::sync::mpsc::Sender<String>`：网关排空、据以重建快照的有界 channel 发送端。
@@ -58,7 +59,7 @@
 | `new` | `() -> Self` | 空注册表（= `Default`） |
 | `insert` | `(&self, Arc<UpstreamHandle>)` | 按 `handle.server()` 插入/替换 |
 | `get` | `(&self, &str) -> Option<Arc<UpstreamHandle>>` | 按名取一份 `Arc` 克隆 |
-| `remove` | `(&self, &str) -> Option<Arc<UpstreamHandle>>` | 摘除并返回 `Arc`（可用于 graceful shutdown） |
+| `remove` | `(&self, &str) -> Option<Arc<UpstreamHandle>>` | 摘除并返回 `Arc`（拆卸时独占 → `shutdown().await`、共享 → `cancel()`） |
 | `server_names` | `(&self) -> Vec<String>` | 已注册 server 名，**升序排序** |
 
 ### 枚举 `UpstreamState`（`registry.rs`）

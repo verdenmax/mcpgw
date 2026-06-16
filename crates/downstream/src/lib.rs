@@ -229,13 +229,23 @@ impl ServerHandler for GatewayServer {
                     let inner = args.get("arguments").and_then(|v| v.as_object()).cloned();
                     let snap = self.state.snapshot();
                     match metatools::call_tool(&snap, self.state.registry(), name, inner).await {
-                        Ok(result) => (
-                            Ok(result),
-                            MetaTool::CallTool,
-                            Some(name.to_string()),
-                            CallOutcome::Ok,
-                            None,
-                        ),
+                        Ok(result) => {
+                            // A successful round-trip whose result carries is_error=true is a
+                            // tool-level failure: forward it unchanged, but record it as an error
+                            // so the audit/metrics don't undercount tool failures.
+                            let (outcome, kind) = if result.is_error == Some(true) {
+                                (CallOutcome::Error, Some("upstream_tool_error"))
+                            } else {
+                                (CallOutcome::Ok, None)
+                            };
+                            (
+                                Ok(result),
+                                MetaTool::CallTool,
+                                Some(name.to_string()),
+                                outcome,
+                                kind,
+                            )
+                        }
                         Err(e) => {
                             let (outcome, kind) = classify(&e);
                             (

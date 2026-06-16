@@ -77,6 +77,7 @@
   | `MetaError::Call` | `error` | `upstream_call` |
   | `MetaError::ToolNotFound` | `error` | `tool_not_found` |
   | `MetaError::UpstreamUnavailable` | `error` | `upstream_unavailable` |
+  | `call_tool` 成功往返但上游结果 `is_error=true`（结果原样转发，仅观测判 `error`） | `error` | `upstream_tool_error` |
   | 成功 | `ok` | `None` |
 
 - **仅元数据不变量**：记录的类型本身就装不下载荷——只有上述 size 与分类字段，故观测**绝不泄露

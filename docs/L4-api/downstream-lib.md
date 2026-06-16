@@ -86,7 +86,8 @@ async fn call_tool(
 - `"get_tool_details"`：`name`（缺省 `""`）→ `metatools::get_tool_details`；`Some(def)` → JSON 文本，`None` →
   `CallToolResult::error("no such tool: {name}")`（`isError`）。
 - `"call_tool"`：缺 `name` → `isError("missing required 'name'")`；否则取可选 `arguments` 对象，
-  `metatools::call_tool(&snap, self.state.registry(), name, inner).await`：`Ok` 透传上游 `CallToolResult`、
+  `metatools::call_tool(&snap, self.state.registry(), name, inner).await`：`Ok` 透传上游 `CallToolResult`
+  （结果原样转发；若其 `is_error == Some(true)` 则观测判为 `Error` / `upstream_tool_error`，见下「`error_kind` 取值表」）、
   `Err(MetaError)` → `CallToolResult::error(e.to_string())`（`isError`）。
 - 其它名 → `Err(McpError::invalid_params("unknown tool: {other}"))`（协议级错误）。
 
@@ -119,6 +120,7 @@ async fn call_tool(
 | `call_tool` → `MetaError::Call` | `error` | `upstream_call` |
 | `call_tool` → `MetaError::ToolNotFound` | `error` | `tool_not_found` |
 | `call_tool` → `MetaError::UpstreamUnavailable` | `error` | `upstream_unavailable` |
+| `call_tool` 成功往返但上游结果 `is_error=true`（结果原样转发，仅观测判 `error`） | `error` | `upstream_tool_error` |
 | 成功 | `ok` | `None` |
 | **未知元工具名**（早退 `McpError::invalid_params`） | — | **不记录**（协议误用，非网关调用） |
 

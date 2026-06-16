@@ -18,34 +18,54 @@
   `cfg.audit.enabled` 则 `observe::spawn_writer(&cfg.audit.path, AUDIT_CHANNEL_CAPACITY).map_err(...)?`
   （**打开文件 fail-fast**）追加一个 `JsonlSink` 进 sinks 并保留 `Option<AuditWriter>` → `prepare_state` →
   `tokio::spawn(run_rebuild_worker(state.clone(), rx))` → 预绑定 HTTP `TcpListener`（仅 http_enabled，bind 失败即
-  `Err`）→ **并发关闭模型**（见下）→ **审计 writer 有界优雅 drain**（见下）→ best-effort 逐个 `remove` +
-  `Arc::try_unwrap` + `shutdown().await` 上游子进程。
+  `Err`）→ **把 HTTP 作为带 `with_graceful_shutdown` 的后台 task 起出**（oneshot 驱动，见下）→ **并发关闭触发模型**
+  （`select!`，见下）→ **signal HTTP 优雅关停 + 有界 `HTTP_SHUTDOWN_TIMEOUT` drain** → `drop(sinks)` → **审计 writer
+  有界优雅 drain**（见下）→ best-effort 逐个 `remove` 上游子进程并按 `Arc::try_unwrap` 二分：**独占** → `shutdown().await`、
+  **共享** → `cancel()`（见下「上游拆卸」）。
 
-## 审计 writer 的优雅 drain（`drop(sinks)` → 有界 join）
+## 审计 writer 的优雅 drain（先关停 HTTP 释放 sink → `drop(sinks)` → 有界 join）
 
-`[audit].enabled` 时，`run_serve` 在 `select!` 返回后先 `drop(sinks)` **释放外层 sinks 切片**——所有
-`JsonlSink` clone 全部 drop 后 channel 才断连，writer 线程才会 drain/flush/`sync_all`（fsync）并退出。随后
-`if let Some(writer)`：`tokio::time::timeout(AUDIT_DRAIN_TIMEOUT, tokio::task::spawn_blocking(move || writer.join()))`
-——把阻塞 `join` 放到 blocking 线程、并加 **5 秒（`AUDIT_DRAIN_TIMEOUT`）兜底**，超时只 `warn!`（不卡死关停）。
+关停顺序的关键在于**让 HTTP 会话先释放它们的 sink clone**，审计 drain 才能迅速完成：`select!` 触发后，`run_serve`
+**先** `http_shutdown_tx.send(())` 触发 HTTP task 的 `with_graceful_shutdown`，并 `tokio::time::timeout(HTTP_SHUTDOWN_TIMEOUT,
+http_task)` 有界等待其 drain——HTTP 的 keep-alive 会话因而**先**关闭、释放各自 per-session `GatewayServer`/`JsonlSink`
+clone（超时只 `warn!`）。随后 `drop(sinks)` **释放外层 sinks 切片**的最后一份 clone，channel 这才断连，writer 线程
+drain/flush/`sync_all`（fsync）并退出。最后 `if let Some(writer)`：`tokio::time::timeout(AUDIT_DRAIN_TIMEOUT,
+tokio::task::spawn_blocking(move || writer.join()))`——把阻塞 `join` 放到 blocking 线程、并加 **5 秒
+（`AUDIT_DRAIN_TIMEOUT`）兜底**，超时只 `warn!`（不卡死关停）。
 
-- **drop 顺序要求**：stdio 分支的 `GatewayServer` 是 `select!` 分支局部，分支结束即 drop，故 `drop(sinks)`
-  能释放最后一份 clone、writer 立即 drain。
-- **超时兜底的对象**：HTTP 路径按会话在分离 task 里铸造 per-session `GatewayServer`，**悬挂的 http 连接 sink
-  克隆**（含 **idle keep-alive 会话**仍持一份 clone）会让 channel 迟迟不断连——此即 `AUDIT_DRAIN_TIMEOUT` 兜底
-  的场景（已入队的记录仍被 writer 按批 flush，与超时无关）。
+- **审计 drain 现在迅速完成（audit M4）**：因为顺序是「先优雅关停 HTTP（会话释放 sink clone）→ 再 `drop(sinks)` → 再 drain
+  审计」，channel 在最后一份 clone drop 后立即断连、writer 立即收尾——**不再总是等满** `AUDIT_DRAIN_TIMEOUT` 的 5 秒，fsync
+  也确实跑到（修复此前 idle keep-alive 会话长期持 clone、导致审计 drain 恒等到超时、fsync 被跳过的问题）。
+- **drop 顺序要求**：stdio 分支的 `GatewayServer` 是 `select!` 分支局部、分支结束即 drop；HTTP 会话则在上面的优雅关停里
+  drop。两者都先于 `drop(sinks)`，故 `drop(sinks)` 能释放最后一份 clone、writer 立即 drain。
+- **`AUDIT_DRAIN_TIMEOUT` 兜底**仅在 writer 线程自身卡住等极端情况下触发；已入队的记录仍被 writer 按批 flush，与超时无关。
 
-## 并发关闭模型（`select!` over stdio / http / ctrl_c）
+## 并发关闭触发模型（HTTP 后台 task + `select!` 触发 + 优雅关停）
 
-`run_serve` 用 `tokio::select!` 在三个 future 间并发：stdio 分支（`GatewayServer::serve(stdio())` → `waiting()`，
-带 `if stdio_enabled` 前置条件）、HTTP 分支（`axum::serve(listener, router)`，带 `if http_enabled`）、以及
-`tokio::signal::ctrl_c()`。`select!` 的 `if <precondition>` 为假时**不会构造**对应 `async` future，故
-`http_bound.unwrap()` 只在 `http_enabled` 时执行（stdio 同理）。**任一分支完成即返回**，其余 future 被 drop，随后进入
-统一收尾关闭。两个下游 server 共享同一个 `Arc<GatewayState>`（HTTP 用 `state.clone()`，stdio 用另一份 clone）。
-HTTP listener 在进入 `select!` **之前**预绑定（fail-fast 暴露端口占用/权限错误，而非进入循环后才失败）。
+HTTP 以**后台 task** 起出：`tokio::spawn(axum::serve(listener, router).with_graceful_shutdown(async { let _ =
+http_shutdown_rx.await; }))`，其优雅关停由一个 `oneshot`（`http_shutdown_tx`/`http_shutdown_rx`）驱动。`run_serve`
+随后用 `tokio::select!` 等待**第一个关停触发**：stdio 分支（`GatewayServer::serve(stdio())` → `waiting()`，带
+`if stdio_enabled`，客户端断开/stdin-EOF 即触发）、HTTP task 分支（`http_task` 的 `JoinHandle`，带 `if http_enabled`
+——仅当 HTTP **自行**结束即 `axum::serve` 返回错误时才完成，并置 `http_self_terminated = true`）、以及
+`tokio::signal::ctrl_c()`。`select!` 的 `if <precondition>` 为假时**不会构造**对应 `async` future。
+
+**任一触发后统一收尾**（顺序固定）：`http_shutdown_tx.send(())` 信号 HTTP 优雅关停 → 若 HTTP **未**自行结束
+（`!http_self_terminated`，其 `JoinHandle` 尚未被消费）则 `tokio::time::timeout(HTTP_SHUTDOWN_TIMEOUT, http_task)`
+**有界等待**其 drain（超时只 `warn!`，不卡死）→ `drop(sinks)` → 审计 writer drain（见上）→ 上游拆卸（见下）。HTTP
+listener 在进入 `select!` **之前**预绑定（fail-fast 暴露端口占用/权限错误，而非进入循环后才失败）。两个下游 server
+共享同一个 `Arc<GatewayState>`（HTTP 用 `state.clone()`，stdio 用另一份 clone）。
 
 > **HTTP 守护进程模式（无本地 stdio 客户端）**：`[server].stdio` 默认 `true`，此时即使同时启用 HTTP，stdio
-> server 的 stdin-EOF（或无 stdin 附着）也会经 `select!` 拆掉整个进程。若要以 HTTP 守护进程方式长期运行，应设
+> server 的 stdin-EOF（或无 stdin 附着）也会经 `select!` 触发整个进程关停。若要以 HTTP 守护进程方式长期运行，应设
 > `[server].stdio = false`，让进程仅由 HTTP server + Ctrl-C 驱动，否则 stdin EOF 会直接关停它。
+
+## 上游拆卸（独占 → `shutdown().await`；共享 → `cancel()`，audit M5）
+
+收尾末段 best-effort 逐个 `registry.remove(name)` 取出 `Arc<UpstreamHandle>`，再按 `Arc::try_unwrap` 二分所有权：
+**独占**（`Ok(h)`，本函数持唯一引用）→ `h.shutdown().await` 走完整优雅取消（drain + 关闭传输）；**共享**（`Err(shared)`
+——重建 worker 或在途调用仍持一份 clone）→ `shared.cancel()` 经 rmcp cancellation token **fire-and-forget** 取消，
+不消费 handle、立即返回。如此一来共享 handle **不再被静默跳过**：token 一旦触发即停掉 service loop、关闭传输并（对子进程
+上游）回收子进程，与最后一份 `Arc` clone 何时 drop 无关。
 
 ## env 密钥启动期解析（fail-fast）
 

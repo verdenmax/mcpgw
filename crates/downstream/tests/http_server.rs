@@ -146,3 +146,29 @@ async fn http_auth_rejects_empty_bearer_even_with_empty_configured_key() {
         reqwest::StatusCode::UNAUTHORIZED
     );
 }
+
+#[tokio::test]
+async fn http_graceful_shutdown_stops_the_server_promptly() {
+    let state = Arc::new(GatewayState::new("bm25").unwrap());
+    let sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> = Vec::new().into();
+    let router = downstream::http::build_router(state, 8, "/mcp", vec![], sinks);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await
+    });
+
+    // Fire graceful shutdown; the serve task must finish promptly (well under the timeout).
+    tx.send(()).unwrap();
+    let res = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+    assert!(
+        res.is_ok(),
+        "graceful shutdown must stop the server promptly"
+    );
+    assert!(res.unwrap().unwrap().is_ok(), "serve returned an error");
+}

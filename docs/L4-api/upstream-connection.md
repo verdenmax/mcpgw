@@ -92,7 +92,18 @@ pub async fn call_tool(
 ```rust
 pub async fn shutdown(self)
 ```
-消费 `self`，`client.cancel().await` 取消底层 rmcp 服务（忽略取消结果）。
+消费 `self`，`client.cancel().await` 取消底层 rmcp 服务并 await 其清理（drain + 关闭传输；忽略取消结果）。用于
+**独占**（拥有并可 await）拆卸路径。
+
+### `UpstreamHandle::cancel`
+```rust
+pub fn cancel(&self)
+```
+经底层 rmcp 服务的 `cancellation_token().cancel()` 取消服务，**不消费 handle**（`&self`）。与 `shutdown(self)`
+不同，这是 **fire-and-forget**：只发出取消信号即**立即返回**，不 await 清理。它能作用于一份**共享** `&self`
+（如重建 worker 或在途调用仍持有的 `Arc<UpstreamHandle>` clone），故拆卸时**永不静默跳过取消**。触发 token 会停掉
+service loop，从而关闭传输并（对子进程上游）回收子进程——与最后一份 `Arc` clone 何时 drop 无关。`shutdown(self)` 仍
+保留，用于拥有唯一引用、可 await 完整优雅取消的路径。
 
 ## `enum UpstreamError`
 ```rust
