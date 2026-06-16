@@ -16,9 +16,12 @@
 | `async fn prepare_state` | `(&Config) -> Result<(Arc<GatewayState>, mpsc::Receiver<String>), String>` | `build_backends` → `GatewayState::with_backends(&cfg.retrieval.strategy, backends)` → `connect_all`（eager-connect 上游、装 trigger 发送端）→ 初始 `rebuild_snapshot` → 返回状态 + worker 接收端；单测可达 |
 | `fn resolve_api_keys` | `(&Config) -> Result<Vec<String>, String>` | 解析 `[[server.http.api_key]]` 各密钥的 env 值；无 `[server.http]` 时返回空 `Vec`；任一 env 缺失即 `Err`（消息仅含 `name`/`env` **名**，不含密钥值）；单测可达 |
 | `fn validate_upstream_http_env` | `(&Config) -> Result<(), String>` | 校验所有 HTTP 上游引用的 env（`bearer_env` + `headers` 各值）均已设置；缺失即 fail-fast `Err`（消息仅含上游名/header 名/env 名，不含值）；单测可达 |
-| `async fn run_serve` | `(Config) -> Result<(), String>` | 装 stderr tracing → 校验至少启用一种传输（`stdio` 或 `http.enabled`，否则 `Err`）→ fail-fast 解析 `resolve_api_keys` + `validate_upstream_http_env` → `prepare_state` → spawn `run_rebuild_worker` → 装配观测 sinks（以 `observe::TracingSink` 打底；`Arc<[Arc<dyn observe::CallSink>]>`，stdio/http 共享）→ `cfg.audit.enabled` 时 `observe::spawn_writer(&cfg.audit.path, observe::AUDIT_CHANNEL_CAPACITY).map_err(...)?` 追加 `JsonlSink`、留 `Option<AuditWriter>`（打开文件 fail-fast）→ 预绑定 HTTP listener（`TcpListener::bind`，bind 失败即 `Err`）→ **把 HTTP 起为带 `with_graceful_shutdown`（oneshot 驱动）的后台 task**（`build_router(..., sinks)` → `axum::serve`）→ `tokio::select!` 等首个关停触发：stdio（`GatewayServer::new(state, top_k, sinks)` → `serve(stdio())` → `waiting()`）/ HTTP task **自行结束**（serve 出错，置 `http_self_terminated`）/ `ctrl_c` → 收尾顺序：`http_shutdown_tx.send(())` 信号 HTTP 优雅关停 → 未自行结束则 `timeout(HTTP_SHUTDOWN_TIMEOUT, http_task)` 有界 drain（超时 `warn!`）→ `drop(sinks)` 触发审计 channel 断连 → `timeout(AUDIT_DRAIN_TIMEOUT, spawn_blocking(writer.join()))` 有界 drain（超时 `warn!`）→ best-effort `remove` 各上游并按 `Arc::try_unwrap` 二分：**独占** → `shutdown().await`、**共享** → `cancel()` |
-| `const AUDIT_DRAIN_TIMEOUT` | `Duration = Duration::from_secs(5)` | 关停时等待审计 writer drain+flush+fsync 的上限；超时只 `warn!`（不卡死关停） |
+| `async fn run_serve` | `(Config) -> Result<(), String>` | 装 stderr tracing → 校验至少启用一种传输（`stdio` 或 `http.enabled`，否则 `Err`）→ fail-fast 解析 `resolve_api_keys` + `validate_upstream_http_env` → `prepare_state` → spawn `run_rebuild_worker` → 装配观测 sinks（以 `observe::TracingSink` 打底；`Arc<[Arc<dyn observe::CallSink>]>`，stdio/http 共享）→ `cfg.audit.enabled` 时 `observe::spawn_writer(&cfg.audit.path, observe::AUDIT_CHANNEL_CAPACITY).map_err(...)?` 追加 `JsonlSink`、留 `Option<AuditWriter>`（打开文件 fail-fast）→ **`cfg.dashboard.enabled` 时**追加 `dashboard::MetricsSink` 进 sinks 切片；**且 `trace_queries` 时**经 `dashboard::DiscoveryRingSink::spawn(trace_buffer, trace_path)` 建发现追踪 ring + 可选 JSONL writer，装进 `discovery_sinks: Arc<[Arc<dyn observe::DiscoverySink>]>`（否则空切片）→ 预绑定 HTTP listener（`TcpListener::bind`，bind 失败即 `Err`）→ **预绑定 dashboard listener**（同样 fail-fast；非 loopback 且无 auth 时 `warn!`）→ **把 HTTP 起为带 `with_graceful_shutdown`（oneshot 驱动）的后台 task**（`build_router(..., sinks, discovery_sinks)` → `axum::serve`）→ **把 dashboard 起为另一个独立 port 上的后台 task**（构造 `AppState` → `build_dashboard_router` → `axum::serve` + 自己的 `with_graceful_shutdown`）→ `tokio::select!` 等首个关停触发：stdio（`GatewayServer::new(state, top_k, sinks, discovery_sinks)` → `serve(stdio())` → `waiting()`）/ HTTP task / dashboard task **自行结束** / `ctrl_c` → 收尾顺序：`http_shutdown_tx.send(())` → 有界 drain HTTP → `dash_shutdown_tx.send(())` → 有界 drain dashboard（`DASHBOARD_SHUTDOWN_TIMEOUT`，释放其 `AppState` 内 `DiscoveryRingSink` clone）→ `drop(sinks)` 触发审计 channel 断连 → 有界 drain 审计 writer → `drop(discovery_sinks)` + `drop(discovery_ring)` 触发发现 channel 断连 → 有界 drain 发现 writer → best-effort 拆卸上游 |
+| `fn transport_str` | `(&UpstreamTransport) -> String` | 把上游 transport 变体映为短标签（`Stdio→"stdio"`、`Http→"http"`），供 dashboard 的上游列表 `UpstreamInfo.transport` 用 |
+| `fn unauthenticated_public_bind` | `(bind: &str, has_keys: bool) -> bool` | 判断某 bind 地址是否「无鉴权且非回环」（用于 HTTP/dashboard 的公网暴露 `warn!`）：有 key 直接 `false`；否则解析 `SocketAddr` 判 `!is_loopback`，解析失败时只把字面 `localhost` 当安全 |
+| `const AUDIT_DRAIN_TIMEOUT` | `Duration = Duration::from_secs(5)` | 关停时等待审计 writer（及发现 writer）drain+flush+fsync 的上限；超时只 `warn!`（不卡死关停） |
 | `const HTTP_SHUTDOWN_TIMEOUT` | `Duration = Duration::from_secs(5)` | 关停时等待 HTTP server 优雅 drain 在途请求 / 关闭 keep-alive 会话的上限；超时只 `warn!`（不卡死关停） |
+| `const DASHBOARD_SHUTDOWN_TIMEOUT` | `Duration = Duration::from_secs(3)` | 关停时等待 dashboard server 优雅 drain 的上限；超时只 `warn!`。先于 `drop(sinks)`/发现 writer drain，以便其 `AppState` 内 `DiscoveryRingSink` clone 提前释放 |
 | `fn main` | `() -> ExitCode` | 解析 CLI、调 `run`，映射退出码（成功 0 / 失败 1，错误打 stderr） |
 
 ## 命令行接口（对外契约）
@@ -50,6 +53,17 @@ fire-and-forget 取消，共享 handle 不再被静默跳过）。**日志走 st
 `validate_upstream_http_env` 解析/校验所有 env 引用的密钥（缺失即中止，消息仅含字段/env 名），再 `prepare_state`，
 再据 `[audit]` 装配 `JsonlSink`（打不开审计文件即 `Err`），最后**预绑定** HTTP `TcpListener`（bind 失败即 `Err`）
 后才进入 `select!`。此模式**不**读 `--catalog`（catalog 来自上游）。
+
+#### 只读 dashboard（`[dashboard].enabled`）
+当 `[dashboard].enabled` 时，`serve` 额外把**只读可视化面板**起为**独立 task、独立 port**（默认
+`127.0.0.1:8971`、**localhost、无鉴权**——非 loopback 绑定会 `warn!`）：把 `dashboard::MetricsSink` 追加进
+观测 sinks 切片（与 tracing/审计同走 `CallRecord` 扇出，仅元数据）；**且 `trace_queries` 时**经
+`DiscoveryRingSink::spawn` 建发现追踪 ring（+ 可选 `trace_path` JSONL writer），把 `discovery_sinks` 注入
+**两条**下游（stdio + HTTP），使 `search_tools` 的 query/命中走**独立 opt-in** 通道。dashboard listener
+**先于** spawn 任何 serve task **预绑定**（fail-fast，对称于 HTTP）。关停时按固定顺序：HTTP drain →
+**dashboard drain（`DASHBOARD_SHUTDOWN_TIMEOUT = 3s`，先释放其 `AppState` 内 `DiscoveryRingSink` clone）** →
+`drop(sinks)` + 审计 drain → `drop(discovery_sinks/ring)` + 发现 writer drain → 上游拆卸。详见
+[dashboard L3](../L3-details/dashboard.md) / [L4](./dashboard.md)。
 
 ### 全局
 - `--catalog <path>`：工具目录 JSON（默认指向测试 fixture，见 L3 说明）。**仅** `search`/`get-details` 使用。

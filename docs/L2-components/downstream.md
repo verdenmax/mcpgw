@@ -13,16 +13,17 @@
 
 ### 类型 `GatewayServer`（`lib.rs`）
 下游 MCP server。持有共享网关状态、一个 `default_top_k`（`search_tools` 省略 `top_k` 时使用，来自
-`[retrieval].top_k`）、以及一组**观测 sink** `Arc<[Arc<dyn observe::CallSink>]>`（每次调用扇出到它）。
+`[retrieval].top_k`）、一组**观测 sink** `Arc<[Arc<dyn observe::CallSink>]>`（每次调用扇出到它）、以及一组
+**发现追踪 sink** `Arc<[Arc<dyn observe::DiscoverySink>]>`（`search_tools` 在非空时扇出 `DiscoveryRecord`）。
 `#[derive(Clone)]`（仅克隆内部 `Arc`）。
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `new` | `(state: Arc<GatewayState>, default_top_k: usize, sinks: Arc<[Arc<dyn observe::CallSink>]>) -> Self` | 用共享状态、默认 `top_k` 与观测 sink 切片构造 |
+| `new` | `(state: Arc<GatewayState>, default_top_k: usize, sinks: Arc<[Arc<dyn observe::CallSink>]>, discovery: Arc<[Arc<dyn observe::DiscoverySink>]>) -> Self` | 用共享状态、默认 `top_k`、观测 sink 切片与发现追踪 sink 切片构造；`discovery` 空 → 不捕获追踪 |
 
 实现 `rmcp::ServerHandler`：`get_info`（仅 `enable_tools`）、`list_tools`（恒返回 3 个元工具）、`call_tool`
-（按名分派到 `metatools`，并在调用边界构造 `observe::CallRecord` 扇出到 `sinks`）。配合
-`server.serve(stdio()).await` 起服务。
+（按名分派到 `metatools`，并在调用边界构造 `observe::CallRecord` 扇出到 `sinks`；`search_tools` 另在
+`discovery` 非空时扇出 `DiscoveryRecord`）。配合 `server.serve(stdio()).await` 起服务。
 
 ### 函数 `meta_tools`（`lib.rs`）
 
@@ -37,9 +38,9 @@
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
-| `build_router` | `(state: Arc<GatewayState>, default_top_k: usize, path: &str, api_keys: Vec<String>, sinks: Arc<[Arc<dyn observe::CallSink>]>) -> axum::Router` | 把 3 个元工具挂在 `path`（如 `/mcp`）下，返回可供 `axum::serve` 起监听的 `Router`；`sinks` 透传给每会话的 `GatewayServer` |
+| `build_router` | `(state: Arc<GatewayState>, default_top_k: usize, path: &str, api_keys: Vec<String>, sinks: Arc<[Arc<dyn observe::CallSink>]>, discovery: Arc<[Arc<dyn observe::DiscoverySink>]>) -> axum::Router` | 把 3 个元工具挂在 `path`（如 `/mcp`）下，返回可供 `axum::serve` 起监听的 `Router`；`sinks` 与 `discovery` 透传给每会话的 `GatewayServer` |
 
-- 工厂闭包 `move || Ok(GatewayServer::new(state.clone(), default_top_k, sinks.clone()))` 为每个会话复用同一份共享状态与同一组观测 sink。
+- 工厂闭包 `move || Ok(GatewayServer::new(state.clone(), default_top_k, sinks.clone(), discovery.clone()))` 为每个会话复用同一份共享状态、同一组观测 sink 与同一组发现追踪 sink。
 - `StreamableHttpService` 实现 `tower_service::Service`，直接 `Router::new().nest_service(path, service)` 挂载。
 - `StreamableHttpServerConfig::default()` 的 `allowed_hosts` 默认 `[localhost, 127.0.0.1, ::1]`，放行本机。
 - **`api_keys` 非空 → 叠加 Bearer 鉴权层**（`from_fn_with_state` + `require_api_key`，M1-C T4）：请求须带
@@ -48,8 +49,9 @@
 
 ## 依赖
 
-- 内部：`gateway`（`GatewayState`：共享快照 + 上游注册表）、`metatools`（三个元工具函数 + `MetaError`）、
-  `observe`（`CallRecord` / `CallSink` / `MetaTool` / `CallOutcome`：调用观测记录与扇出契约）。
+- 内部：`gateway`（`GatewayState`：共享快照 + 上游注册表）、`metatools`（三个元工具函数 + `MetaError` +
+  `ToolSummary`）、`observe`（`CallRecord` / `CallSink` / `MetaTool` / `CallOutcome` 调用观测契约 +
+  `DiscoveryRecord` / `DiscoveryHit` / `DiscoverySink` 发现追踪契约）。
 - 外部：`rmcp`（`ServerHandler` / `Tool` / `CallToolResult` 等，feature `server` + `transport-io` +
   `transport-streamable-http-server`）、`axum`（0.8，HTTP server router）、`serde_json`。
 
@@ -71,6 +73,11 @@
 - 自身**无可变状态**：所有数据经 `GatewayState::snapshot()`（读无锁）与 `registry()` 取得。
 - **观测仅元数据**：每次元工具调用扇出的 `observe::CallRecord` 只含 size（`arg_bytes`/`result_bytes`）与
   分类（`outcome`/`error_kind`），**绝不含参数/结果内容**；**未知元工具名**是协议误用、**不记录**。
+- **`upstream` 归因安全**：`CallRecord.upstream` 由对 `target_tool` 的**工具目录解析**取真实 `server`，
+  **不**拆 client 提供的名字——未知 `call_tool` 名解析不到时 `upstream = None`，杜绝注入 attacker 可控前缀。
+- **发现追踪与观测隔离**：`search_tools` 在 `discovery` 非空时另扇出 `observe::DiscoveryRecord`（含 query 文本
+  + 命中工具名/分数）走 `DiscoverySink`，与仅元数据的 `CallSink` **物理隔离**；该通道由 `[dashboard].trace_queries`
+  opt-in，默认空切片即不捕获。
 
 ## 向下导航
 

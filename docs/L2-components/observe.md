@@ -22,7 +22,7 @@ sink」这一接缝的**单一来源**：T1（tracing）与 T3（审计 JSONL）
 | `ts_unix_ms` | `u64` | 记录构造时刻（unix 毫秒，见 `now_unix_ms`） |
 | `meta_tool` | `MetaTool` | 哪个元工具（`search_tools`/`get_tool_details`/`call_tool`，snake_case 序列化） |
 | `target_tool` | `Option<String>` | `call_tool` 的目标工具 qualified name；其它元工具 `None`（不序列化） |
-| `upstream` | `Option<String>` | 由 `target_tool` 的 `"__"` 前缀取出的上游 server 名；`None` 不序列化 |
+| `upstream` | `Option<String>` | 由下游按 `target_tool` 在**工具目录里解析**出的真实上游 `server` 名；查不到则 `None`（不再切 client 提供的名字，见 [downstream L3](../L3-details/downstream.md)）；`None` 不序列化 |
 | `latency_ms` | `u64` | 分派耗时（毫秒，只覆盖调用本身） |
 | `outcome` | `CallOutcome` | `ok`/`error`/`timeout` |
 | `error_kind` | `Option<&'static str>` | 失败分类（稳定字符串）；成功 `None`（不序列化） |
@@ -61,6 +61,19 @@ writer loop：批量 drain + 每批 flush 到 OS；干净断连时**最终 flush
 ### testkit `CaptureSink`
 `testkit` feature 下导出的测试 sink：把每条记录克隆进内部 buffer，`records()` 取快照供断言。
 
+### 发现追踪契约 `DiscoveryRecord` / `DiscoveryHit` / `DiscoverySink`（`discovery.rs`）
+子系统 A（dashboard）的 **opt-in、与仅元数据 `CallRecord` 隔离**的搜索发现追踪通道，**与 `CallSink` 并列但
+独立**——使 query 文本/工具名**绝不**漏进 privacy-clean 的调用 sink（tracing/审计）。
+
+| 项 | 形状 / 签名 | 说明 |
+|----|------|------|
+| `DiscoveryHit` | `{ name: String, score: f32 }` | 一条命中：命名空间化工具名 + 相关性分数 |
+| `DiscoveryRecord` | `{ ts_unix_ms, query, top_k, results: Vec<DiscoveryHit>, latency_ms }` | 一次 `search_tools` 的 `query → 命中工具+分数`。**`Serialize + Deserialize`**（可落 JSONL 再回放） |
+| `DiscoverySink` | trait `record(&self, &DiscoveryRecord)`（`Send + Sync`） | 发现追踪扇出目标，由 dashboard 的 `DiscoveryRingSink` 实现 |
+
+下游 `search_tools` 仅在 discovery 切片非空（即 `[dashboard].trace_queries`）时构造并扇出 `DiscoveryRecord`，
+故默认无追踪。逐项见 L4 `docs/L4-api/observe-lib.md`「发现追踪契约」。
+
 详见 L4：`docs/L4-api/observe-lib.md`（逐项签名、序列化 key 集合锁死、`now_unix_ms` 语义、扩展点）；
 审计 sink 逐项见 `docs/L4-api/observe-audit.md`（`JsonlSink`/`spawn_writer`/`AuditWriter`、writer loop 语义）。
 
@@ -85,7 +98,10 @@ writer loop：批量 drain + 每批 flush 到 OS；干净断连时**最终 flush
 
 ## 不负责
 
-- **用量指标/聚合与导出**（Prometheus/OTel）——属 M6.T2 的 `MetricsSink`（实现同一 `CallSink` trait 接入）。
+- **用量指标/聚合与导出**（Prometheus/OTel）——属另一类 sink；其中 dashboard 子系统的 `MetricsSink`
+  （`crates/dashboard`，**已实现**同一 `CallSink` trait 做实时聚合）经本接缝接入，本 crate 自身不做聚合。
+- **发现追踪的存储/回放**——本 crate 只定义 `DiscoverySink`/`DiscoveryRecord` 契约；ring 缓冲与 JSONL
+  落盘/回放在 dashboard（见 [dashboard L2](./dashboard.md)）。
 - 计时/分类/构造记录本身——发生在 `downstream`，本 crate 只定义**记录形状、sink 契约与可选的 JSONL 落盘**。
 - 审计文件的**轮转/重开**——`JsonlSink` 单纯 append，无内建 rotation/SIGHUP 重开，须由外部
   logrotate 等处理（见 [config L3](../L3-details/config.md) 的 `[audit]` 运维说明）。
@@ -95,3 +111,4 @@ writer loop：批量 drain + 每批 flush 到 OS；干净断连时**最终 flush
 - 逐文件 API 见 L4：[observe-lib](../L4-api/observe-lib.md) · [observe-audit](../L4-api/observe-audit.md)
 - 埋点位置/延迟基准/`error_kind` 分类见 L3：[downstream](../L3-details/downstream.md)
 - 装配入口见：[mcpgw-cli L2](./mcpgw-cli.md) · [downstream L2](./downstream.md)
+- 发现追踪通道的消费方见：[dashboard L2](./dashboard.md)

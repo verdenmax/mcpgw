@@ -11,10 +11,12 @@ pub struct Config {
     #[serde(default, rename = "upstream")] pub upstreams: Vec<UpstreamConfig>,
     #[serde(default)] pub server: ServerConfig,
     #[serde(default)] pub audit: AuditConfig,
+    #[serde(default)] pub dashboard: DashboardConfig,
 }
 ```
 `[[upstream]]` 数组通过 `rename = "upstream"` 映射到 `upstreams` 字段（缺省为空）；`[server]` 段缺省取
-`ServerConfig::default()`；`[audit]` 段缺省取 `AuditConfig::default()`（即审计关闭）。
+`ServerConfig::default()`；`[audit]` 段缺省取 `AuditConfig::default()`（即审计关闭）；`[dashboard]` 段缺省取
+`DashboardConfig::default()`（即面板关闭）。
 
 | 方法 | 签名 | 返回 / 说明 |
 |------|------|-------------|
@@ -29,6 +31,7 @@ pub struct Config {
 > 且**不得含通配/参数段**（即不含 `{`、`}`、`*`，如 `/{id}`、`/{*rest}`、`/a*b`）——否则 `Invalid`。
 > 后者同样在启动期、axum 之前校验：含这类段的路径会让 axum 在 `nest_service` 构建路由时 panic（`/{*rest}`），
 > 或把 MCP 静默挂到动态捕获段（`/{id}`）上。
+> 另：`[dashboard]` 段当 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`（否则 `Invalid`）。
 
 ## `struct UpstreamConfig`
 ```rust
@@ -129,6 +132,27 @@ pub struct AuditConfig {
 `path="mcpgw-audit.jsonl"`）。`validate()` **不**校验 `path`（落盘失败在 `serve` 启动期由
 `observe::spawn_writer` 经 fail-fast 暴露）。
 
+## `struct DashboardConfig`
+```rust
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DashboardConfig {
+    pub enabled: bool,              // 默认 false（须显式开启）
+    pub bind: String,              // 默认 "127.0.0.1:8971"（仅 localhost、无 auth）
+    pub trace_queries: bool,       // 默认 false（opt-in 后才捕获 query 文本 + 命中工具名/分数）
+    pub trace_path: Option<String>,// 默认 None（给出则把发现追踪另写 JSONL 供历史回放）
+    pub trace_buffer: usize,       // 默认 500（内存发现 ring buffer 容量，须 > 0）
+}
+```
+`[dashboard]` 段（子系统 A）：可选的**只读可视化面板**——独立端口、localhost、无鉴权的 web server（实现见
+L3 [dashboard](../L3-details/dashboard.md)）。`enabled` 默认 `false`——**省略整个 `[dashboard]` 段 = 面板关闭**
+（经容器级 `#[serde(default)]` 取 `DashboardConfig::default()`）。`trace_queries` 控制是否捕获**与审计/观测物理
+隔离**的发现追踪通道（`DiscoveryRecord`，含 query 文本 + 命中工具名/分数），默认关闭；`trace_path` 给出时把该追踪
+另写一份 JSONL 供历史回放，否则仅内存 ring buffer。无 flatten，故 `#[serde(default, deny_unknown_fields)]` 生效
+（段内未知键 → `Parse`）；实现 `Default`（`enabled=false`、`bind="127.0.0.1:8971"`、`trace_queries=false`、
+`trace_path=None`、`trace_buffer=500`）。`validate()` 仅在 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`
+（否则 `Invalid`）；端口能否绑定在 `serve` 启动期由预绑定监听 fail-fast 暴露。
+
 ## `struct RetrievalConfig`
 ```rust
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -190,6 +214,6 @@ pub enum ConfigError {
 }
 ```
 - `Parse`：TOML 语法错误或未知字段。
-- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`、upstream `name` 空白/含 `__`/以 `_` 开头或结尾/重复、`[server.http].path` 不以 `/` 开头或仅为 `/`）。
+- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`、upstream `name` 空白/含 `__`/以 `_` 开头或结尾/重复、`[server.http].path` 不以 `/` 开头或仅为 `/`、`[dashboard]` 启用时 `bind` 空白或 `trace_buffer == 0`）。
 
 > 行为细节见 L3：[config](../L3-details/config.md)

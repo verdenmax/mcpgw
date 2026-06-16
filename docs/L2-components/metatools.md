@@ -15,14 +15,16 @@
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `new` | `(catalog: Catalog, strategy: Box<dyn RetrievalStrategy>) -> Self` | 由 catalog 与**已 `index` 过**的策略构造；`catalog`/`strategy` 字段对外只读（`pub(crate)`） |
+| `catalog` | `(&self) -> &Catalog` | 只读访问聚合工具目录（不暴露检索策略）；供 dashboard 等只读消费者枚举/计数工具 |
 
 ### 类型 `ToolSummary`（`snapshot.rs`）
-一条 `search_tools` 命中：命名空间化工具名 + 一行描述。
+一条 `search_tools` 命中：命名空间化工具名 + 一行描述 + 检索分数。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `name` | `String` | 命名空间化名 `{server}__{name}` |
 | `description` | `String` | 一行描述 |
+| `score` | `f32` | 检索相关度分数（越大越相关，命中按其降序）；向后兼容的新增字段，dashboard 发现追踪据此呈现 |
 
 `#[derive(Debug, Clone, PartialEq, serde::Serialize)]`。
 

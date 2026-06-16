@@ -32,10 +32,11 @@ pub struct GatewayState {
     strategy_name: Arc<str>,                   // 私有
     backends: Backends,                        // 私有，retrieval 后端（embedder/chat/subagent_candidates），跨 rebuild 持有（保留缓存）
     rebuild_lock: Arc<Mutex<()>>,              // 私有，串行化重建
+    last_summary: Arc<ArcSwapOption<RebuildSummary>>, // 私有，最近一次重建摘要（供 dashboard 只读读取）
 }
 ```
-可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 检索后端 `Backends` + 重建锁。`Clone` 仅克隆内部 `Arc`，
-所有克隆共享同一份状态。
+可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 检索后端 `Backends` + 重建锁 +
+最近重建摘要（`ArcSwapOption`，读无锁）。`Clone` 仅克隆内部 `Arc`，所有克隆共享同一份状态。
 
 ### `GatewayState::new`
 ```rust
@@ -72,6 +73,14 @@ pub fn registry(&self) -> &UpstreamRegistry
 pub fn snapshot(&self) -> Arc<GatewaySnapshot>
 ```
 `self.snapshot.load_full()`：**无锁**加载当前快照的 `Arc` 克隆。无错误。
+
+### `GatewayState::last_summary`
+```rust
+pub fn last_summary(&self) -> Option<Arc<RebuildSummary>>
+```
+`self.last_summary.load_full()`：**无锁**返回**最近一次** `rebuild_snapshot` 成功提交的 `RebuildSummary`
+（含 `ingested`/`skipped`），首次重建前为 `None`。每次重建在 swap 快照后 `store(Some(Arc::new(summary)))`。
+供 dashboard 的 `/api/upstreams` 等只读读取已摄取/被跳过的上游归因。无错误。
 
 ### `GatewayState::rebuild_snapshot`
 ```rust

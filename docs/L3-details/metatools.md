@@ -5,7 +5,8 @@
 `GatewaySnapshot { catalog: Catalog, strategy: Box<dyn RetrievalStrategy> }` 两字段均 `pub(crate)`，仅经
 `new(catalog, strategy)` 一次性装配，之后不再 mutate。元工具函数全部接 `&GatewaySnapshot`（只读）。这让 `gateway`
 可以把它放进 `ArcSwap` 并以"整体换新"的方式更新——快照内部无需任何锁。约定：传入的 `strategy` 必须**已对该 catalog
-`index` 过**，否则 `search_tools` 返回空。
+`index` 过**，否则 `search_tools` 返回空。另有只读访问器 `catalog(&self) -> &Catalog`，对外暴露聚合工具目录
+（不暴露检索策略），供 dashboard 等只读消费者枚举/计数工具。
 
 ## `search_tools`：`ScoredTool` → `ToolSummary` 映射
 
@@ -13,10 +14,11 @@
 
 ```text
 snap.strategy.search(query, top_k)  ->  Vec<ScoredTool { qualified_name, description, score }>
-        每条 map 成 ToolSummary { name: qualified_name, description }
+        每条 map 成 ToolSummary { name: qualified_name, description, score }
 ```
 
-- `score` 字段被**丢弃**——元工具只对外暴露名字与描述，排序信息不外泄。
+- `score` 字段**保留**进 `ToolSummary`（向后兼容的新增字段）——下游的发现追踪（dashboard）据此呈现命中分数；
+  MCP 工具响应序列化多带一个 `score` 字段，对既有客户端无害。
 - 顺序保持策略给的"最佳在前"。`top_k` 由策略负责截断。
 
 ## `get_tool_details`：按命名空间名查 catalog

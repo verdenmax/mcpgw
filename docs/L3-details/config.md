@@ -72,6 +72,24 @@
 - **单写者 / 每进程独立 path**：审计 writer 是**进程内唯一的单写者线程**；**多个进程写同一文件是误配**
   （交错/损坏行、轮转语义破裂），每个网关进程应配独立 `path`。
 
+### `[dashboard]` 段（子系统 A）
+
+`Config.dashboard: DashboardConfig`（`#[serde(default, deny_unknown_fields)]`）开关**只读可视化面板**——一个
+**独立端口、localhost、无鉴权**的 web server，只读地展示快照/指标/搜索追踪（实现见 [dashboard L3](./dashboard.md)）。
+
+- **字段与默认**：`enabled: bool`（默认 `false`，须显式 opt-in）、`bind: String`（默认 `"127.0.0.1:8971"`，
+  仅 localhost、无 auth）、`trace_queries: bool`（默认 `false`，opt-in 后才捕获 **query 文本 + 命中工具名/分数**
+  的发现追踪）、`trace_path: Option<String>`（默认 `None`，给出则把发现追踪另写一份 JSONL 供历史回放，否则仅内存
+  ring buffer）、`trace_buffer: usize`（默认 `500`，内存发现 ring buffer 容量，须 `> 0`）。
+- **省略整个 `[dashboard]` 段 → `DashboardConfig::default()`（关闭）**；只给 `enabled = true` 时其余字段取默认
+  （`dashboard_defaults_and_partial_fill` 单测锁定）。无 flatten，故 `deny_unknown_fields` 生效（段内未知键如
+  `bogus` → `Parse`）。
+- **隐私分层**：`trace_queries` 控的是**与审计/观测物理隔离的独立通道**——审计 JSONL（`[audit]`）与
+  `observe::CallRecord` 始终**仅元数据**，绝不含 query 文本；只有 dashboard 的发现追踪（`DiscoveryRecord`）才带
+  query 与工具名，且默认关闭。
+- **`validate()`**：仅当 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`（否则 `Invalid`）；端口能否绑定
+  在 `serve` 启动期由**预绑定监听**fail-fast 暴露，而非配置解析期。
+
 ## `env_passthrough` 的 allow-list 语义
 
 `env_passthrough` 不是「额外追加」而是「白名单」：`upstream::connect::build_command` 先 `c.env_clear()` 清空子进程
@@ -123,6 +141,9 @@
 - `audit_defaults_disabled`（省略 `[audit]` → `enabled = false`、`path = "mcpgw-audit.jsonl"`）/
   `parses_audit_section`（显式 `enabled`/`path` 解析）/ `audit_rejects_unknown_field`（段内未知键 → `Parse`）/
   `audit_partial_fills_defaults`（只给 `enabled` 时 `path` 取默认）
+- `dashboard_defaults_and_partial_fill`（只给 `enabled` 时 `bind`/`trace_queries`/`trace_path`/`trace_buffer` 取默认
+  `127.0.0.1:8971`/`false`/`None`/`500`）/ `omitting_dashboard_section_is_disabled`（省略 `[dashboard]` → 关闭）/
+  `dashboard_rejects_unknown_field_and_zero_buffer`（段内未知键 → `Parse`；`trace_buffer = 0` → `Invalid`）
 
 ## 相关
 
