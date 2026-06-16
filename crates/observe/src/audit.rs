@@ -208,11 +208,13 @@ mod tests {
         assert!(spawn_writer(bad, 8).is_err());
     }
 
-    /// A `Write` that fails its first `fail_first` writes, then succeeds — to exercise the
-    /// writer's keep-alive-on-error self-heal.
+    /// A `Write` that fails its first `fail_first` writes and its first `fail_flush_first` flushes,
+    /// then succeeds — to exercise the writer's keep-alive-on-error self-heal on both surfaces.
     struct FlakyWriter {
         fail_first: usize,
+        fail_flush_first: usize,
         writes: usize,
+        flushes: usize,
         data: Vec<u8>,
     }
     impl std::io::Write for FlakyWriter {
@@ -225,6 +227,10 @@ mod tests {
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            if self.flushes <= self.fail_flush_first {
+                return Err(std::io::Error::other("transient flush error"));
+            }
             Ok(())
         }
     }
@@ -241,7 +247,9 @@ mod tests {
         // proving the loop kept going rather than exiting on the first error.
         let mut w = FlakyWriter {
             fail_first: 3,
+            fail_flush_first: 0,
             writes: 0,
+            flushes: 0,
             data: Vec::new(),
         };
         super::write_loop(&rx, &mut w);
@@ -251,5 +259,33 @@ mod tests {
             out.contains("line3"),
             "writer must self-heal and keep writing after errors; got {out:?}"
         );
+    }
+
+    #[test]
+    fn write_loop_survives_flush_errors() {
+        // The flush() arm is the more likely error surface behind a real BufWriter (small writes
+        // buffer, the I/O fault surfaces at flush). Failing every flush must NOT stop the loop:
+        // all lines still get written.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(8);
+        for i in 0..3 {
+            tx.send(format!("line{i}")).unwrap();
+        }
+        drop(tx);
+
+        let mut w = FlakyWriter {
+            fail_first: 0,
+            fail_flush_first: usize::MAX, // every flush fails
+            writes: 0,
+            flushes: 0,
+            data: Vec::new(),
+        };
+        super::write_loop(&rx, &mut w);
+
+        let out = String::from_utf8(w.data).unwrap();
+        assert!(
+            out.contains("line0") && out.contains("line2"),
+            "writer must keep going past flush errors; got {out:?}"
+        );
+        assert!(w.flushes > 0, "flush was exercised");
     }
 }
