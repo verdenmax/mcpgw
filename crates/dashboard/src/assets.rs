@@ -15,20 +15,16 @@ pub async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     match Assets::get(path) {
-        Some(content) => {
-            let mime = content.metadata.mimetype();
-            (
-                [(header::CONTENT_TYPE, mime.to_string())],
-                content.data.into_owned(),
-            )
-                .into_response()
-        }
+        Some(content) => (
+            [(
+                header::CONTENT_TYPE,
+                content.metadata.mimetype().to_string(),
+            )],
+            content.data,
+        )
+            .into_response(),
         None => match Assets::get("index.html") {
-            Some(index) => (
-                [(header::CONTENT_TYPE, "text/html")],
-                index.data.into_owned(),
-            )
-                .into_response(),
+            Some(index) => ([(header::CONTENT_TYPE, "text/html")], index.data).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
         },
     }
@@ -52,5 +48,36 @@ mod tests {
     fn embedded_dist_has_a_js_asset() {
         let has_js = Assets::iter().any(|p| p.starts_with("assets/") && p.ends_with(".js"));
         assert!(has_js, "a hashed JS asset is embedded under assets/");
+    }
+
+    // Security guard (replaces the deleted app.js escape test): Svelte auto-escapes `{expr}`, but
+    // `{@html ...}` bypasses it. Forbid `{@html}` across the UI source so untrusted /api fields
+    // (query text, tool/upstream names, error reasons) can never be injected as raw HTML.
+    #[test]
+    fn no_svelte_component_uses_raw_html() {
+        fn scan(dir: &std::path::Path, offenders: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    scan(&p, offenders);
+                } else if p.extension().is_some_and(|x| x == "svelte") {
+                    if let Ok(s) = std::fs::read_to_string(&p) {
+                        if s.contains("{@html") {
+                            offenders.push(p.display().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/src");
+        let mut offenders = Vec::new();
+        scan(&dir, &mut offenders);
+        assert!(
+            offenders.is_empty(),
+            "no {{@html}} allowed in UI source (XSS risk): {offenders:?}"
+        );
     }
 }
