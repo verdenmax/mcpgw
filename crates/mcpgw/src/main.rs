@@ -424,7 +424,10 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             discovery_path: cfg.dashboard.trace_path.as_ref().map(PathBuf::from),
             started_at: std::time::Instant::now(),
         });
-        let router = dashboard::build_dashboard_router(app_state);
+        // Enforce a local Host header only when bound to loopback (non-loopback is an explicit,
+        // already-warned operator exposure that they front themselves).
+        let enforce_loopback_host = !unauthenticated_public_bind(&cfg.dashboard.bind, false);
+        let router = dashboard::build_dashboard_router(app_state, enforce_loopback_host);
         Some(tokio::spawn(async move {
             axum::serve(listener, router)
                 .with_graceful_shutdown(async move {

@@ -13,8 +13,12 @@ pub use history::{replay_audit_metrics, replay_discovery, MetricBucket};
 mod api;
 pub use api::{AppState, UpstreamInfo};
 
+use axum::extract::Request;
 use axum::extract::{Query, State};
 use axum::http::header::CONTENT_TYPE;
+use axum::http::header::HOST;
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Json;
@@ -91,9 +95,46 @@ async fn h_style_css() -> impl IntoResponse {
     ([(CONTENT_TYPE, "text/css")], STYLE_CSS)
 }
 
-/// Build the dashboard's API router (static assets added in Task 10).
-pub fn build_dashboard_router(state: Arc<AppState>) -> axum::Router {
-    axum::Router::new()
+/// True if the `Host` header names the local machine (the literal `localhost`, or an IP that is a
+/// loopback address). Defends the unauthenticated dashboard against DNS rebinding when bound to
+/// loopback: a remote page that rebinds its hostname to 127.0.0.1 still sends its OWN hostname in
+/// `Host`, which is rejected. Missing/unparseable Host -> not local.
+fn host_is_local(host: Option<&str>) -> bool {
+    let Some(raw) = host else {
+        return false;
+    };
+    // Strip the optional port. IPv6 hosts are bracketed in `Host`: `[::1]:8971` / `[::1]`.
+    let host = if let Some(rest) = raw.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else {
+        raw.rsplit_once(':').map_or(raw, |(h, _)| h)
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Reject (403) any request whose `Host` is not local. Mounted only when the dashboard is bound to
+/// loopback (see `build_dashboard_router`).
+async fn require_local_host(req: Request, next: Next) -> axum::response::Response {
+    let host = req.headers().get(HOST).and_then(|v| v.to_str().ok());
+    if host_is_local(host) {
+        next.run(req).await
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
+}
+
+/// Build the dashboard's router. When `enforce_loopback_host` is true (dashboard bound to
+/// loopback), a layer rejects requests whose `Host` isn't local, closing the DNS-rebinding vector.
+pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router {
+    let router = axum::Router::new()
         .route("/api/overview", get(h_overview))
         .route("/api/upstreams", get(h_upstreams))
         .route("/api/tools", get(h_tools))
@@ -103,7 +144,12 @@ pub fn build_dashboard_router(state: Arc<AppState>) -> axum::Router {
         .route("/", get(h_index))
         .route("/app.js", get(h_app_js))
         .route("/style.css", get(h_style_css))
-        .with_state(state)
+        .with_state(state);
+    if enforce_loopback_host {
+        router.layer(middleware::from_fn(require_local_host))
+    } else {
+        router
+    }
 }
 
 #[cfg(test)]
@@ -142,5 +188,36 @@ mod asset_tests {
             APP_JS.contains("escapeHtml(x.meta_tool)"),
             "meta-tool name is escaped"
         );
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::host_is_local;
+
+    #[test]
+    fn host_is_local_accepts_loopback_rejects_remote() {
+        for ok in [
+            "127.0.0.1:8971",
+            "127.0.0.1",
+            "localhost",
+            "localhost:8971",
+            "LOCALHOST:8971",
+            "[::1]:8971",
+            "[::1]",
+            "127.0.0.5:8971",
+        ] {
+            assert!(host_is_local(Some(ok)), "{ok} should be local");
+        }
+        for bad in [
+            "evil.com:8971",
+            "192.168.1.5:8971",
+            "example.com",
+            "0.0.0.0:8971",
+            "[::]:8971",
+        ] {
+            assert!(!host_is_local(Some(bad)), "{bad} should NOT be local");
+        }
+        assert!(!host_is_local(None), "missing Host -> not local");
     }
 }
