@@ -11,7 +11,7 @@ mod calls;
 pub use calls::{CallFilter, CallItem, CallRingSink};
 
 mod history;
-pub use history::{replay_audit_metrics, replay_discovery, MetricBucket};
+pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery, MetricBucket};
 
 mod api;
 pub use api::{AppState, UpstreamInfo};
