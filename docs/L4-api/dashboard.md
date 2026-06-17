@@ -1,6 +1,6 @@
 # L4 — `crates/dashboard` API
 
-源文件：`crates/dashboard/src/{lib,metrics,trace,history,api}.rs` + `assets/`。只读可视化面板（子系统 A）：
+源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api}.rs` + `assets/`。只读可视化面板（子系统 A）：
 把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL 聚合成 8 个 `/api/*` JSON 端点 + 一个零构建原生 JS
 SPA，跑在独立 localhost 端口上。所有对外类型经 `lib.rs` re-export。
 
