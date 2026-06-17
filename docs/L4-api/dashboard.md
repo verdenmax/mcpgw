@@ -112,7 +112,7 @@ pub struct MetricBucket { pub bucket_start_ms: u64, pub calls: u64, pub errors: 
 ```rust
 pub fn replay_audit_calls(path: &Path, scan_limit: usize, filter: &CallFilter) -> (Vec<CallItem>, bool)
 ```
-把 audit JSONL 反序列化为 `CallItem`（owned 镜像 `AuditCallLine`，因 `CallRecord` 不可反序列化），最新优先，扫描至多末尾 `scan_limit` 行；坏行跳过；id 为 `"h{ts}-{n}"`（同 `ts` 文件序内第 n 条，稳定）；`filter` 在 id 分配后应用。Bool=文件可读。
+把 audit JSONL 反序列化为 `CallItem`（owned 镜像 `AuditCallLine`，因 `CallRecord` 不可反序列化），newest-first，扫描至多末尾 `scan_limit` 行；坏行跳过；id 为 `"h{ts}-{n}"`（同 `ts` 文件序内第 n 条，稳定）；`filter` 在 id 分配后应用。`bool` = 文件可读。
 
 ---
 
@@ -125,7 +125,7 @@ live 环与 history 回放共用的 owned 项：`id`（live=十进制 seq；hist
 `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`，均 `Option`（`None`=全匹配；`since_ms`/`until_ms` 为闭区间，含端点）；`matches(&CallItem)` 对 live 与 history 两数据源统一过滤。
 
 ### `struct CallRingSink`（实现 `observe::CallSink`）
-有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` 最新优先、`total` 计全部命中；`get(seq) -> Option<CallItem>`。容量 = `[dashboard].call_buffer`。
+有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` newest-first、`total` 计全部命中；`get(seq) -> Option<CallItem>`。容量 = `[dashboard].call_buffer`。
 
 ---
 
@@ -176,7 +176,7 @@ pub struct CallsResponse { source, history_unavailable, total, items: Vec<CallIt
 | `metrics` | `(&AppState) -> MetricsSnapshot` | `metrics.snapshot()` |
 | `traces` | `(&AppState, limit, source) -> TracesResponse` | `source=="history"` → `replay_discovery(discovery_path)`（无 path→`history_unavailable`）；否则 `discovery.recent(limit)`（未启用→空、`history_unavailable=false`） |
 | `metrics_history` | `(&AppState, limit, bucket_ms) -> HistoryResponse` | `replay_audit_metrics(audit_path)`（无 path→`history_unavailable`） |
-| `call_filter_from_query` | `(&HashMap<String,String>) -> CallFilter` | 从查询参数 `meta`/`upstream`/`tool`/`outcome`/`since`/`until` 构造过滤器（`since`/`until` 解析为 `u64` ms） |
+| `call_filter_from_query` | `(&HashMap<String,String>) -> CallFilter` | 从查询参数 `meta`/`upstream`/`tool`（→`target_tool`）/`outcome`/`since`/`until` 构造过滤器（`since`/`until` 解析为 `u64` ms） |
 | `calls` | `(&AppState, &CallFilter, source, scan_limit, limit, offset) -> CallsResponse` | `source=="history"` → `replay_audit_calls(audit_path, scan_limit)`（无 path→`history_unavailable`、`total`=全部命中、`skip(offset).take(limit)`）；否则 `calls.query(filter, limit, offset)`（未启用→空、`history_unavailable=false`） |
 | `call_detail` | `(&AppState, id) -> Option<CallItem>` | `is_history_id(id)` → 重扫 `CALL_HISTORY_SCAN` 行回放后按 id 定位；否则按十进制 live seq 取环 `get(seq)`；找不到/源不可用→`None` |
 | `is_history_id` | `(id: &str) -> bool` | id 以 `h` 开头即历史（`"h{ts}-{n}"`）；否则按 live ring 十进制 seq。格式判定集中于此，使 handler 的 blocking-pool 决策与 `call_detail` 源路由不漂移 |
