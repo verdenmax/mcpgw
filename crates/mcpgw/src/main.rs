@@ -311,6 +311,15 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     } else {
         None
     };
+    // Per-call ring for the dashboard Calls drill-down (only when dashboard enabled). Joins the
+    // CallSink fan-out alongside MetricsSink; bounded by [dashboard].call_buffer.
+    let dashboard_calls = if cfg.dashboard.enabled {
+        let c = Arc::new(dashboard::CallRingSink::new(cfg.dashboard.call_buffer));
+        sink_vec.push(c.clone() as Arc<dyn observe::CallSink>);
+        Some(c)
+    } else {
+        None
+    };
     let sinks: Arc<[Arc<dyn observe::CallSink>]> = sink_vec.into();
 
     // Opt-in discovery capture (query -> tools). Ring buffer for live; optional JSONL for history.
@@ -411,6 +420,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
                 .clone()
                 .expect("metrics present when dashboard enabled"),
             discovery: discovery_ring.clone(),
+            calls: dashboard_calls.clone(),
             upstreams: cfg
                 .upstreams
                 .iter()

@@ -20,6 +20,8 @@ pub struct AppState {
     pub gateway: Arc<GatewayState>,
     pub metrics: Arc<MetricsSink>,
     pub discovery: Option<Arc<DiscoveryRingSink>>,
+    /// Per-call ring for the Calls drill-down (present only when the dashboard is enabled).
+    pub calls: Option<Arc<crate::calls::CallRingSink>>,
     pub upstreams: Vec<UpstreamInfo>,
     pub strategy: String,
     pub audit_path: Option<PathBuf>,
@@ -211,6 +213,7 @@ mod tests {
             gateway: gw,
             metrics,
             discovery: None,
+            calls: None,
             upstreams: vec![UpstreamInfo {
                 name: "github".into(),
                 transport: "stdio".into(),
