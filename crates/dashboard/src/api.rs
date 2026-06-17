@@ -275,10 +275,17 @@ pub fn calls(
     }
 }
 
+/// True if `id` is a history call id (`"h{ts}-{n}"`); false for a live ring seq (decimal). The id
+/// format is owned here so the handler's blocking-pool decision and `call_detail`'s source routing
+/// can't drift apart.
+pub fn is_history_id(id: &str) -> bool {
+    id.starts_with('h')
+}
+
 /// Resolve one call id: `h...` -> history (re-scan `CALL_HISTORY_SCAN` lines + find), else decimal
 /// seq -> live ring. `None` if not found / source unavailable.
 pub fn call_detail(state: &AppState, id: &str) -> Option<crate::calls::CallItem> {
-    if id.starts_with('h') {
+    if is_history_id(id) {
         let p = state.audit_path.as_ref()?;
         let (items, ok) =
             replay_audit_calls(p, CALL_HISTORY_SCAN, &crate::calls::CallFilter::default());
@@ -543,5 +550,79 @@ mod tests {
         assert_eq!(f.outcome.as_deref(), Some("error"));
         assert_eq!(f.since_ms, Some(10));
         assert_eq!(f.until_ms, Some(20));
+    }
+
+    #[tokio::test]
+    async fn calls_unknown_source_falls_through_to_live() {
+        let ring = Arc::new(crate::calls::CallRingSink::new(10));
+        ring.record(&call_rec(
+            observe::MetaTool::CallTool,
+            Some("gh"),
+            observe::CallOutcome::Ok,
+            1,
+        ));
+        let st = AppState {
+            calls: Some(ring),
+            ..seeded_state().await
+        };
+        // Any non-"history" source string must be treated as live.
+        let resp = calls(
+            &st,
+            &crate::calls::CallFilter::default(),
+            "bogus",
+            CALL_HISTORY_SCAN,
+            100,
+            0,
+        );
+        assert_eq!(resp.source, "live");
+        assert_eq!(resp.total, 1);
+    }
+
+    #[tokio::test]
+    async fn calls_history_paginates() {
+        let body = "{\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"upstream\":\"a\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":2,\"meta_tool\":\"call_tool\",\"upstream\":\"b\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":3,\"meta_tool\":\"call_tool\",\"upstream\":\"c\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n";
+        let p = std::env::temp_dir().join(format!("mcpgw-histpage-{}.jsonl", std::process::id()));
+        std::fs::write(&p, body).unwrap();
+        let st = AppState {
+            audit_path: Some(p.clone()),
+            ..seeded_state().await
+        };
+        // newest-first = [c(3), b(2), a(1)]; offset 1 limit 1 -> [b]
+        let resp = calls(
+            &st,
+            &crate::calls::CallFilter::default(),
+            "history",
+            CALL_HISTORY_SCAN,
+            1,
+            1,
+        );
+        assert_eq!(resp.total, 3, "total counts all matched");
+        assert_eq!(resp.items.len(), 1);
+        assert_eq!(resp.items[0].upstream.as_deref(), Some("b"));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[tokio::test]
+    async fn call_detail_history_missing_file_is_none() {
+        let p =
+            std::env::temp_dir().join(format!("mcpgw-detail-missing-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let st = AppState {
+            audit_path: Some(p),
+            ..seeded_state().await
+        };
+        assert!(
+            call_detail(&st, "h1-0").is_none(),
+            "history id but unreadable file -> None"
+        );
+    }
+
+    #[test]
+    fn is_history_id_distinguishes_live_and_history() {
+        assert!(is_history_id("h5-0"));
+        assert!(!is_history_id("0"));
+        assert!(!is_history_id("42"));
     }
 }
