@@ -273,4 +273,32 @@ mod tests {
         assert_eq!(items[0].upstream.as_deref(), Some("wx"));
         let _ = std::fs::remove_file(&p);
     }
+
+    #[test]
+    fn replay_audit_calls_ids_are_stable_regardless_of_filter() {
+        let body = "{\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"error\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":2,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"error\",\"arg_bytes\":0,\"result_bytes\":0}\n";
+        let p = write("calls-stableids.jsonl", body);
+        // Unfiltered: the error rows get ids h1-1 and h2-0.
+        let (all, _) = replay_audit_calls(&p, 10, &crate::calls::CallFilter::default());
+        let h1_1 = all
+            .iter()
+            .find(|i| i.id == "h1-1")
+            .expect("h1-1 present unfiltered");
+        assert_eq!(h1_1.outcome, "error");
+        // Filtered to outcome=error: the SAME surviving rows keep the SAME ids (filter doesn't shift n).
+        let f = crate::calls::CallFilter {
+            outcome: Some("error".into()),
+            ..Default::default()
+        };
+        let (errs, _) = replay_audit_calls(&p, 10, &f);
+        let ids: Vec<_> = errs.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["h2-0", "h1-1"],
+            "ids identical with or without the filter"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
 }
