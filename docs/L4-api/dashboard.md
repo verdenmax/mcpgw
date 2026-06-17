@@ -68,6 +68,10 @@ impl observe::DiscoverySink for DiscoveryRingSink { fn record(&self, rec: &Disco
 `record`：写 ring（满则 `pop_front`）后，若有 writer 则 `serde_json::to_string(rec)` `try_send` 进容量
 `WRITER_CHANNEL_CAP = 1024` 的有界 channel，**满则 `dropped` 计数、绝不阻塞**。
 
+> ring 常驻内存有界：条数封顶 `cap`，每条的 `query` 已在上游 `downstream` 经 `clamp_query` 截到
+> `MAX_TRACE_QUERY_CHARS = 2048` 字符，故约 `trace_buffer × 2048 字符`（不随 client 输入大小膨胀，见
+> [downstream-lib](./downstream-lib.md)）。
+
 ### `struct DiscoveryWriter`
 ```rust
 pub struct DiscoveryWriter { /* JoinHandle<()> 私有 */ }
@@ -158,9 +162,11 @@ pub struct HistoryResponse { history_unavailable, buckets: Vec<MetricBucket> }
 
 ### `build_dashboard_router`
 ```rust
-pub fn build_dashboard_router(state: Arc<AppState>) -> axum::Router
+pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router
 ```
-装配面板 router（`with_state(state)`）：
+装配面板 router（`with_state(state)`）。当 `enforce_loopback_host` 为 `true`（面板绑 loopback）时，额外
+`layer` 一层 `require_local_host` 中间件以关闭 DNS 重绑定向量；为 `false`（绑非 loopback 的显式外网暴露）时
+不挂该层：
 
 | 方法 | 路由 | handler → 响应 |
 |------|------|----------------|
@@ -176,6 +182,17 @@ pub fn build_dashboard_router(state: Arc<AppState>) -> axum::Router
 
 私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
 静态资源经 `include_str!` 内嵌进二进制（零外部文件依赖）。
+
+### Host 头校验：`host_is_local` / `require_local_host`（私有）
+```rust
+fn host_is_local(host: Option<&str>) -> bool
+async fn require_local_host(req: Request, next: Next) -> axum::response::Response
+```
+抗 DNS 重绑定的防线（**非鉴权**）：面板无鉴权、靠绑 loopback 控制访问，但远端页面可把自家域名重绑到
+`127.0.0.1` 后同源 `fetch /api/*`——它仍发自家域名的 `Host`，故可据 `Host` 拦下。`require_local_host` 把
+`Host` 非本地的请求一律 `403`，**仅当** `build_dashboard_router` 的 `enforce_loopback_host == true`（绑 loopback）
+时挂载；绑非 loopback 则跳过。`host_is_local`：剥端口、处理 IPv6 `[::1]`，`localhost`（忽略大小写）/回环 IP
+判为本地；含 `@`（userinfo）的 Host 防御性直接拒（合法 `Host` 永不含 `@`），缺/不可解析 Host → 非本地。
 
 ### SPA（`assets/app.js` + `index.html` + `style.css`）
 零依赖原生 JS，每 `REFRESH_MS = 3000` 轮询 `/api/overview`、`/api/upstreams`、`/api/metrics`、
