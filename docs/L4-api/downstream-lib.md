@@ -50,10 +50,16 @@ fn discovery_record_for_search(
     latency_ms: u64,
 ) -> observe::DiscoveryRecord
 ```
-从一次完成的 `search_tools` 调用构造一条**发现追踪**（纯函数）：`ts_unix_ms = now_unix_ms()`、原始
-`query`、`top_k`、把每个 `ToolSummary` 映成 `DiscoveryHit { name, score }`（即 `ToolSummary.score` 的去处）、
-`latency_ms`。仅当 `self.discovery` 非空时调用——`search_tools` 臂随后 `for sink in self.discovery.iter() {
-sink.record(&drec) }` 扇出（见下）。
+从一次完成的 `search_tools` 调用构造一条**发现追踪**（纯函数）：`ts_unix_ms = now_unix_ms()`、经 `clamp_query`
+截到 `MAX_TRACE_QUERY_CHARS = 2048` 字符的 `query`、`top_k`、把每个 `ToolSummary` 映成 `DiscoveryHit { name, score }`
+（即 `ToolSummary.score` 的去处）、`latency_ms`。仅当 `self.discovery` 非空时调用——`search_tools` 臂随后
+`for sink in self.discovery.iter() { sink.record(&drec) }` 扇出（见下）。
+
+**查询长度封顶（N2）**：`const MAX_TRACE_QUERY_CHARS = 2048` + 私有 `clamp_query(&str) -> String`
+（`query.chars().take(2048).collect()`，按 `char` 截断、**UTF-8 安全、绝不切碎码点**）把捕获的 client query 截短。
+discovery ring 已按 `trace_buffer` 封顶条数，但此前存的是**逐字 client query**，故海量超长 query（开了
+`trace_queries` 时）会放大内存；截断后 `DiscoveryRingSink` 的常驻内存按 `trace_buffer × 2048 字符`有界（不随
+client 输入大小膨胀）。短查询原样保留。
 
 ## `fn meta_tools`
 ```rust

@@ -52,6 +52,16 @@ fn classify(e: &metatools::MetaError) -> (observe::CallOutcome, Option<&'static 
     }
 }
 
+/// Max characters of a client query retained in a discovery trace. Bounds the discovery ring's
+/// resident memory to `trace_buffer * MAX_TRACE_QUERY_CHARS` rather than by client input size.
+const MAX_TRACE_QUERY_CHARS: usize = 2048;
+
+/// Truncate `query` to at most `MAX_TRACE_QUERY_CHARS` characters (operates on `char`s, so it is
+/// UTF-8 safe and never splits a code point).
+fn clamp_query(query: &str) -> String {
+    query.chars().take(MAX_TRACE_QUERY_CHARS).collect()
+}
+
 /// Build a discovery trace from a completed `search_tools` call (pure; used when discovery sinks
 /// are attached).
 fn discovery_record_for_search(
@@ -62,7 +72,7 @@ fn discovery_record_for_search(
 ) -> observe::DiscoveryRecord {
     observe::DiscoveryRecord {
         ts_unix_ms: observe::CallRecord::now_unix_ms(),
-        query: query.to_string(),
+        query: clamp_query(query),
         top_k,
         results: hits
             .iter()
@@ -376,6 +386,24 @@ mod tests {
         assert_eq!(rec.results.len(), 2);
         assert_eq!(rec.results[0].name, "a__x");
         assert_eq!(rec.results[0].score, 2.0);
+    }
+
+    #[test]
+    fn discovery_query_is_clamped_to_the_cap() {
+        let long = "x".repeat(MAX_TRACE_QUERY_CHARS + 100);
+        let rec = discovery_record_for_search(&long, 1, &[], 0);
+        assert_eq!(rec.query.chars().count(), MAX_TRACE_QUERY_CHARS);
+        let rec2 = discovery_record_for_search("hello", 1, &[], 0);
+        assert_eq!(rec2.query, "hello", "short query is unchanged");
+    }
+
+    #[test]
+    fn discovery_query_clamp_is_utf8_safe() {
+        // Multi-byte chars near the boundary must not split a code point.
+        let q: String = "é".repeat(MAX_TRACE_QUERY_CHARS + 10);
+        let rec = discovery_record_for_search(&q, 1, &[], 0);
+        assert_eq!(rec.query.chars().count(), MAX_TRACE_QUERY_CHARS);
+        assert!(rec.query.chars().all(|c| c == 'é'), "no split code point");
     }
 
     #[test]
