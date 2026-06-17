@@ -22,6 +22,8 @@
   });
 
   async function loadMetrics() {
+    // Metric cards are a secondary summary; on a /api/metrics blip we keep the last cards rather
+    // than surfacing an error (the calls list below owns the error UI).
     try { const m = await getJSON("/api/metrics"); metrics = m.per_meta_tool ?? []; } catch (_) {}
   }
   async function loadCalls() {
@@ -85,11 +87,13 @@
         {/each}
       </tbody>
     </table>
-    <div class="chips">
-      <span class="chip" class:disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - LIMIT))}>‹ prev</span>
-      <span class="muted">{offset + 1}–{Math.min(offset + LIMIT, resp.total)}</span>
-      <span class="chip" class:disabled={offset + LIMIT >= resp.total} onclick={() => { if (offset + LIMIT < resp.total) offset += LIMIT; }}>next ›</span>
-    </div>
+    {#if resp.total > 0}
+      <div class="chips">
+        <span class="chip" class:disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - LIMIT))}>‹ prev</span>
+        <span class="muted">{Math.min(offset + 1, resp.total)}–{Math.min(offset + LIMIT, resp.total)}</span>
+        <span class="chip" class:disabled={offset + LIMIT >= resp.total} onclick={() => { if (offset + LIMIT < resp.total) offset += LIMIT; }}>next ›</span>
+      </div>
+    {/if}
   {/if}
 {:else if !error}
   <p class="muted">loading…</p>

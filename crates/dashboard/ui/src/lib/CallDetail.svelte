@@ -1,5 +1,4 @@
 <script>
-  import { onMount } from "svelte";
   let { id } = $props();
   let item = $state(null);
   let error = $state(null);
@@ -12,7 +11,10 @@
       item = await r.json(); error = null; notFound = false;
     } catch (e) { error = String(e); }
   }
-  onMount(load);
+  $effect(() => {
+    id; // re-run load() whenever the id prop changes
+    load();
+  });
   function when(ms) { return new Date(ms).toLocaleString(); }
 </script>
 
@@ -36,6 +38,6 @@
       <tr><th>result_bytes</th><td>{item.result_bytes}</td></tr>
     </tbody>
   </table>
-{:else}
+{:else if !error}
   <p class="muted">loading…</p>
 {/if}
