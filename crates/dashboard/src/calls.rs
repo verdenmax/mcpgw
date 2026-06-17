@@ -26,6 +26,7 @@ pub struct CallItem {
 
 /// Filter for the calls list, applied identically to live and history items (operates on the
 /// already-built `CallItem`, so the two data sources share one matcher). All `None` = match all.
+/// `since_ms` and `until_ms` are BOTH inclusive: the time window is the closed interval `[since, until]`.
 #[derive(Debug, Default, Clone)]
 pub struct CallFilter {
     pub meta_tool: Option<String>,
@@ -110,6 +111,8 @@ impl CallRingSink {
         let cap = cap.max(1);
         Self {
             cap,
+            // Cap the pre-reservation: the call ring default is 2000, so avoid reserving slots that
+            // may never fill; pay at most one re-grow if the ring does exceed 1024 live entries.
             ring: Mutex::new(VecDeque::with_capacity(cap.min(1024))),
             next_seq: AtomicU64::new(0),
         }
@@ -124,12 +127,16 @@ impl CallRingSink {
         offset: usize,
     ) -> (Vec<CallItem>, usize) {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        // Building a CallItem per ring entry (so the single CallFilter::matches(&CallItem) matcher is
+        // reused across the live ring and JSONL history) is a deliberate readability/reuse tradeoff,
+        // fine for the bounded ring.
         let matched: Vec<CallItem> = ring
             .iter()
             .rev()
             .map(|s| s.to_item())
             .filter(|c| filter.matches(c))
             .collect();
+        drop(ring); // pagination math below doesn't need the lock; release it off the record() hot path
         let total = matched.len();
         let page = matched.into_iter().skip(offset).take(limit).collect();
         (page, total)
@@ -144,8 +151,10 @@ impl CallRingSink {
 
 impl CallSink for CallRingSink {
     fn record(&self, rec: &CallRecord) {
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        // Allocate the seq while holding the lock so physical ring order always matches seq order
+        // (the fan-out calls record() concurrently); otherwise a race could push out of seq order.
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         if ring.len() == self.cap {
             ring.pop_front();
         }
@@ -317,5 +326,56 @@ mod tests {
             1,
             "...but total still 1"
         );
+    }
+
+    #[test]
+    fn combined_filters_are_anded() {
+        let ring = CallRingSink::new(10);
+        ring.record(&rec(
+            MetaTool::CallTool,
+            Some("gh"),
+            Some("gh__a"),
+            CallOutcome::Ok,
+            1,
+        ));
+        ring.record(&rec(
+            MetaTool::CallTool,
+            Some("wx"),
+            Some("wx__b"),
+            CallOutcome::Error,
+            2,
+        ));
+        ring.record(&rec(
+            MetaTool::CallTool,
+            Some("gh"),
+            Some("gh__c"),
+            CallOutcome::Error,
+            3,
+        ));
+        let f = CallFilter {
+            upstream: Some("gh".into()),
+            outcome: Some("error".into()),
+            ..Default::default()
+        };
+        let (items, total) = ring.query(&f, 10, 0);
+        assert_eq!(total, 1, "AND of upstream=gh and outcome=error");
+        assert_eq!(items[0].target_tool.as_deref(), Some("gh__c"));
+    }
+
+    #[test]
+    fn error_kind_round_trips_into_item() {
+        let ring = CallRingSink::new(10);
+        let mut r = rec(
+            MetaTool::CallTool,
+            Some("gh"),
+            None,
+            CallOutcome::Timeout,
+            1,
+        );
+        r.error_kind = Some("timeout");
+        ring.record(&r);
+        let (items, _) = ring.query(&CallFilter::default(), 10, 0);
+        assert_eq!(items[0].error_kind.as_deref(), Some("timeout"));
+        assert_eq!(items[0].outcome, "timeout");
     }
 }
