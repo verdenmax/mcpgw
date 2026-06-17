@@ -1,7 +1,7 @@
 # L4 — `crates/dashboard` API
 
 源文件：`crates/dashboard/src/{lib,metrics,trace,history,api}.rs` + `assets/`。只读可视化面板（子系统 A）：
-把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL 聚合成 6 个 `/api/*` JSON 端点 + 一个零构建原生 JS
+把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL 聚合成 8 个 `/api/*` JSON 端点 + 一个零构建原生 JS
 SPA，跑在独立 localhost 端口上。所有对外类型经 `lib.rs` re-export。
 
 ---
@@ -108,6 +108,25 @@ pub struct MetricBucket { pub bucket_start_ms: u64, pub calls: u64, pub errors: 
 ```
 一个定宽时间桶的审计指标，`/api/metrics/history` 的元素。
 
+### `replay_audit_calls`
+```rust
+pub fn replay_audit_calls(path: &Path, scan_limit: usize, filter: &CallFilter) -> (Vec<CallItem>, bool)
+```
+把 audit JSONL 反序列化为 `CallItem`（owned 镜像 `AuditCallLine`，因 `CallRecord` 不可反序列化），最新优先，扫描至多末尾 `scan_limit` 行；坏行跳过；id 为 `"h{ts}-{n}"`（同 `ts` 文件序内第 n 条，稳定）；`filter` 在 id 分配后应用。Bool=文件可读。
+
+---
+
+## `calls.rs`：逐条调用环 + 统一项类型
+
+### `struct CallItem`（`Serialize`）
+live 环与 history 回放共用的 owned 项：`id`（live=十进制 seq；history=`"h{ts}-{n}"`）、`ts_unix_ms`、`meta_tool`、`target_tool?`、`upstream?`、`latency_ms`、`outcome`、`error_kind?`、`arg_bytes`、`result_bytes`。仅元数据。
+
+### `struct CallFilter`
+`meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`，均 `Option`（`None`=全匹配；`since_ms`/`until_ms` 为闭区间，含端点）；`matches(&CallItem)` 对 live 与 history 两数据源统一过滤。
+
+### `struct CallRingSink`（实现 `observe::CallSink`）
+有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` 最新优先、`total` 计全部命中；`get(seq) -> Option<CallItem>`。容量 = `[dashboard].call_buffer`。
+
 ---
 
 ## `api.rs`：状态、视图类型与纯函数
@@ -119,6 +138,7 @@ pub struct AppState {
     pub gateway: Arc<gateway::GatewayState>,
     pub metrics: Arc<MetricsSink>,
     pub discovery: Option<Arc<DiscoveryRingSink>>,
+    pub calls: Option<Arc<CallRingSink>>,
     pub upstreams: Vec<UpstreamInfo>,
     pub strategy: String,
     pub audit_path: Option<PathBuf>,
@@ -127,7 +147,7 @@ pub struct AppState {
 }
 ```
 handler 的**只读共享态**（装配期一次性注入）：活快照句柄 + 实时指标 sink + 可选 discovery ring +
-配置上游列表/策略名 + 历史 JSONL 路径 + 启动时刻。
+可选 per-call ring（`calls`，仅 dashboard 启用时 `Some`）+ 配置上游列表/策略名 + 历史 JSONL 路径 + 启动时刻。
 
 ### `struct UpstreamInfo`
 ```rust
@@ -143,6 +163,7 @@ pub struct UpstreamView { name, transport, status: &'static str /* "connected"|"
 pub struct ToolView { name, description }
 pub struct TracesResponse { source, history_unavailable, traces: Vec<observe::DiscoveryRecord> }
 pub struct HistoryResponse { history_unavailable, buckets: Vec<MetricBucket> }
+pub struct CallsResponse { source, history_unavailable, total, items: Vec<CallItem> }
 ```
 
 ### 纯函数（handler 调用）
@@ -155,6 +176,12 @@ pub struct HistoryResponse { history_unavailable, buckets: Vec<MetricBucket> }
 | `metrics` | `(&AppState) -> MetricsSnapshot` | `metrics.snapshot()` |
 | `traces` | `(&AppState, limit, source) -> TracesResponse` | `source=="history"` → `replay_discovery(discovery_path)`（无 path→`history_unavailable`）；否则 `discovery.recent(limit)`（未启用→空、`history_unavailable=false`） |
 | `metrics_history` | `(&AppState, limit, bucket_ms) -> HistoryResponse` | `replay_audit_metrics(audit_path)`（无 path→`history_unavailable`） |
+| `call_filter_from_query` | `(&HashMap<String,String>) -> CallFilter` | 从查询参数 `meta`/`upstream`/`tool`/`outcome`/`since`/`until` 构造过滤器（`since`/`until` 解析为 `u64` ms） |
+| `calls` | `(&AppState, &CallFilter, source, scan_limit, limit, offset) -> CallsResponse` | `source=="history"` → `replay_audit_calls(audit_path, scan_limit)`（无 path→`history_unavailable`、`total`=全部命中、`skip(offset).take(limit)`）；否则 `calls.query(filter, limit, offset)`（未启用→空、`history_unavailable=false`） |
+| `call_detail` | `(&AppState, id) -> Option<CallItem>` | `is_history_id(id)` → 重扫 `CALL_HISTORY_SCAN` 行回放后按 id 定位；否则按十进制 live seq 取环 `get(seq)`；找不到/源不可用→`None` |
+| `is_history_id` | `(id: &str) -> bool` | id 以 `h` 开头即历史（`"h{ts}-{n}"`）；否则按 live ring 十进制 seq。格式判定集中于此，使 handler 的 blocking-pool 决策与 `call_detail` 源路由不漂移 |
+
+> `const CALL_HISTORY_SCAN = 50_000`：list-history（`calls` 的 `source=history`）与单条 `call_detail` **共用同一扫描窗口**，故 list 分配的 `"h{ts}-{n}"` id 在 detail 里用同一窗口稳定复现、不漂移。
 
 ---
 
@@ -176,6 +203,8 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 | GET | `/api/metrics` | `Json<MetricsSnapshot>` |
 | GET | `/api/traces?source=live\|history&limit=` | `Json<TracesResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`source` 缺省 `"live"`） |
 | GET | `/api/metrics/history?limit=&bucket_ms=` | `Json<HistoryResponse>`（`limit` 缺省 5000、封顶 50_000；`bucket_ms` 缺省 60_000） |
+| GET | `/api/calls?source=live\|history&meta=&upstream=&tool=&outcome=&since=&until=&limit=&offset=` | `Json<CallsResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`offset` 缺省 0；`source` 缺省 `"live"`；history 路径走 `spawn_blocking`） |
+| GET | `/api/calls/{id}` | `Json<CallItem>` 或 404（`h…`→历史回放定位；否则按 live seq 取环） |
 | GET | `/` | `Html(INDEX_HTML)`（内嵌 `assets/index.html`） |
 | GET | `/app.js` | `application/javascript`（内嵌 `assets/app.js`） |
 | GET | `/style.css` | `text/css`（内嵌 `assets/style.css`） |
