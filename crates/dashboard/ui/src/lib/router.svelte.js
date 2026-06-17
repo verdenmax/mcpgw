@@ -16,4 +16,5 @@ export function startRouter() {
   };
   window.addEventListener("hashchange", update);
   update();
+  return () => window.removeEventListener("hashchange", update);
 }

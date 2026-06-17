@@ -13,7 +13,9 @@
   <div class="brand">mcpgw</div>
   <ul>
     {#each items as [view, label]}
-      <li class:active={route.view === view}><a href={`#/${view}`}>{label}</a></li>
+      <li class:active={route.view === view}>
+        <a href={`#/${view}`} aria-current={route.view === view ? "page" : undefined}>{label}</a>
+      </li>
     {/each}
   </ul>
 </nav>
