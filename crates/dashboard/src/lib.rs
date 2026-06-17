@@ -103,6 +103,11 @@ fn host_is_local(host: Option<&str>) -> bool {
     let Some(raw) = host else {
         return false;
     };
+    // A valid `Host` never contains userinfo ('@'); reject it defensively so a smuggled
+    // `localhost:80@evil.com`-style authority can't be mistaken for a local host.
+    if raw.contains('@') {
+        return false;
+    }
     // Strip the optional port. IPv6 hosts are bracketed in `Host`: `[::1]:8971` / `[::1]`.
     let host = if let Some(rest) = raw.strip_prefix('[') {
         match rest.split_once(']') {
@@ -215,6 +220,8 @@ mod host_tests {
             "example.com",
             "0.0.0.0:8971",
             "[::]:8971",
+            "localhost:80@evil.com",
+            "127.0.0.1@evil.com",
         ] {
             assert!(!host_is_local(Some(bad)), "{bad} should NOT be local");
         }
