@@ -7,14 +7,17 @@ pub use metrics::{MetaToolMetrics, MetricsSink, MetricsSnapshot, UpstreamMetrics
 mod trace;
 pub use trace::{DiscoveryRingSink, DiscoveryWriter};
 
+mod calls;
+pub use calls::{CallFilter, CallItem, CallRingSink};
+
 mod history;
-pub use history::{replay_audit_metrics, replay_discovery, MetricBucket};
+pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery, MetricBucket};
 
 mod api;
 pub use api::{AppState, UpstreamInfo};
 
 use axum::extract::Request;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::header::HOST;
 use axum::http::StatusCode;
@@ -79,6 +82,54 @@ async fn h_metrics_history(
         .await
         .expect("audit metrics history replay task");
     Json(resp)
+}
+
+async fn h_calls(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Json<api::CallsResponse> {
+    let filter = api::call_filter_from_query(&q);
+    let source = q.get("source").cloned().unwrap_or_else(|| "live".into());
+    let limit = qparam_usize(&q, "limit", 100).min(MAX_HISTORY_LIMIT);
+    let offset = qparam_usize(&q, "offset", 0);
+    // History reads a JSONL file off the blocking pool (see h_traces); live reads the in-memory ring.
+    if source == "history" {
+        let resp = tokio::task::spawn_blocking(move || {
+            api::calls(&s, &filter, &source, api::CALL_HISTORY_SCAN, limit, offset)
+        })
+        .await
+        .expect("calls history replay task");
+        Json(resp)
+    } else {
+        Json(api::calls(
+            &s,
+            &filter,
+            &source,
+            api::CALL_HISTORY_SCAN,
+            limit,
+            offset,
+        ))
+    }
+}
+
+async fn h_call_detail(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    if api::is_history_id(&id) {
+        let detail = tokio::task::spawn_blocking(move || api::call_detail(&s, &id))
+            .await
+            .expect("call detail replay task");
+        match detail {
+            Some(item) => Json(item).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    } else {
+        match api::call_detail(&s, &id) {
+            Some(item) => Json(item).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
 }
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
@@ -146,6 +197,8 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         .route("/api/metrics", get(h_metrics))
         .route("/api/traces", get(h_traces))
         .route("/api/metrics/history", get(h_metrics_history))
+        .route("/api/calls", get(h_calls))
+        .route("/api/calls/{id}", get(h_call_detail))
         .route("/", get(h_index))
         .route("/app.js", get(h_app_js))
         .route("/style.css", get(h_style_css))

@@ -161,6 +161,8 @@ pub struct DashboardConfig {
     pub trace_path: Option<String>,
     /// In-memory discovery ring buffer size. Must be > 0.
     pub trace_buffer: usize,
+    /// In-memory per-call ring buffer size (drives the Calls drill-down list). Must be > 0.
+    pub call_buffer: usize,
 }
 
 impl Default for DashboardConfig {
@@ -171,6 +173,7 @@ impl Default for DashboardConfig {
             trace_queries: false,
             trace_path: None,
             trace_buffer: 500,
+            call_buffer: 2000,
         }
     }
 }
@@ -370,6 +373,11 @@ impl Config {
             if self.dashboard.trace_buffer == 0 {
                 return Err(ConfigError::Invalid(
                     "[dashboard].trace_buffer must be > 0".into(),
+                ));
+            }
+            if self.dashboard.call_buffer == 0 {
+                return Err(ConfigError::Invalid(
+                    "[dashboard].call_buffer must be > 0".into(),
                 ));
             }
         }
@@ -820,6 +828,23 @@ mod tests {
         assert!(!cfg.dashboard.trace_queries);
         assert_eq!(cfg.dashboard.trace_path, None);
         assert_eq!(cfg.dashboard.trace_buffer, 500);
+        assert_eq!(cfg.dashboard.call_buffer, 2000);
+    }
+
+    #[test]
+    fn dashboard_call_buffer_defaults_to_2000() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg.dashboard.call_buffer, 2000);
+    }
+
+    #[test]
+    fn dashboard_call_buffer_zero_is_rejected() {
+        let err = Config::from_toml_str("[dashboard]\nenabled = true\ncall_buffer = 0\n")
+            .expect_err("call_buffer=0 must be rejected");
+        assert!(
+            err.to_string().contains("call_buffer"),
+            "error should mention call_buffer, got: {err}"
+        );
     }
 
     #[test]

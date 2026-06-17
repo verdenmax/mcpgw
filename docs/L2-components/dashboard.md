@@ -3,12 +3,14 @@
 ## 职责
 
 网关的**只读可视化面板**（子系统 A）：把 `gateway` 的活快照、`observe` 的调用观测与可选的历史 JSONL
-回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 6 个 `/api/*` JSON 端点 + 一个
+回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 8 个 `/api/*` JSON 端点 + 一个
 **零构建的原生 JS SPA**（3 个静态路由）。它**只读、不改动任何网关状态**，默认关闭、须显式 opt-in。
 
-本 crate 提供两个接入 `observe` 接缝的 sink：
+本 crate 提供三个接入 `observe` 接缝的 sink：
 - `MetricsSink` 实现 `observe::CallSink`，**实时聚合**每个元工具的调用数/错误数/延迟分位（p50/p95/max）
   与每个上游的调用/错误数；
+- `CallRingSink` 实现 `observe::CallSink`，把**逐条** `CallRecord`（仅元数据）存进**有界环形缓冲**
+  （newest-first，上界 `[dashboard].call_buffer`），支撑 Calls 下钻的列表/详情；
 - `DiscoveryRingSink` 实现 `observe::DiscoverySink`，把 `search_tools` 的 `query → 命中工具+分数`
   追踪存进**有界环形缓冲**（newest-first），并可选地经后台 writer 线程落一份 discovery JSONL 供历史回放。
 
@@ -39,24 +41,37 @@
 | `DiscoveryRingSink::dropped_count` | `(&self) -> u64` | 因 writer channel 满而丢弃的条数（测试/诊断） |
 | `DiscoveryWriter::join` | `(self)` | 阻塞至 writer 线程 drain+flush+fsync 退出（须先 drop 所有 sink clone 关闭 channel） |
 
-### 历史回放 `replay_audit_metrics` / `replay_discovery` / `MetricBucket`（`history.rs`）
+### 逐条调用环 `CallItem` / `CallFilter` / `CallRingSink`（`calls.rs`）
+
+| 项 | 签名 | 说明 |
+|----|------|------|
+| `CallRingSink` | impl `observe::CallSink` | 逐条 `CallRecord` 的有界环（满淘汰最旧），每条插入在锁内分配单调 `seq` 作 live id；容量 `[dashboard].call_buffer` |
+| `CallRingSink::new` | `(cap: usize) -> Self`（`cap.max(1)`） | 空环 |
+| `CallRingSink::query` | `(&CallFilter, limit, offset) -> (Vec<CallItem>, usize)` | newest-first 一页 + `total`（计全部命中，独立于分页） |
+| `CallRingSink::get` | `(&self, seq: u64) -> Option<CallItem>` | 按 live seq 取单条 |
+| `CallItem` | `Serialize` | live 环与 history 回放共用的 owned 项：`id` / `ts_unix_ms` / `meta_tool` / `target_tool?` / `upstream?` / `latency_ms` / `outcome` / `error_kind?` / `arg_bytes` / `result_bytes`。仅元数据 |
+| `CallFilter` | `Default` | `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`（均 `Option`，`None`=全匹配；时间为闭区间）；`matches(&CallItem)` 统一过滤 live 与 history |
+
+### 历史回放 `replay_audit_metrics` / `replay_discovery` / `replay_audit_calls` / `MetricBucket`（`history.rs`）
 
 | 项 | 签名 | 说明 |
 |----|------|------|
 | `replay_discovery` | `(path: &Path, limit: usize) -> (Vec<DiscoveryRecord>, bool)` | 回放 discovery JSONL，扫**最后** `limit` 行、newest-first，坏行跳过；`bool` = 文件可读 |
 | `replay_audit_metrics` | `(path: &Path, limit: usize, bucket_ms: u64) -> (Vec<MetricBucket>, bool)` | 回放审计 JSONL 进定宽时间桶（oldest-first），非 `"ok"` outcome 记为 error（与实时 `MetricsSink` 一致） |
+| `replay_audit_calls` | `(path: &Path, scan_limit: usize, filter: &CallFilter) -> (Vec<CallItem>, bool)` | 回放审计 JSONL 为逐条 `CallItem`，newest-first，稳定 id `"h{ts}-{n}"`，`filter` 在 id 分配后应用；`bool` = 文件可读 |
 | `MetricBucket` | `Serialize` | `bucket_start_ms` / `calls` / `errors` |
 
 ### API 状态与路由 `AppState` / `UpstreamInfo` / `build_dashboard_router`（`api.rs` / `lib.rs`）
 
 | 项 | 签名 | 说明 |
 |----|------|------|
-| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` |
+| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` |
 | `UpstreamInfo` | `Serialize` | 一个配置上游的静态身份：`name` / `transport`（装配期由 `Config` 给出） |
-| `build_dashboard_router` | `(state: Arc<AppState>) -> axum::Router` | 装配 6 个 `/api/*` 路由 + 3 个静态路由（`/`、`/app.js`、`/style.css`），`with_state(state)` |
+| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 8 个 `/api/*` 路由 + 3 个静态路由（`/`、`/app.js`、`/style.css`），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
 
 `/api/*` 端点（逐符号见 L4）：`/api/overview`、`/api/upstreams`、`/api/tools?q=`、`/api/metrics`、
-`/api/traces?source=live|history&limit=`、`/api/metrics/history?limit=&bucket_ms=`。
+`/api/traces?source=live|history&limit=`、`/api/metrics/history?limit=&bucket_ms=`、
+`/api/calls?source=live|history&meta=&upstream=&tool=&outcome=&since=&until=&limit=&offset=`、`/api/calls/{id}`。
 
 ## 依赖
 
@@ -69,9 +84,9 @@
 
 ## 被谁使用
 
-- `mcpgw`（bin）的 `serve`：`[dashboard].enabled` 时构造 `MetricsSink`（加进 `CallSink` 切片）、按
-  `trace_queries` 构造 `DiscoveryRingSink`（注入 stdio + HTTP 两个下游的 `DiscoverySink` 切片），并把面板
-  起为**自己端口上的独立 task**（默认 `127.0.0.1:8971`，localhost、无鉴权），带优雅关停与有界 writer drain。
+- `mcpgw`（bin）的 `serve`：`[dashboard].enabled` 时构造 `MetricsSink` 与 `CallRingSink`（均加进 `CallSink`
+  切片）、按 `trace_queries` 构造 `DiscoveryRingSink`（注入 stdio + HTTP 两个下游的 `DiscoverySink` 切片），
+  并把面板起为**自己端口上的独立 task**（默认 `127.0.0.1:8971`，localhost、无鉴权），带优雅关停与有界 writer drain。
   详见 L4 [mcpgw-main](../L4-api/mcpgw-main.md)。
 
 ## 不负责

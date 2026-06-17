@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use crate::calls::{CallFilter, CallItem};
+
 /// Read the last `limit` newline-delimited lines of a file, keeping at most `limit` lines in
 /// memory at once (so a large file with well-formed JSONL — one bounded record per line — uses
 /// bounded memory). Oldest-first; `None` if the file can't be opened. A line-read error
@@ -85,6 +87,67 @@ pub fn replay_audit_metrics(
     (out, true)
 }
 
+/// One audit JSONL line as an OWNED mirror of `CallRecord` (which derives only `Serialize` and
+/// holds `error_kind: &'static str`, so it can't be deserialized directly). Absent optional fields
+/// default to `None`/`0`.
+#[derive(Deserialize)]
+struct AuditCallLine {
+    ts_unix_ms: u64,
+    meta_tool: String,
+    #[serde(default)]
+    target_tool: Option<String>,
+    #[serde(default)]
+    upstream: Option<String>,
+    latency_ms: u64,
+    outcome: String,
+    #[serde(default)]
+    error_kind: Option<String>,
+    #[serde(default)]
+    arg_bytes: usize,
+    #[serde(default)]
+    result_bytes: usize,
+}
+
+/// Replay the audit JSONL into `CallItem`s, newest-first, scanning at most the last `scan_limit`
+/// lines. Bad lines are skipped. Each item gets a stable id `"h{ts}-{n}"` where `n` counts
+/// same-`ts` records in file order (stable for an unchanged file tail). `filter` is applied after
+/// id assignment so ids don't shift with the filter. Bool = file present/readable.
+pub fn replay_audit_calls(
+    path: &Path,
+    scan_limit: usize,
+    filter: &CallFilter,
+) -> (Vec<CallItem>, bool) {
+    let Some(lines) = tail_lines(path, scan_limit) else {
+        return (Vec::new(), false);
+    };
+    let mut ts_counts: BTreeMap<u64, u32> = BTreeMap::new();
+    let mut items: Vec<CallItem> = Vec::new();
+    for line in &lines {
+        if let Ok(a) = serde_json::from_str::<AuditCallLine>(line) {
+            let n = ts_counts.entry(a.ts_unix_ms).or_insert(0);
+            let id = format!("h{}-{}", a.ts_unix_ms, *n);
+            *n += 1;
+            let item = CallItem {
+                id,
+                ts_unix_ms: a.ts_unix_ms,
+                meta_tool: a.meta_tool,
+                target_tool: a.target_tool,
+                upstream: a.upstream,
+                latency_ms: a.latency_ms,
+                outcome: a.outcome,
+                error_kind: a.error_kind,
+                arg_bytes: a.arg_bytes,
+                result_bytes: a.result_bytes,
+            };
+            if filter.matches(&item) {
+                items.push(item);
+            }
+        }
+    }
+    items.reverse(); // file order is oldest-first -> newest-first
+    (items, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +224,80 @@ mod tests {
                 errors: 1
             },
             "a timeout outcome counts as an error, matching the live metrics"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn replay_audit_calls_missing_file_is_unavailable() {
+        let p = std::env::temp_dir().join("mcpgw-calls-does-not-exist.jsonl");
+        let _ = std::fs::remove_file(&p);
+        let (items, ok) = replay_audit_calls(&p, 10, &crate::calls::CallFilter::default());
+        assert!(items.is_empty());
+        assert!(!ok);
+    }
+
+    #[test]
+    fn replay_audit_calls_skips_bad_lines_newest_first_with_stable_ids() {
+        let body = "{\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"upstream\":\"gh\",\"target_tool\":\"gh__a\",\"latency_ms\":2,\"outcome\":\"ok\",\"arg_bytes\":3,\"result_bytes\":4}\n\
+                    not json\n\
+                    {\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"error\",\"error_kind\":\"upstream\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":2,\"meta_tool\":\"search_tools\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n";
+        let p = write("calls.jsonl", body);
+        let (items, ok) = replay_audit_calls(&p, 10, &crate::calls::CallFilter::default());
+        assert!(ok);
+        let ids: Vec<_> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["h2-0", "h1-1", "h1-0"],
+            "ids stable: n counts same-ts in file order"
+        );
+        assert_eq!(items[0].meta_tool, "search_tools");
+        assert_eq!(items[2].upstream.as_deref(), Some("gh"));
+        assert_eq!(items[1].error_kind.as_deref(), Some("upstream"));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn replay_audit_calls_applies_filter() {
+        let body = "{\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"upstream\":\"gh\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":2,\"meta_tool\":\"call_tool\",\"upstream\":\"wx\",\"latency_ms\":1,\"outcome\":\"error\",\"arg_bytes\":0,\"result_bytes\":0}\n";
+        let p = write("calls-filter.jsonl", body);
+        let f = crate::calls::CallFilter {
+            outcome: Some("error".into()),
+            ..Default::default()
+        };
+        let (items, ok) = replay_audit_calls(&p, 10, &f);
+        assert!(ok);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].upstream.as_deref(), Some("wx"));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn replay_audit_calls_ids_are_stable_regardless_of_filter() {
+        let body = "{\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"ok\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":1,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"error\",\"arg_bytes\":0,\"result_bytes\":0}\n\
+                    {\"ts_unix_ms\":2,\"meta_tool\":\"call_tool\",\"latency_ms\":1,\"outcome\":\"error\",\"arg_bytes\":0,\"result_bytes\":0}\n";
+        let p = write("calls-stableids.jsonl", body);
+        // Unfiltered: the error rows get ids h1-1 and h2-0.
+        let (all, _) = replay_audit_calls(&p, 10, &crate::calls::CallFilter::default());
+        let h1_1 = all
+            .iter()
+            .find(|i| i.id == "h1-1")
+            .expect("h1-1 present unfiltered");
+        assert_eq!(h1_1.outcome, "error");
+        // Filtered to outcome=error: the SAME surviving rows keep the SAME ids (filter doesn't shift n).
+        let f = crate::calls::CallFilter {
+            outcome: Some("error".into()),
+            ..Default::default()
+        };
+        let (errs, _) = replay_audit_calls(&p, 10, &f);
+        let ids: Vec<_> = errs.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["h2-0", "h1-1"],
+            "ids identical with or without the filter"
         );
         let _ = std::fs::remove_file(&p);
     }

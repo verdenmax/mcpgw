@@ -372,14 +372,14 @@ get-details 子命令：catalog.get(qualified_name) ──► 该工具完整 JS
 
 ```bash
 cargo build                 # 构建工作区（产出 target/debug/mcpgw）
-cargo test --all-features   # 全部测试（228 passed / 4 ignored：catalog 4 / config 40 /
+cargo test --all-features   # 全部测试（252 passed / 4 ignored：catalog 4 / config 42 /
                             #   retrieval 22 + caching 4 + embedder 3 + golden 1 + hybrid 6 + subagent 7 + vector 6 /
                             #   embedder(openai) 5 + chat(openai) 4 / mcpgw main 13 + cli 5 + audit 1 /
                             #   upstream 15 + 集成 11 + http_connect 1 /
                             #   metatools 4 + call_tool 4 / gateway 8 + rebuild 8 /
                             #   observe 10 + capture 1 /
                             #   downstream 10 + e2e(stdio) 10 + e2e(http) 5 /
-                            #   dashboard 20 ·
+                            #   dashboard 42 ·
                             #   4 ignored = 门控真实冒烟（stdio + http + vector）+ dashboard e2e）
                             # 注：upstream 集成测试、mock-stdio 二进制与 HTTP e2e 需 testkit feature，故用 --all-features
 cargo clippy --all-targets --all-features -- -D warnings   # 静态检查，零告警
@@ -417,6 +417,7 @@ cargo fmt --all             # 格式化
 - **M6.T1（结构化调用日志 + 追踪）✅ 已完成** —— 新增极小、无副作用的 `observe` crate：**仅元数据**的 `CallRecord`（只 size、无参数/结果内容，单测锁死 9 键集合）、`CallSink` 扇出契约、`TracingSink`（结构化 `tool_call` tracing 事件）；埋点**只在** `downstream::GatewayServer::call_tool`（计时—延迟快照早于结果再序列化/`upstream` 派生、私有 `classify(&MetaError)` 给 `error_kind`、构造记录并同步扇出），**未知元工具名不记录**，`metatools` 保持纯函数不依赖 `observe`；`mcpgw serve` 装配默认 `[TracingSink]` 注入 stdio + HTTP（共享同一切片）。**这一多 sink 接缝已被 M6.T3 审计 `JsonlSink` 与子系统 A 的 `dashboard::MetricsSink`（内存聚合）复用（皆实现同一 trait）；持久化用量指标（M6.T2）仍待办；与检索无关，默认策略仍是 `bm25`**。
 - **M6.T3（审计持久化 / JSONL 落盘）✅ 已完成** —— 在 `observe` crate 上加**可选的 JSONL 审计 sink**：`JsonlSink`（实现同一 `CallSink`，`record()` = 序列化一行 JSON + `try_send` 进**有界 channel**，满/断连则计数丢弃 + **首次及每个 2 的幂次**限频 warn，**绝不阻塞调用热路径**；`#[derive(Clone)]`、clone 共享同一 sender + 计数）、专用 `audit-writer` OS 线程（批量 drain + 每批 flush，干净断连时**最终 flush + `sync_all` fsync** 再退出；写失败**只限频 warn、不退出**故瞬时故障自愈）、`AuditWriter`（持线程 `JoinHandle`、`join` 阻塞至 drain 完成；**不持 sender**故由所有 `JsonlSink` clone drop 触发断连）、`spawn_writer(path, capacity) -> io::Result<...>`（create+append；打不开/起不来线程即 `Err`）与 `AUDIT_CHANNEL_CAPACITY = 1024`；**仍 std-only（无 tokio）**、只用 `std::thread` + `std::sync::mpsc` + `std::fs`，`observe` 不新增依赖。配置新增 `[audit]` 段（`enabled` 默认 `false`、`path` 默认 `"mcpgw-audit.jsonl"`，`deny_unknown_fields`）；`mcpgw serve` 在 `cfg.audit.enabled` 时 `spawn_writer` **fail-fast** 追加 `JsonlSink`、`select!` 后 `drop(sinks)` 触发断连并 `timeout(AUDIT_DRAIN_TIMEOUT=5s, spawn_blocking(writer.join()))` **有界优雅 drain**（超时仅 warn）。**只落仅元数据记录（永不含 payload）；审计默认关闭、默认策略仍 `bm25`**。
 - **子系统 A（只读可视化 dashboard）✅ 已完成** —— 新增 `dashboard` crate：`MetricsSink`（实现 `observe::CallSink`，聚合 per-meta-tool 调用/错误/p50/p95/max + per-upstream，非 `Ok`（含 `Timeout`）皆计错误，`per_upstream` 上限 `MAX_UPSTREAM_KEYS=1024`）、`DiscoveryRingSink`（实现新 `observe::DiscoverySink`，最新在前的有界 ring + 可选发现 JSONL writer、满则丢弃）、`history.rs`（审计/发现 JSONL 尾部有界回放、优雅降级）、`AppState` + `build_dashboard_router`（6 个 `/api/*` + 3 个静态路由 + 零构建 vanilla-JS SPA，**对所有不可信字段 HTML 转义**防存储型 XSS）。`observe` 新增 `DiscoveryRecord`/`DiscoveryHit`/`DiscoverySink` 发现追踪契约（与仅元数据的 `CallRecord` 隔离、`DiscoveryRecord` 现 `Serialize + Deserialize`）；`metatools` 的 `ToolSummary` 加 `score: f32` 并新增 `GatewaySnapshot::catalog()` 只读访问器；`gateway` 加 `GatewayState::last_summary()`（lock-free `ArcSwapOption`）；`downstream` 的 `search_tools` 在附着时扇出 `DiscoveryRecord`，并把 `CallRecord.upstream` 改为**工具目录解析**真实 server（安全修复）。配置新增 `[dashboard]` 段；`mcpgw serve` 在 `[dashboard].enabled` 时把面板起为**独立 task、独立 port**（默认 `127.0.0.1:8971`、**localhost、无鉴权**——非 loopback 绑定 warn，监听**预绑定 fail-fast**），关停按固定顺序有界 drain。**默认关闭、只读、不改网关热路径；默认策略仍 `bm25`**。
+- **子系统 A · M1（逐条调用数据层）✅ 已完成** —— `CallRingSink` 内存环（`[dashboard].call_buffer` 上界、满淘汰最旧）+ audit JSONL 历史回放（`replay_audit_calls`，最新优先、稳定 `"h{ts}-{n}"` id），支撑 dashboard **Calls 下钻**；新增 `/api/calls`（列表）与 `/api/calls/{id}`（详情），使只读 API 增至 **8 端点**。**随 dashboard 启用、仅元数据、不改网关热路径；默认策略仍 `bm25`。**
 - **后续里程碑**：完整 OAuth/DCR/反向代理（M3）、运行时热吊销 API-Key（M4）、超时主动
   `notifications/cancelled`（继续延后）见路线图。
 

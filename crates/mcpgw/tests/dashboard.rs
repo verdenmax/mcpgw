@@ -82,6 +82,41 @@ async fn dashboard_serves_api_and_captures_a_trace() {
         "the search query was captured"
     );
 
+    // M1: the search above produced one CallRecord captured by the live CallRingSink.
+    let calls: serde_json::Value = http
+        .get(format!("{base}/api/calls?source=live"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        calls["total"].as_u64().unwrap() >= 1,
+        "the search_tools call was captured"
+    );
+    let items = calls["items"].as_array().unwrap();
+    assert_eq!(items[0]["meta_tool"], "search_tools");
+    let id = items[0]["id"].as_str().unwrap().to_string();
+
+    // Detail by live id resolves to the same call.
+    let detail_resp = http
+        .get(format!("{base}/api/calls/{id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(detail_resp.status(), 200);
+    let detail: serde_json::Value = detail_resp.json().await.unwrap();
+    assert_eq!(detail["meta_tool"], "search_tools");
+
+    // Unknown live id -> 404.
+    let missing = http
+        .get(format!("{base}/api/calls/999999"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
 }
