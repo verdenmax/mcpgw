@@ -28,3 +28,4 @@ th { color:var(--muted); font-weight:500; }
 .chip.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 .chip.disabled { opacity:0.4; pointer-events:none; }
 .search { background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; margin-bottom:10px; width:260px; }
+.trace-card { display:block; width:100%; margin-bottom:8px; }

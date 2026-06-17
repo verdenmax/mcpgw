@@ -23,7 +23,7 @@
     <p class="muted">history unavailable (enable [dashboard].trace_path)</p>
   {:else}
     {#each resp.traces as t}
-      <div class="card" style="display:block;width:100%;margin-bottom:8px;">
+      <div class="card trace-card">
         <div class="label">{t.query}</div>
         <div>{#each t.results as h}<span class="chip">{h.name} ({h.score.toFixed(2)})</span> {/each}</div>
       </div>

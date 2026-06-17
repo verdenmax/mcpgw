@@ -10,6 +10,8 @@
       tools = await getJSON(`/api/tools${qs}`); error = null;
     } catch (e) { error = String(e); }
   }
+  // Refetch on every `q` change; no debounce needed — /api/tools is a cheap in-memory filter and
+  // the 3s poll re-fetches with the current q, so any out-of-order keystroke result self-corrects.
   $effect(() => { void q; load(); });
   onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
 </script>
