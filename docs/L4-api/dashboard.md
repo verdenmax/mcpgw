@@ -231,7 +231,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 | GET | `/api/metrics/history?limit=&bucket_ms=` | `Json<HistoryResponse>`（`limit` 缺省 5000、封顶 50_000；`bucket_ms` 缺省 60_000） |
 | GET | `/api/calls?source=live\|history&meta=&upstream=&tool=&outcome=&since=&until=&limit=&offset=` | `Json<CallsResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`offset` 缺省 0；`source` 缺省 `"live"`；history 路径走 `spawn_blocking`） |
 | GET | `/api/calls/{id}` | `Json<CallItem>` 或 404（`h…`→历史回放定位；否则按 live seq 取环） |
-| —（fallback） | 任意非 /api/* 路径 | assets::static_handler：/→内嵌 index.html、/assets/*→内嵌资源（带 hash），其余回退 index |
+| —（fallback） | 任意非 `/api/*` 路径 | `assets::static_handler`：`/`→内嵌 `index.html`、`/assets/*`→内嵌资源（带 hash），其余回退 index |
 
 私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
 静态资源经 `assets::static_handler`（router `.fallback`）从 `rust-embed` 内嵌的 `ui/dist/` 交付（见
