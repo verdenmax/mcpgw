@@ -14,6 +14,8 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default)]
     pub audit: AuditConfig,
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -141,6 +143,34 @@ impl Default for AuditConfig {
         Self {
             enabled: false,
             path: "mcpgw-audit.jsonl".into(),
+        }
+    }
+}
+
+/// `[dashboard]` section: optional read-only web dashboard (subsystem A).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DashboardConfig {
+    /// Start the dashboard HTTP server. Defaults to false (must opt in).
+    pub enabled: bool,
+    /// Bind address. Localhost only; no auth. Defaults to 127.0.0.1:8971.
+    pub bind: String,
+    /// Capture query text + selected tool names/scores for the trace view (opt-in).
+    pub trace_queries: bool,
+    /// Optional discovery JSONL path for history replay. None -> in-memory ring buffer only.
+    pub trace_path: Option<String>,
+    /// In-memory discovery ring buffer size. Must be > 0.
+    pub trace_buffer: usize,
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "127.0.0.1:8971".into(),
+            trace_queries: false,
+            trace_path: None,
+            trace_buffer: 500,
         }
     }
 }
@@ -329,6 +359,18 @@ impl Config {
                      ('{{', '}}', '*'); use a plain literal path",
                     http.path
                 )));
+            }
+        }
+        if self.dashboard.enabled {
+            if self.dashboard.bind.trim().is_empty() {
+                return Err(ConfigError::Invalid(
+                    "[dashboard].bind must not be empty when enabled".into(),
+                ));
+            }
+            if self.dashboard.trace_buffer == 0 {
+                return Err(ConfigError::Invalid(
+                    "[dashboard].trace_buffer must be > 0".into(),
+                ));
             }
         }
         Ok(())
@@ -768,5 +810,32 @@ mod tests {
         let cfg =
             Config::from_toml_str("[server.http]\nenabled = true\npath = \"/gateway\"\n").unwrap();
         assert_eq!(cfg.server.http.unwrap().path, "/gateway");
+    }
+
+    #[test]
+    fn dashboard_defaults_and_partial_fill() {
+        let cfg = Config::from_toml_str("[dashboard]\nenabled = true\n").unwrap();
+        assert!(cfg.dashboard.enabled);
+        assert_eq!(cfg.dashboard.bind, "127.0.0.1:8971");
+        assert!(!cfg.dashboard.trace_queries);
+        assert_eq!(cfg.dashboard.trace_path, None);
+        assert_eq!(cfg.dashboard.trace_buffer, 500);
+    }
+
+    #[test]
+    fn omitting_dashboard_section_is_disabled() {
+        assert!(!Config::from_toml_str("").unwrap().dashboard.enabled);
+    }
+
+    #[test]
+    fn dashboard_rejects_unknown_field_and_zero_buffer() {
+        assert!(matches!(
+            Config::from_toml_str("[dashboard]\nbogus = 1\n").unwrap_err(),
+            ConfigError::Parse(_)
+        ));
+        assert!(matches!(
+            Config::from_toml_str("[dashboard]\nenabled = true\ntrace_buffer = 0\n").unwrap_err(),
+            ConfigError::Invalid(_)
+        ));
     }
 }

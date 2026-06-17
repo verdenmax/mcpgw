@@ -16,11 +16,18 @@ impl GatewaySnapshot {
     pub fn new(catalog: Catalog, strategy: Box<dyn RetrievalStrategy>) -> Self {
         Self { catalog, strategy }
     }
+
+    /// Read-only access to the aggregated tool catalog (e.g. for the dashboard API).
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
 }
 
-/// One `search_tools` hit: the namespaced tool name and its one-line description.
+/// One `search_tools` hit: the namespaced tool name, its one-line description, and the
+/// retrieval relevance `score` (higher is better; hits are returned in descending score order).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ToolSummary {
     pub name: String,
     pub description: String,
+    pub score: f32,
 }

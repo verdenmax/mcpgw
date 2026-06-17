@@ -56,6 +56,7 @@ pub fn build_router(
     path: &str,
     api_keys: Vec<String>,
     sinks: Arc<[Arc<dyn observe::CallSink>]>,
+    discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
 ) -> axum::Router {
     let service = StreamableHttpService::new(
         move || {
@@ -63,6 +64,7 @@ pub fn build_router(
                 state.clone(),
                 default_top_k,
                 sinks.clone(),
+                discovery.clone(),
             ))
         },
         Arc::new(LocalSessionManager::default()),

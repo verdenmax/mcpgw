@@ -7,8 +7,8 @@
 pub async fn search_tools(snap: &GatewaySnapshot, query: &str, top_k: usize) -> Vec<ToolSummary>
 ```
 经 `snap.strategy.search(query, top_k).await` 检索（策略检索本身是 `async`，subagent 等策略会发起网络调用），把每个 `retrieval::ScoredTool` 投影为
-`ToolSummary { name: hit.qualified_name, description: hit.description }`（`score` 丢弃），保持"最佳在前"。
-无错误：无命中返回空 `Vec`。
+`ToolSummary { name: hit.qualified_name, description: hit.description, score: hit.score }`（保留检索分数
+`score`），保持"最佳在前"。无错误：无命中返回空 `Vec`。
 
 ## `get_tool_details`
 ```rust

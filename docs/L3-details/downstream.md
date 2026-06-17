@@ -65,8 +65,11 @@
   `serde_json::to_writer`，量取序列化 JSON 字节长度而**不分配中间 `String`**（数值与旧的 `to_string().len()` 一致）。
   `arg_bytes = json_len(&args)`（进入时算一次）；`result_bytes = json_len(&response)`，`Err`（协议错误）路径记 `0`。两者都是
   **字节数（size）**，**绝不含**任何参数/结果内容。
-- **`upstream` 派生**：`target_tool.split_once("__").map(|(s, _)| s)` 取 qualified name 的**上游 server 前缀**
-  （如 `github__create_issue` → `github`）；只有 `call_tool` 成功/失败带 `target_tool` 时才有值。
+- **`upstream` 派生（安全修复）**：对 `target_tool` 做**工具目录解析**取真实 server——
+  `get_tool_details(&snapshot, target_tool).map(|def| def.server.clone())`（如 `github__create_issue` 解析到
+  其 `def.server = github`）；只有 `call_tool` 带能解析的 `target_tool` 时才有值，**解析不到则 `None`**。
+  **不再** `split_once("__")` 切 client 提供的名字：否则一个未知/构造的 `call_tool` 名（`ToolNotFound`）会切出
+  一个**无界、attacker 可控**的 `upstream` 前缀，既污染指标又能灌爆 dashboard `per_upstream` 维度。
 - **`outcome` / `error_kind` 分类**：`call_tool` 转发失败经私有 `classify(&MetaError)` 映射，其余由分派臂
   内联给出（完整规范表以 L4 [downstream-lib](../L4-api/downstream-lib.md) 的「`error_kind` 取值表」为准）：
 
@@ -89,6 +92,21 @@
 - **默认 sink**：`mcpgw serve` 注入 `[observe::TracingSink]`，把每条记录发为结构化
   `tracing::info!(meta_tool, target_tool, upstream, latency_ms, outcome, error_kind, arg_bytes,
   result_bytes, "tool_call")` 事件（走 stderr，与日志同流）。stdio 与 HTTP 两条传输**共享同一切片**。
+
+## 发现追踪捕获（dashboard，opt-in，与仅元数据隔离）
+
+除上述仅元数据扇出外，`search_tools` 分支在 `self.discovery` **非空**时再扇出一条
+`observe::DiscoveryRecord`——这是 dashboard 子系统 A 的搜索发现追踪，**与 `CallSink` 通道物理隔离**：
+
+- **何时捕获**：私有 `discovery_record_for_search(query, top_k, &hits, started.elapsed())` 把 query、`top_k`、
+  命中工具映为 `Vec<DiscoveryHit { name, score }>`（即 `ToolSummary.score` 的去处）、latency 构成
+  `DiscoveryRecord`，`for sink in self.discovery.iter() { sink.record(&drec) }` 扇出。空 catalog → 空
+  `results`，仍追踪。
+- **隔离与隐私**：`DiscoveryRecord` 含 **query 文本 + 工具名**，**绝不**进 `self.sinks`（tracing/审计仅元数据
+  通道），只进独立的 `DiscoverySink`。装配仅在 `[dashboard].trace_queries = true` 时注入该 sink，故**默认空
+  切片、不捕获**。
+- **非阻塞**：dashboard 的 `DiscoveryRingSink` 写内存 ring + `try_send` 可选 JSONL（满则丢弃），故扇出不阻塞
+  `search_tools` 热路径。详见 [dashboard L3](./dashboard.md)。
 
 ## 为何 `get_info` 只 `enable_tools`、不 `enable_tool_list_changed`
 

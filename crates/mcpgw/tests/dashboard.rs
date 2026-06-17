@@ -1,0 +1,87 @@
+//! End-to-end: `mcpgw serve` with the dashboard enabled serves /api/* and captures a discovery
+//! trace for a search_tools call. Ignored by default (binds a TCP port), run with `--ignored`.
+
+use std::io::Write;
+use std::process::Stdio;
+use std::time::Duration;
+
+use rmcp::model::CallToolRequestParams;
+use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::ServiceExt;
+use serde_json::json;
+use tokio::process::Command;
+
+fn bin() -> &'static str {
+    env!("CARGO_BIN_EXE_mcpgw")
+}
+
+#[tokio::test]
+#[ignore = "binds a TCP port; run with --ignored"]
+async fn dashboard_serves_api_and_captures_a_trace() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let port = 20000 + (nanos % 20000) as u16;
+    let cfg_path = std::env::temp_dir().join(format!("mcpgw-dash-{nanos}.toml"));
+    {
+        let mut f = std::fs::File::create(&cfg_path).unwrap();
+        writeln!(
+            f,
+            "[server]\nstdio = true\n\n[dashboard]\nenabled = true\nbind = \"127.0.0.1:{port}\"\ntrace_queries = true\n"
+        )
+        .unwrap();
+    }
+
+    let (transport, _stderr) = TokioChildProcess::builder(Command::new(bin()).configure(|c| {
+        c.arg("serve").arg("--config").arg(&cfg_path);
+    }))
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+    let client = ().serve(transport).await.unwrap();
+
+    // Drive a search so a discovery trace is captured (empty catalog -> empty results, still traced).
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("search_tools").with_arguments(
+                json!({ "query": "weather forecast" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let http = reqwest::Client::new();
+
+    let ov: serde_json::Value = http
+        .get(format!("{base}/api/overview"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ov["strategy"], "bm25");
+
+    let traces: serde_json::Value = http
+        .get(format!("{base}/api/traces?source=live"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let arr = traces["traces"].as_array().unwrap();
+    assert!(
+        arr.iter().any(|t| t["query"] == "weather forecast"),
+        "the search query was captured"
+    );
+
+    client.cancel().await.unwrap();
+    let _ = std::fs::remove_file(&cfg_path);
+}

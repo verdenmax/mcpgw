@@ -298,7 +298,9 @@ async fn meta_tool_calls_are_observed_with_metadata() {
     assert_eq!(call_err.meta_tool, MetaTool::CallTool);
     assert_eq!(call_err.outcome, CallOutcome::Error);
     assert_eq!(call_err.error_kind, Some("tool_not_found"));
-    assert_eq!(call_err.upstream.as_deref(), Some("mock"));
+    // `mock__nope` does not resolve in the catalog, so no upstream is attributed (security:
+    // an unresolved, client-supplied call_tool name must not inject an arbitrary upstream).
+    assert!(call_err.upstream.is_none());
 }
 
 #[tokio::test]

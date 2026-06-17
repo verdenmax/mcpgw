@@ -6,13 +6,14 @@
 ```rust
 #[derive(Clone)]
 pub struct GatewayServer {
-    state: Arc<gateway::GatewayState>,        // 私有，共享网关状态
-    default_top_k: usize,                     // 私有，search_tools 省略 top_k 时的默认值
-    sinks: Arc<[Arc<dyn observe::CallSink>]>, // 私有，每次调用扇出到的观测 sink 切片
+    state: Arc<gateway::GatewayState>,             // 私有，共享网关状态
+    default_top_k: usize,                          // 私有，search_tools 省略 top_k 时的默认值
+    sinks: Arc<[Arc<dyn observe::CallSink>]>,      // 私有，每次调用扇出到的观测 sink 切片
+    discovery: Arc<[Arc<dyn observe::DiscoverySink>]>, // 私有，search_tools 扇出的发现追踪 sink 切片
 }
 ```
-下游 MCP server。`Clone` 仅克隆内部 `Arc`（含 `sinks` 切片的 `Arc`），所有克隆共享同一份状态与同一组
-sink。
+下游 MCP server。`Clone` 仅克隆内部 `Arc`（含 `sinks`/`discovery` 切片的 `Arc`），所有克隆共享同一份状态、
+同一组观测 sink 与同一组发现追踪 sink。
 
 ### `GatewayServer::new`
 ```rust
@@ -20,10 +21,12 @@ pub fn new(
     state: Arc<gateway::GatewayState>,
     default_top_k: usize,
     sinks: Arc<[Arc<dyn observe::CallSink>]>,
+    discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
 ) -> Self
 ```
-用共享网关状态、默认 `top_k`（通常取自 `cfg.retrieval.top_k`）与**观测 sink 切片**构造。`sinks` 为空
-切片即「不观测」（每次调用仍会构造记录，只是无人接收）。无错误。
+用共享网关状态、默认 `top_k`（通常取自 `cfg.retrieval.top_k`）、**观测 sink 切片**与**发现追踪 sink 切片**
+构造。`sinks` 为空切片即「不观测」（每次调用仍会构造记录，只是无人接收）；`discovery` 为**空切片即不捕获
+发现追踪**（`search_tools` 跳过构造 `DiscoveryRecord`）。无错误。
 
 ## `fn classify`（私有）
 ```rust
@@ -37,6 +40,20 @@ fn classify(e: &metatools::MetaError) -> (observe::CallOutcome, Option<&'static 
 | `Call(_)` | `Error` | `"upstream_call"` |
 | `ToolNotFound(_)` | `Error` | `"tool_not_found"` |
 | `UpstreamUnavailable(_)` | `Error` | `"upstream_unavailable"` |
+
+## `fn discovery_record_for_search`（私有）
+```rust
+fn discovery_record_for_search(
+    query: &str,
+    top_k: usize,
+    hits: &[metatools::ToolSummary],
+    latency_ms: u64,
+) -> observe::DiscoveryRecord
+```
+从一次完成的 `search_tools` 调用构造一条**发现追踪**（纯函数）：`ts_unix_ms = now_unix_ms()`、原始
+`query`、`top_k`、把每个 `ToolSummary` 映成 `DiscoveryHit { name, score }`（即 `ToolSummary.score` 的去处）、
+`latency_ms`。仅当 `self.discovery` 非空时调用——`search_tools` 臂随后 `for sink in self.discovery.iter() {
+sink.record(&drec) }` 扇出（见下）。
 
 ## `fn meta_tools`
 ```rust
@@ -82,7 +99,10 @@ async fn call_tool(
 按 `request.name` 分派（`args = request.arguments.unwrap_or_default()`，每路先 `self.state.snapshot()`）：
 
 - `"search_tools"`：`query`（缺省 `""`）+ `top_k`（缺省 `self.default_top_k`）→ `metatools::search_tools` →
-  命中数组 JSON 文本（`CallToolResult::success`）；序列化失败 → `Err(McpError::internal_error)`。
+  命中数组 JSON 文本（`CallToolResult::success`）；序列化失败 → `Err(McpError::internal_error)`。**发现追踪**：
+  在序列化前，若 `self.discovery` 非空，用 `discovery_record_for_search(query, top_k, &hits,
+  started.elapsed())` 构造一条 `DiscoveryRecord` 并 `for sink in self.discovery.iter() { sink.record(&drec) }`
+  扇出（空 catalog → 空 `results`，仍追踪）。
 - `"get_tool_details"`：`name`（缺省 `""`）→ `metatools::get_tool_details`；`Some(def)` → JSON 文本，`None` →
   `CallToolResult::error("no such tool: {name}")`（`isError`）。
 - `"call_tool"`：缺 `name` → `isError("missing required 'name'")`；否则取可选 `arguments` 对象，
@@ -104,7 +124,9 @@ async fn call_tool(
 3. `match` 结束后**立即** `latency_ms = started.elapsed()`——快照在结果再序列化/`upstream` 派生**之前**，
    故记录的延迟反映调用本身、不含记账开销。
 4. `result_bytes = json_len(&response)`（`Err` 路径为 0，**仅 size**；同样经 `CountingWriter` + `to_writer`，无中间 `String`）；
-   `upstream = target_tool.split_once("__").map(|(s, _)| s)`（上游 server 前缀）。
+   `upstream = target_tool` 经**工具目录解析**取真实 server：`get_tool_details(&self.state.snapshot(),
+   t).map(|def| def.server.clone())`（**安全修复**：不再 `split_once("__")` 切 client 提供的名字，故未知
+   `call_tool` 名解析不到时 `upstream = None`，不会注入 attacker 可控前缀 — 见下「`upstream` 归因」）。
 5. 构造 `CallRecord { ts_unix_ms: now_unix_ms(), meta_tool, target_tool, upstream, latency_ms, outcome,
    error_kind, arg_bytes, result_bytes }`，`for sink in self.sinks.iter() { sink.record(&rec); }` 同步扇出，
    再返回 `response`。
@@ -126,5 +148,14 @@ async fn call_tool(
 
 **仅元数据不变量**：记录只含上述字段，`arg_bytes`/`result_bytes` 是 size、**无任何参数/结果内容**，故
 观测绝不泄露 secret/PII。
+
+**`upstream` 归因（安全修复）**：`upstream` 由对 `target_tool` 的**工具目录解析**得到真实 `def.server`，
+**不**靠拆分 client 提供的 `call_tool` 名。否则一个未知/构造的 `call_tool` 名（`ToolNotFound`）会让
+`split_once("__")` 切出一个**无界、attacker 可控**的 `upstream` 前缀，污染指标并能灌爆 dashboard 的
+`per_upstream` 维度；修复后这类调用 `upstream = None`。
+
+**发现追踪（dashboard）**：与上述仅元数据扇出**相互独立**——`search_tools` 在 `self.discovery` 非空时另扇出
+一条 `observe::DiscoveryRecord`（含 query 文本 + 命中工具名/分数）。它走 `DiscoverySink`，**绝不**进 `sinks`
+（仅元数据通道），故 query 永不漏进 tracing/审计。
 
 > 详见 L3：[downstream](../L3-details/downstream.md)

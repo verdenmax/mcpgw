@@ -408,6 +408,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "catalog",
+ "config",
+ "gateway",
+ "observe",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1082,11 +1097,13 @@ dependencies = [
  "chat",
  "clap",
  "config",
+ "dashboard",
  "downstream",
  "embedder",
  "gateway",
  "metatools",
  "observe",
+ "reqwest",
  "retrieval",
  "rmcp",
  "serde_json",

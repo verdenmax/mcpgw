@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use catalog::Catalog;
 use metatools::GatewaySnapshot;
 use retrieval::{build_strategy, Backends, Embedder};
@@ -61,6 +62,8 @@ pub struct GatewayState {
     /// Serializes rebuilds so concurrent triggers can't commit a stale snapshot
     /// (last-store-wins). Readers never touch this — they only load the `ArcSwap`.
     rebuild_lock: Arc<Mutex<()>>,
+    /// Most recent rebuild summary (ingested/skipped upstreams), for the dashboard. Read lock-free.
+    last_summary: Arc<ArcSwapOption<RebuildSummary>>,
 }
 
 impl GatewayState {
@@ -76,6 +79,7 @@ impl GatewayState {
             strategy_name: Arc::from(strategy_name),
             backends,
             rebuild_lock: Arc::new(Mutex::new(())),
+            last_summary: Arc::new(ArcSwapOption::empty()),
         })
     }
 
@@ -112,6 +116,11 @@ impl GatewayState {
     /// Load the current snapshot (lock-free).
     pub fn snapshot(&self) -> Arc<GatewaySnapshot> {
         self.snapshot.load_full()
+    }
+
+    /// The most recent rebuild summary, or `None` before the first rebuild. Read lock-free.
+    pub fn last_summary(&self) -> Option<Arc<RebuildSummary>> {
+        self.last_summary.load_full()
     }
 
     /// Rebuild the snapshot by ingesting every upstream's tools **concurrently**, each bounded
@@ -165,6 +174,7 @@ impl GatewayState {
         strat.index(&catalog).await;
         self.snapshot
             .store(Arc::new(GatewaySnapshot::new(catalog, strat)));
+        self.last_summary.store(Some(Arc::new(summary.clone())));
         Ok(summary)
     }
 }
@@ -274,6 +284,17 @@ mod tests {
         assert!(resolved.is_none());
         assert_eq!(summary.skipped.len(), 1);
         assert_eq!(summary.skipped[0].0, "<ingest task>");
+    }
+
+    #[tokio::test]
+    async fn last_summary_is_none_until_first_rebuild() {
+        let state = super::GatewayState::new("bm25").unwrap();
+        assert!(state.last_summary().is_none());
+        let _ = state.rebuild_snapshot().await.unwrap();
+        let s = state
+            .last_summary()
+            .expect("summary recorded after rebuild");
+        assert!(s.ingested.is_empty() && s.skipped.is_empty()); // no upstreams registered
     }
 
     /// The success path passes the joined value through unchanged.

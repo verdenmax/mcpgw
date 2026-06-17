@@ -1,0 +1,15 @@
+:root { font-family: system-ui, sans-serif; }
+body { margin: 0 auto; max-width: 960px; padding: 1rem; color: #1c1c1c; }
+header { display: flex; align-items: baseline; gap: 1rem; }
+.muted { color: #777; font-size: .85rem; }
+.cards { display: flex; flex-wrap: wrap; gap: .75rem; }
+.card { border: 1px solid #ddd; border-radius: 8px; padding: .6rem .9rem; min-width: 120px; }
+.card .v { font-size: 1.4rem; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; }
+.badge { padding: .1rem .5rem; border-radius: 10px; font-size: .8rem; }
+.connected { background: #e3f6e3; } .skipped { background: #fde8e8; } .unknown { background: #eee; }
+.bar { background: #eef; height: 14px; border-radius: 3px; }
+.bar > span { display: block; height: 100%; background: #5b8def; border-radius: 3px; }
+.trace { border-bottom: 1px solid #eee; padding: .4rem 0; }
+.trace .q { font-weight: 600; } .hit { color: #444; font-size: .85rem; }

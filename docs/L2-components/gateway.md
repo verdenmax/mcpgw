@@ -23,14 +23,15 @@
 | `skipped` | `Vec<(String, String)>` | 本次跳过的上游 + 简短原因（超时 / 调用错误）（排序） |
 
 ### 类型 `GatewayState`（`lib.rs`）
-可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 重建锁。
+可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 重建锁 + 最近重建摘要（`ArcSwapOption`，读无锁）。
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `new` | `(strategy_name: &str) -> Result<Self, GatewayError>` | 建空状态（无上游、空 catalog），用给定策略名（如 `"bm25"`）；策略未实现则返回 `Err(GatewayError::Strategy)` |
 | `registry` | `(&self) -> &UpstreamRegistry` | 上游注册表（`serve` 的 eager-connect 填充；测试注入 mock handle） |
 | `snapshot` | `(&self) -> Arc<GatewaySnapshot>` | 加载当前快照（**无锁**，`load_full`） |
-| `rebuild_snapshot` | `async (&self) -> Result<RebuildSummary, GatewayError>` | 从注册表**并发**摄取（每个 ingest 受该 handle 的 `call_timeout` 约束）→ 建索引 → 原子换入新快照；经重建锁串行化；返回 `RebuildSummary` |
+| `last_summary` | `(&self) -> Option<Arc<RebuildSummary>>` | 最近一次成功重建的 `RebuildSummary`（**无锁**），首次重建前为 `None`；供 dashboard 只读读取已摄取/被跳过的上游 |
+| `rebuild_snapshot` | `async (&self) -> Result<RebuildSummary, GatewayError>` | 从注册表**并发**摄取（每个 ingest 受该 handle 的 `call_timeout` 约束）→ 建索引 → 原子换入新快照；经重建锁串行化；返回 `RebuildSummary` 并存为 `last_summary` |
 
 ### 函数 `run_rebuild_worker`（`lib.rs`）
 

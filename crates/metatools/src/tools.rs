@@ -13,6 +13,7 @@ pub async fn search_tools(snap: &GatewaySnapshot, query: &str, top_k: usize) -> 
         .map(|hit| ToolSummary {
             name: hit.qualified_name,
             description: hit.description,
+            score: hit.score,
         })
         .collect()
 }
@@ -93,6 +94,17 @@ mod tests {
             Some("weather__get_forecast")
         );
         assert!(hits[0].description.contains("forecast"));
+    }
+
+    #[tokio::test]
+    async fn search_tools_carries_descending_scores() {
+        let snap = snapshot().await;
+        let hits = search_tools(&snap, "weather forecast", 5).await;
+        assert!(!hits.is_empty());
+        assert!(hits[0].score > 0.0, "top hit has a positive score");
+        for w in hits.windows(2) {
+            assert!(w[0].score >= w[1].score, "scores must be descending");
+        }
     }
 
     #[tokio::test]
