@@ -4,7 +4,8 @@
 
 网关的**只读可视化面板**（子系统 A）：把 `gateway` 的活快照、`observe` 的调用观测与可选的历史 JSONL
 回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 8 个 `/api/*` JSON 端点 + 一个
-**零构建的原生 JS SPA**（3 个静态路由）。它**只读、不改动任何网关状态**，默认关闭、须显式 opt-in。
+**Svelte 5 + Vite 构建、经 `rust-embed` 内嵌**的 SPA（`assets::static_handler` fallback 交付）。它**只读、不改动
+任何网关状态**，默认关闭、须显式 opt-in。
 
 本 crate 提供三个接入 `observe` 接缝的 sink：
 - `MetricsSink` 实现 `observe::CallSink`，**实时聚合**每个元工具的调用数/错误数/延迟分位（p50/p95/max）
@@ -67,7 +68,7 @@
 |----|------|------|
 | `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` |
 | `UpstreamInfo` | `Serialize` | 一个配置上游的静态身份：`name` / `transport`（装配期由 `Config` 给出） |
-| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 8 个 `/api/*` 路由 + 3 个静态路由（`/`、`/app.js`、`/style.css`），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
+| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 8 个 `/api/*` 路由 + `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
 
 `/api/*` 端点（逐符号见 L4）：`/api/overview`、`/api/upstreams`、`/api/tools?q=`、`/api/metrics`、
 `/api/traces?source=live|history&limit=`、`/api/metrics/history?limit=&bucket_ms=`、
@@ -78,7 +79,10 @@
 - 内部：`gateway`（`GatewayState`：读活快照 + `last_summary`）、`observe`（`CallSink`/`CallRecord` 与
   `DiscoverySink`/`DiscoveryRecord` 契约）、`catalog`（经 `GatewaySnapshot::catalog()` 列工具）、`config`
   （装配期取上游/策略/路径）。
-- 外部：`axum`（router/handler）、`tokio`（serve）、`serde`/`serde_json`（视图序列化、JSONL 读写）、`tracing`。
+- 外部：`axum`（router/handler）、`tokio`（serve）、`serde`/`serde_json`（视图序列化、JSONL 读写）、`tracing`、
+  `rust-embed`（编译期内嵌 `ui/dist/` 静态产物，`debug-embed`+`mime-guess`）。
+- 前端工程在 `crates/dashboard/ui/`（Svelte 5 + Vite）：`npm run build` 重新生成 `ui/dist/`（**已入库**，故 `cargo build`
+  不依赖 node；`node_modules/` gitignore），由 `assets.rs` 经 `rust-embed` 内嵌。
 - discovery JSONL writer **只用 `std::thread` + `std::sync::mpsc`（有界 `sync_channel`）+ `std::fs`**（与
   `observe` 的审计 writer 同构），落盘不进 tokio 运行时。
 
@@ -93,7 +97,8 @@
 
 - **任何写操作 / 控制面**：面板纯只读，不暴露重启上游、改配置、撤 key 等动作。
 - **鉴权 / TLS / 反代**：默认绑 localhost、无 auth；非 loopback 绑定只 `warn`，不内建鉴权（留给反代）。
-- **图表库 / SSE / WebSocket**：SPA 是**零依赖原生 JS**，每 3s 轮询 `/api/*`；无打包、无推送。
+- **图表库 / SSE / WebSocket**：SPA 用 **Svelte 5 + Vite** 构建、产物经 `rust-embed` 内嵌；仍每 3s 轮询
+  `/api/*`、**无 SSE/WS**，也无图表库。
 - **指标导出（Prometheus/OTel）**：属 `observe` 接缝的另一类 sink（M6.T2），不在本 crate。
 
 ## 向下导航
