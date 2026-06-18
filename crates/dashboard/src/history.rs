@@ -1,10 +1,10 @@
-use observe::DiscoveryRecord;
 use serde::Deserialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use crate::calls::{CallFilter, CallItem};
+use crate::trace::TraceItem;
 
 /// Read the last `limit` newline-delimited lines of a file, keeping at most `limit` lines in
 /// memory at once (so a large file with well-formed JSONL — one bounded record per line — uses
@@ -24,18 +24,32 @@ fn tail_lines(path: &Path, limit: usize) -> Option<Vec<String>> {
     Some(ring.into_iter().collect())
 }
 
-/// Replay the discovery JSONL: newest-first, scanning at most the last `limit` lines. Bad lines are
-/// skipped. Bool = file present/readable.
-pub fn replay_discovery(path: &Path, limit: usize) -> (Vec<DiscoveryRecord>, bool) {
+/// Replay the discovery JSONL into `TraceItem`s, newest-first, scanning at most the last `limit`
+/// lines; bad lines skipped. Each item gets a stable id `"h{ts}-{n}"` (n counts same-ts in file
+/// order). `DiscoveryRecord` derives `Deserialize`, so no owned-mirror is needed. Bool = readable.
+pub fn replay_discovery_items(path: &Path, limit: usize) -> (Vec<TraceItem>, bool) {
     let Some(lines) = tail_lines(path, limit) else {
         return (Vec::new(), false);
     };
-    let mut recs: Vec<DiscoveryRecord> = lines
-        .iter()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
-    recs.reverse();
-    (recs, true)
+    let mut ts_counts: std::collections::BTreeMap<u64, u32> = std::collections::BTreeMap::new();
+    let mut items: Vec<TraceItem> = Vec::new();
+    for line in &lines {
+        if let Ok(r) = serde_json::from_str::<observe::DiscoveryRecord>(line) {
+            let n = ts_counts.entry(r.ts_unix_ms).or_insert(0);
+            let id = format!("h{}-{}", r.ts_unix_ms, *n);
+            *n += 1;
+            items.push(TraceItem {
+                id,
+                ts_unix_ms: r.ts_unix_ms,
+                query: r.query,
+                top_k: r.top_k,
+                results: r.results,
+                latency_ms: r.latency_ms,
+            });
+        }
+    }
+    items.reverse();
+    (items, true)
 }
 
 /// One fixed-width time bucket of audit metrics.
@@ -162,21 +176,28 @@ mod tests {
     fn replay_discovery_missing_file_is_unavailable() {
         let p = std::env::temp_dir().join("mcpgw-hist-does-not-exist.jsonl");
         let _ = std::fs::remove_file(&p);
-        let (recs, ok) = replay_discovery(&p, 10);
-        assert!(recs.is_empty());
+        let (items, ok) = replay_discovery_items(&p, 10);
+        assert!(items.is_empty());
         assert!(!ok);
     }
 
     #[test]
-    fn replay_discovery_skips_bad_lines_and_is_newest_first() {
+    fn replay_discovery_skips_bad_lines_newest_first_with_stable_ids() {
         let body = "{\"ts_unix_ms\":1,\"query\":\"a\",\"top_k\":1,\"results\":[],\"latency_ms\":0}\n\
                     not json\n\
-                    {\"ts_unix_ms\":2,\"query\":\"b\",\"top_k\":1,\"results\":[],\"latency_ms\":0}\n";
+                    {\"ts_unix_ms\":1,\"query\":\"b\",\"top_k\":1,\"results\":[],\"latency_ms\":0}\n\
+                    {\"ts_unix_ms\":2,\"query\":\"c\",\"top_k\":1,\"results\":[],\"latency_ms\":0}\n";
         let p = write("disc.jsonl", body);
-        let (recs, ok) = replay_discovery(&p, 10);
+        let (items, ok) = replay_discovery_items(&p, 10);
         assert!(ok);
-        let qs: Vec<_> = recs.iter().map(|r| r.query.as_str()).collect();
-        assert_eq!(qs, ["b", "a"], "newest first, bad line skipped");
+        let ids: Vec<_> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["h2-0", "h1-1", "h1-0"],
+            "newest first, bad line skipped, ids stable: n counts same-ts in file order"
+        );
+        let qs: Vec<_> = items.iter().map(|i| i.query.as_str()).collect();
+        assert_eq!(qs, ["c", "b", "a"], "newest first");
         let _ = std::fs::remove_file(&p);
     }
 

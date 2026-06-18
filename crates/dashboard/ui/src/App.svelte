@@ -10,6 +10,7 @@
   import Tools from "./lib/Tools.svelte";
   import ToolDetail from "./lib/ToolDetail.svelte";
   import Traces from "./lib/Traces.svelte";
+  import TraceDetail from "./lib/TraceDetail.svelte";
   onMount(startRouter);
 </script>
 
@@ -30,6 +31,8 @@
       <ToolDetail name={route.params[0]} />
     {:else if route.view === "tools"}
       <Tools />
+    {:else if route.view === "traces" && route.params.length > 0}
+      <TraceDetail id={route.params[0]} />
     {:else if route.view === "traces"}
       <Traces />
     {:else}

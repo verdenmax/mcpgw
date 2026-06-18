@@ -1,4 +1,6 @@
-use crate::history::{replay_audit_calls, replay_audit_metrics, replay_discovery, MetricBucket};
+use crate::history::{
+    replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket,
+};
 use crate::metrics::{MetricsSink, MetricsSnapshot};
 use crate::trace::DiscoveryRingSink;
 use gateway::GatewayState;
@@ -81,7 +83,7 @@ pub struct ToolDetail {
 pub struct TracesResponse {
     pub source: String,
     pub history_unavailable: bool,
-    pub traces: Vec<observe::DiscoveryRecord>,
+    pub traces: Vec<crate::trace::TraceItem>,
 }
 
 #[derive(Serialize)]
@@ -230,11 +232,16 @@ pub fn metrics(state: &AppState) -> MetricsSnapshot {
     state.metrics.snapshot()
 }
 
+/// Discovery lines scanned for BOTH the traces list (source=history) and single-id resolution, so a
+/// history id assigned by the list always resolves identically in detail (mirrors CALL_HISTORY_SCAN).
+pub const TRACE_HISTORY_SCAN: usize = 50_000;
+
 pub fn traces(state: &AppState, limit: usize, source: &str) -> TracesResponse {
     if source == "history" {
         match &state.discovery_path {
             Some(p) => {
-                let (traces, ok) = replay_discovery(p, limit);
+                let (mut traces, ok) = replay_discovery_items(p, TRACE_HISTORY_SCAN);
+                traces.truncate(limit);
                 TracesResponse {
                     source: "history".into(),
                     history_unavailable: !ok,
@@ -258,6 +265,22 @@ pub fn traces(state: &AppState, limit: usize, source: &str) -> TracesResponse {
             history_unavailable: false,
             traces,
         }
+    }
+}
+
+/// Resolve one trace id: `h...` -> history (re-scan TRACE_HISTORY_SCAN + find), else decimal seq ->
+/// live ring. `None` if not found / source unavailable.
+pub fn trace_detail(state: &AppState, id: &str) -> Option<crate::trace::TraceItem> {
+    if id.starts_with('h') {
+        let p = state.discovery_path.as_ref()?;
+        let (items, ok) = replay_discovery_items(p, TRACE_HISTORY_SCAN);
+        if !ok {
+            return None;
+        }
+        items.into_iter().find(|t| t.id == id)
+    } else {
+        let seq: u64 = id.parse().ok()?;
+        state.discovery.as_ref()?.get(seq)
     }
 }
 
@@ -435,6 +458,27 @@ mod tests {
         let t = traces(&st, 10, "history");
         assert!(t.history_unavailable);
         assert!(t.traces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn trace_detail_live_by_seq_and_404() {
+        use observe::DiscoverySink;
+        let (ring, _w) = crate::trace::DiscoveryRingSink::spawn(10, None).unwrap();
+        ring.record(&observe::DiscoveryRecord {
+            ts_unix_ms: 5,
+            query: "weather".into(),
+            top_k: 1,
+            results: vec![],
+            latency_ms: 2,
+        });
+        let st = AppState {
+            discovery: Some(std::sync::Arc::new(ring)),
+            ..seeded_state().await
+        };
+        let t = trace_detail(&st, "0").expect("seq 0 present");
+        assert_eq!(t.query, "weather");
+        assert!(trace_detail(&st, "999").is_none());
+        assert!(trace_detail(&st, "not-a-number").is_none());
     }
 
     #[tokio::test]
