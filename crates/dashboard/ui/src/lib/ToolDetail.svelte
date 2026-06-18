@@ -32,7 +32,11 @@
   <p>upstream: <a href={`#/upstreams/${encodeURIComponent(d.server)}`}>{d.server}</a></p>
   <p>{d.description}</p>
   <h3>Input schema</h3>
-  <pre class="schema">{schema(d.input_schema)}</pre>
+  {#if d.input_schema === null || d.input_schema === undefined}
+    <p class="muted">(no schema)</p>
+  {:else}
+    <pre class="schema">{schema(d.input_schema)}</pre>
+  {/if}
 
   <h3>Recent calls</h3>
   <table>

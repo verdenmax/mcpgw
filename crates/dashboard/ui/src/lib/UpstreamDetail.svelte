@@ -12,9 +12,9 @@
       const r = await fetch(`/api/upstreams/${encodeURIComponent(name)}`);
       if (r.status === 404) { notFound = true; d = null; return; }
       if (!r.ok) throw new Error(`/api/upstreams/${name} -> ${r.status}`);
-      d = await r.json(); notFound = false;
+      d = await r.json();
       const c = await getJSON(`/api/calls?source=live&upstream=${encodeURIComponent(name)}&limit=20`);
-      calls = c.items ?? []; error = null;
+      calls = c.items ?? [];
     } catch (e) { error = String(e); }
   }
   $effect(() => { name; load(); });          // reload when the upstream name changes
