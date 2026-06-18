@@ -321,13 +321,13 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         .json()
         .await
         .unwrap();
-    // list omits content:
-    assert!(calls["items"][0].get("args").is_none(), "list omits args");
-    let cid = calls["items"][0]["id"]
-        .as_str()
-        .expect("a call_tool id")
-        .to_string();
-    // detail includes content:
+    let items = calls["items"].as_array().expect("items array");
+    assert!(!items.is_empty(), "at least one call_tool row");
+    // list omits content (both args and result):
+    assert!(items[0].get("args").is_none(), "list omits args");
+    assert!(items[0].get("result").is_none(), "list omits result");
+    let cid = items[0]["id"].as_str().expect("a call_tool id").to_string();
+    // detail includes content; mock__echo echoes the sent text back, so both carry "hi":
     let cd: serde_json::Value = http
         .get(format!("{base}/api/calls/{cid}"))
         .send()
@@ -338,7 +338,8 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         .unwrap();
     let args = cd["args"].as_str().expect("detail has args");
     assert!(args.contains("hi"), "args contain the echoed text: {args}");
-    assert!(cd["result"].as_str().is_some(), "detail has result");
+    let result = cd["result"].as_str().expect("detail has result");
+    assert!(result.contains("hi"), "result echoes the text: {result}");
 
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
