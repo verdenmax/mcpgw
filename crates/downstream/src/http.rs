@@ -50,6 +50,7 @@ async fn require_api_key(State(keys): State<ApiKeys>, req: Request, next: Next) 
 /// Build the axum router that serves the 3 meta-tools at `path`. When `api_keys` is
 /// non-empty, a Bearer API-key auth layer is mounted; when empty, requests pass through
 /// (relying on localhost binding).
+#[allow(clippy::too_many_arguments)]
 pub fn build_router(
     state: Arc<GatewayState>,
     default_top_k: usize,
@@ -57,6 +58,8 @@ pub fn build_router(
     api_keys: Vec<String>,
     sinks: Arc<[Arc<dyn observe::CallSink>]>,
     discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
+    content_sinks: Arc<[Arc<dyn observe::CallContentSink>]>,
+    payload_max_bytes: usize,
 ) -> axum::Router {
     let service = StreamableHttpService::new(
         move || {
@@ -65,6 +68,8 @@ pub fn build_router(
                 default_top_k,
                 sinks.clone(),
                 discovery.clone(),
+                content_sinks.clone(),
+                payload_max_bytes,
             ))
         },
         Arc::new(LocalSessionManager::default()),

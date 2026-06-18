@@ -1,4 +1,4 @@
-use observe::{CallRecord, CallSink};
+use observe::{CallContent, CallContentSink, CallRecord};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +22,18 @@ pub struct CallItem {
     pub error_kind: Option<String>,
     pub arg_bytes: usize,
     pub result_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub args_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub result_truncated: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Filter for the calls list, applied identically to live and history items (operates on the
@@ -77,11 +89,23 @@ impl CallFilter {
 struct StoredCall {
     seq: u64,
     record: CallRecord,
+    content: CallContent,
 }
 
 impl StoredCall {
-    fn to_item(&self) -> CallItem {
+    fn to_item(&self, with_content: bool) -> CallItem {
         let r = &self.record;
+        let (args, args_truncated, result, result_truncated) = if with_content {
+            let c = &self.content;
+            (
+                Some(c.args.clone()),
+                c.args_truncated,
+                Some(c.result.clone()),
+                c.result_truncated,
+            )
+        } else {
+            (None, false, None, false)
+        };
         CallItem {
             id: self.seq.to_string(),
             ts_unix_ms: r.ts_unix_ms,
@@ -93,6 +117,10 @@ impl StoredCall {
             error_kind: r.error_kind.map(|s| s.to_string()),
             arg_bytes: r.arg_bytes,
             result_bytes: r.result_bytes,
+            args,
+            args_truncated,
+            result,
+            result_truncated,
         }
     }
 }
@@ -133,7 +161,7 @@ impl CallRingSink {
         let matched: Vec<CallItem> = ring
             .iter()
             .rev()
-            .map(|s| s.to_item())
+            .map(|s| s.to_item(false))
             .filter(|c| filter.matches(c))
             .collect();
         drop(ring); // pagination math below doesn't need the lock; release it off the record() hot path
@@ -145,12 +173,12 @@ impl CallRingSink {
     /// Resolve a live id (decimal seq) to its item, or `None` if evicted/never existed.
     pub fn get(&self, seq: u64) -> Option<CallItem> {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        ring.iter().find(|s| s.seq == seq).map(|s| s.to_item())
+        ring.iter().find(|s| s.seq == seq).map(|s| s.to_item(true))
     }
 }
 
-impl CallSink for CallRingSink {
-    fn record(&self, rec: &CallRecord) {
+impl CallContentSink for CallRingSink {
+    fn record(&self, meta: &CallRecord, content: &CallContent) {
         let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         // Allocate the seq while holding the lock so physical ring order always matches seq order
         // (the fan-out calls record() concurrently); otherwise a race could push out of seq order.
@@ -160,7 +188,8 @@ impl CallSink for CallRingSink {
         }
         ring.push_back(StoredCall {
             seq,
-            record: rec.clone(),
+            record: meta.clone(),
+            content: content.clone(),
         });
     }
 }
@@ -168,7 +197,7 @@ impl CallSink for CallRingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observe::{CallOutcome, CallRecord, CallSink, MetaTool};
+    use observe::{CallOutcome, CallRecord, MetaTool};
 
     fn rec(
         meta: MetaTool,
@@ -190,30 +219,70 @@ mod tests {
         }
     }
 
+    fn content() -> observe::CallContent {
+        observe::CallContent {
+            args: "{\"text\":\"hi\"}".into(),
+            args_truncated: false,
+            result: "{\"ok\":true}".into(),
+            result_truncated: false,
+        }
+    }
+
+    #[test]
+    fn ring_stores_content_detail_includes_list_omits() {
+        let ring = CallRingSink::new(10);
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content(),
+        );
+        let (items, _) = ring.query(&CallFilter::default(), 10, 0);
+        assert!(items[0].args.is_none(), "list omits args");
+        assert!(items[0].result.is_none(), "list omits result");
+        let d = ring.get(0).expect("seq 0");
+        assert_eq!(d.args.as_deref(), Some("{\"text\":\"hi\"}"));
+        assert_eq!(d.result.as_deref(), Some("{\"ok\":true}"));
+        assert!(!d.args_truncated);
+    }
+
     #[test]
     fn ring_caps_and_returns_newest_first() {
         let ring = CallRingSink::new(2);
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("a"),
-            Some("a__t"),
-            CallOutcome::Ok,
-            1,
-        ));
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("b"),
-            Some("b__t"),
-            CallOutcome::Ok,
-            2,
-        ));
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("c"),
-            Some("c__t"),
-            CallOutcome::Ok,
-            3,
-        )); // evicts first
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("a"),
+                Some("a__t"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content(),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("b"),
+                Some("b__t"),
+                CallOutcome::Ok,
+                2,
+            ),
+            &content(),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("c"),
+                Some("c__t"),
+                CallOutcome::Ok,
+                3,
+            ),
+            &content(),
+        ); // evicts first
         let (items, total) = ring.query(&CallFilter::default(), 10, 0);
         assert_eq!(total, 2, "capacity 2");
         let ups: Vec<_> = items
@@ -226,8 +295,14 @@ mod tests {
     #[test]
     fn seq_is_monotonic_and_get_resolves_live_id() {
         let ring = CallRingSink::new(10);
-        ring.record(&rec(MetaTool::CallTool, None, None, CallOutcome::Ok, 1));
-        ring.record(&rec(MetaTool::CallTool, None, None, CallOutcome::Ok, 2));
+        ring.record(
+            &rec(MetaTool::CallTool, None, None, CallOutcome::Ok, 1),
+            &content(),
+        );
+        ring.record(
+            &rec(MetaTool::CallTool, None, None, CallOutcome::Ok, 2),
+            &content(),
+        );
         let (items, _) = ring.query(&CallFilter::default(), 10, 0);
         assert_eq!(items[0].id, "1");
         assert_eq!(items[1].id, "0");
@@ -239,27 +314,30 @@ mod tests {
     #[test]
     fn filter_by_each_dimension() {
         let ring = CallRingSink::new(10);
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("gh"),
-            Some("gh__issue"),
-            CallOutcome::Error,
-            10,
-        ));
-        ring.record(&rec(
-            MetaTool::SearchTools,
-            Some("gh"),
-            None,
-            CallOutcome::Ok,
-            20,
-        ));
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("wx"),
-            Some("wx__now"),
-            CallOutcome::Ok,
-            30,
-        ));
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__issue"),
+                CallOutcome::Error,
+                10,
+            ),
+            &content(),
+        );
+        ring.record(
+            &rec(MetaTool::SearchTools, Some("gh"), None, CallOutcome::Ok, 20),
+            &content(),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("wx"),
+                Some("wx__now"),
+                CallOutcome::Ok,
+                30,
+            ),
+            &content(),
+        );
 
         let f = CallFilter {
             meta_tool: Some("call_tool".into()),
@@ -297,7 +375,10 @@ mod tests {
     fn pagination_offset_and_limit() {
         let ring = CallRingSink::new(10);
         for ts in 0..5 {
-            ring.record(&rec(MetaTool::CallTool, None, None, CallOutcome::Ok, ts));
+            ring.record(
+                &rec(MetaTool::CallTool, None, None, CallOutcome::Ok, ts),
+                &content(),
+            );
         }
         let (page, total) = ring.query(&CallFilter::default(), 2, 1);
         assert_eq!(total, 5, "total counts all matched, not just the page");
@@ -310,7 +391,10 @@ mod tests {
     fn empty_ring_and_limit_zero_and_offset_overflow() {
         let ring = CallRingSink::new(4);
         assert_eq!(ring.query(&CallFilter::default(), 10, 0), (vec![], 0));
-        ring.record(&rec(MetaTool::CallTool, None, None, CallOutcome::Ok, 1));
+        ring.record(
+            &rec(MetaTool::CallTool, None, None, CallOutcome::Ok, 1),
+            &content(),
+        );
         assert_eq!(
             ring.query(&CallFilter::default(), 0, 0).0.len(),
             0,
@@ -331,27 +415,36 @@ mod tests {
     #[test]
     fn combined_filters_are_anded() {
         let ring = CallRingSink::new(10);
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("gh"),
-            Some("gh__a"),
-            CallOutcome::Ok,
-            1,
-        ));
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("wx"),
-            Some("wx__b"),
-            CallOutcome::Error,
-            2,
-        ));
-        ring.record(&rec(
-            MetaTool::CallTool,
-            Some("gh"),
-            Some("gh__c"),
-            CallOutcome::Error,
-            3,
-        ));
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content(),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("wx"),
+                Some("wx__b"),
+                CallOutcome::Error,
+                2,
+            ),
+            &content(),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__c"),
+                CallOutcome::Error,
+                3,
+            ),
+            &content(),
+        );
         let f = CallFilter {
             upstream: Some("gh".into()),
             outcome: Some("error".into()),
@@ -373,7 +466,7 @@ mod tests {
             1,
         );
         r.error_kind = Some("timeout");
-        ring.record(&r);
+        ring.record(&r, &content());
         let (items, _) = ring.query(&CallFilter::default(), 10, 0);
         assert_eq!(items[0].error_kind.as_deref(), Some("timeout"));
         assert_eq!(items[0].outcome, "timeout");

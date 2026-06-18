@@ -29,7 +29,18 @@ async fn attach_mock(state: &GatewayState, name: &str) {
 async fn spawn_http_gateway(state: Arc<GatewayState>, api_keys: Vec<String>) -> String {
     let sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> = Vec::new().into();
     let discovery: std::sync::Arc<[std::sync::Arc<dyn observe::DiscoverySink>]> = Vec::new().into();
-    let router = downstream::http::build_router(state, 8, "/mcp", api_keys, sinks, discovery);
+    let content_sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallContentSink>]> =
+        Vec::new().into();
+    let router = downstream::http::build_router(
+        state,
+        8,
+        "/mcp",
+        api_keys,
+        sinks,
+        discovery,
+        content_sinks,
+        16384,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -153,7 +164,18 @@ async fn http_graceful_shutdown_stops_the_server_promptly() {
     let state = Arc::new(GatewayState::new("bm25").unwrap());
     let sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallSink>]> = Vec::new().into();
     let discovery: std::sync::Arc<[std::sync::Arc<dyn observe::DiscoverySink>]> = Vec::new().into();
-    let router = downstream::http::build_router(state, 8, "/mcp", vec![], sinks, discovery);
+    let content_sinks: std::sync::Arc<[std::sync::Arc<dyn observe::CallContentSink>]> =
+        Vec::new().into();
+    let router = downstream::http::build_router(
+        state,
+        8,
+        "/mcp",
+        vec![],
+        sinks,
+        discovery,
+        content_sinks,
+        16384,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();

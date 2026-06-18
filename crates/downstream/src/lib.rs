@@ -22,6 +22,8 @@ pub struct GatewayServer {
     default_top_k: usize,
     sinks: Arc<[Arc<dyn observe::CallSink>]>,
     discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
+    content_sinks: Arc<[Arc<dyn observe::CallContentSink>]>,
+    payload_max_bytes: usize,
 }
 
 impl GatewayServer {
@@ -30,12 +32,16 @@ impl GatewayServer {
         default_top_k: usize,
         sinks: Arc<[Arc<dyn observe::CallSink>]>,
         discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
+        content_sinks: Arc<[Arc<dyn observe::CallContentSink>]>,
+        payload_max_bytes: usize,
     ) -> Self {
         Self {
             state,
             default_top_k,
             sinks,
             discovery,
+            content_sinks,
+            payload_max_bytes,
         }
     }
 }
@@ -105,6 +111,34 @@ fn json_len<T: serde::Serialize>(value: &T) -> usize {
     match serde_json::to_writer(&mut counter, value) {
         Ok(()) => counter.0,
         Err(_) => 0,
+    }
+}
+
+/// UTF-8-safe truncation to at most `cap` bytes. Returns (possibly-truncated string, truncated?).
+fn truncate_utf8(s: String, cap: usize) -> (String, bool) {
+    if s.len() <= cap {
+        return (s, false);
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_string(), true)
+}
+
+/// Compact-serialize `value` then UTF-8-truncate to `cap`. Serialization failure -> ("<unserializable>", false).
+fn cap_json<T: serde::Serialize>(value: &T, cap: usize) -> (String, bool) {
+    match serde_json::to_string(value) {
+        Ok(s) => truncate_utf8(s, cap),
+        Err(_) => ("<unserializable>".to_string(), false),
+    }
+}
+
+/// Serialize the call response (success result, or the error string) then truncate.
+fn cap_response(response: &Result<CallToolResult, McpError>, cap: usize) -> (String, bool) {
+    match response {
+        Ok(r) => cap_json(r, cap),
+        Err(e) => truncate_utf8(e.to_string(), cap),
     }
 }
 
@@ -342,6 +376,19 @@ impl ServerHandler for GatewayServer {
         for sink in self.sinks.iter() {
             sink.record(&rec);
         }
+        if !self.content_sinks.is_empty() {
+            let (args_s, args_truncated) = cap_json(&args, self.payload_max_bytes);
+            let (result_s, result_truncated) = cap_response(&response, self.payload_max_bytes);
+            let content = observe::CallContent {
+                args: args_s,
+                args_truncated,
+                result: result_s,
+                result_truncated,
+            };
+            for s in self.content_sinks.iter() {
+                s.record(&rec, &content);
+            }
+        }
         response
     }
 }
@@ -423,5 +470,24 @@ mod tests {
             let expected = serde_json::to_string(&v).unwrap().len();
             assert_eq!(super::json_len(&v), expected, "json_len mismatch for {v}");
         }
+    }
+
+    #[test]
+    fn truncate_utf8_respects_char_boundary() {
+        let (s, t) = truncate_utf8("héllo".to_string(), 2);
+        assert_eq!(s, "h");
+        assert!(t);
+        let (s2, t2) = truncate_utf8("hi".to_string(), 8);
+        assert_eq!(s2, "hi");
+        assert!(!t2);
+    }
+
+    #[test]
+    fn cap_json_serializes_and_truncates() {
+        let (s, t) = cap_json(&serde_json::json!({"a": 1}), 100);
+        assert_eq!(s, "{\"a\":1}");
+        assert!(!t);
+        let (_s, t2) = cap_json(&serde_json::json!({"a": "xxxxxxxxxx"}), 5);
+        assert!(t2, "long value truncated");
     }
 }

@@ -392,7 +392,7 @@ pub fn call_detail(state: &AppState, id: &str) -> Option<crate::calls::CallItem>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observe::CallSink;
+    use observe::{CallContentSink, CallSink};
 
     async fn seeded_state() -> AppState {
         // A gateway with two tools under one server, rebuilt so the snapshot is populated.
@@ -510,27 +510,45 @@ mod tests {
         }
     }
 
+    fn call_content() -> observe::CallContent {
+        observe::CallContent {
+            args: "{}".into(),
+            args_truncated: false,
+            result: "{}".into(),
+            result_truncated: false,
+        }
+    }
+
     #[tokio::test]
     async fn calls_live_filters_and_paginates() {
         let ring = Arc::new(crate::calls::CallRingSink::new(10));
-        ring.record(&call_rec(
-            observe::MetaTool::CallTool,
-            Some("gh"),
-            observe::CallOutcome::Ok,
-            1,
-        ));
-        ring.record(&call_rec(
-            observe::MetaTool::CallTool,
-            Some("wx"),
-            observe::CallOutcome::Error,
-            2,
-        ));
-        ring.record(&call_rec(
-            observe::MetaTool::SearchTools,
-            Some("gh"),
-            observe::CallOutcome::Ok,
-            3,
-        ));
+        ring.record(
+            &call_rec(
+                observe::MetaTool::CallTool,
+                Some("gh"),
+                observe::CallOutcome::Ok,
+                1,
+            ),
+            &call_content(),
+        );
+        ring.record(
+            &call_rec(
+                observe::MetaTool::CallTool,
+                Some("wx"),
+                observe::CallOutcome::Error,
+                2,
+            ),
+            &call_content(),
+        );
+        ring.record(
+            &call_rec(
+                observe::MetaTool::SearchTools,
+                Some("gh"),
+                observe::CallOutcome::Ok,
+                3,
+            ),
+            &call_content(),
+        );
         let st = AppState {
             calls: Some(ring),
             ..seeded_state().await
@@ -586,12 +604,15 @@ mod tests {
     #[tokio::test]
     async fn call_detail_live_by_seq_and_404() {
         let ring = Arc::new(crate::calls::CallRingSink::new(10));
-        ring.record(&call_rec(
-            observe::MetaTool::CallTool,
-            Some("gh"),
-            observe::CallOutcome::Ok,
-            7,
-        ));
+        ring.record(
+            &call_rec(
+                observe::MetaTool::CallTool,
+                Some("gh"),
+                observe::CallOutcome::Ok,
+                7,
+            ),
+            &call_content(),
+        );
         let st = AppState {
             calls: Some(ring),
             ..seeded_state().await
@@ -666,12 +687,15 @@ mod tests {
     #[tokio::test]
     async fn calls_unknown_source_falls_through_to_live() {
         let ring = Arc::new(crate::calls::CallRingSink::new(10));
-        ring.record(&call_rec(
-            observe::MetaTool::CallTool,
-            Some("gh"),
-            observe::CallOutcome::Ok,
-            1,
-        ));
+        ring.record(
+            &call_rec(
+                observe::MetaTool::CallTool,
+                Some("gh"),
+                observe::CallOutcome::Ok,
+                1,
+            ),
+            &call_content(),
+        );
         let st = AppState {
             calls: Some(ring),
             ..seeded_state().await
