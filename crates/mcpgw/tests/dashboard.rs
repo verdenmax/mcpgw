@@ -312,6 +312,34 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         200
     );
 
+    // M1 payload capture: the call_tool above captured args + result into the live ring.
+    let calls: serde_json::Value = http
+        .get(format!("{base}/api/calls?source=live&meta=call_tool"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // list omits content:
+    assert!(calls["items"][0].get("args").is_none(), "list omits args");
+    let cid = calls["items"][0]["id"]
+        .as_str()
+        .expect("a call_tool id")
+        .to_string();
+    // detail includes content:
+    let cd: serde_json::Value = http
+        .get(format!("{base}/api/calls/{cid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let args = cd["args"].as_str().expect("detail has args");
+    assert!(args.contains("hi"), "args contain the echoed text: {args}");
+    assert!(cd["result"].as_str().is_some(), "detail has result");
+
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
 }

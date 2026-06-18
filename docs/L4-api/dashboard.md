@@ -136,13 +136,13 @@ pub fn replay_audit_calls(path: &Path, scan_limit: usize, filter: &CallFilter) -
 ## `calls.rs`：逐条调用环 + 统一项类型
 
 ### `struct CallItem`（`Serialize`）
-live 环与 history 回放共用的 owned 项：`id`（live=十进制 seq；history=`"h{ts}-{n}"`）、`ts_unix_ms`、`meta_tool`、`target_tool?`、`upstream?`、`latency_ms`、`outcome`、`error_kind?`、`arg_bytes`、`result_bytes`。仅元数据。
+live 环与 history 回放共用的 owned 项：`id`（live=十进制 seq；history=`"h{ts}-{n}"`）、`ts_unix_ms`、`meta_tool`、`target_tool?`、`upstream?`、`latency_ms`、`outcome`、`error_kind?`、`arg_bytes`、`result_bytes`，外加可选**内容**字段 `args?`/`args_truncated`/`result?`/`result_truncated`（M1 调用内容捕获）。内容字段**仅详情**填充：`get(seq)`（→`/api/calls/{id}`）以 `with_content=true` 带出 args/result；列表 `query`（→`/api/calls`）以 `with_content=false` **省略**它们（`args`/`result` 为 `None` 经 `skip_serializing_if` 不出现，`*_truncated=false` 同样不序列化）。history 回放项内容恒 `None`（审计仅元数据）。
 
 ### `struct CallFilter`
 `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`，均 `Option`（`None`=全匹配；`since_ms`/`until_ms` 为闭区间，含端点）；`matches(&CallItem)` 对 live 与 history 两数据源统一过滤。
 
-### `struct CallRingSink`（实现 `observe::CallSink`）
-有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` newest-first、`total` 计全部命中；`get(seq) -> Option<CallItem>`。容量 = `[dashboard].call_buffer`。
+### `struct CallRingSink`（实现 `observe::CallContentSink`）
+有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。环内每条是 `StoredCall { seq, record: CallRecord, content: CallContent }`——**同时**存元数据与内容（一条记录富含两者，不重复元数据字段）；私有 `to_item(with_content: bool)` 转出 `CallItem`，`with_content=false` 时内容四字段留空（列表用），`true` 时带出 args/result（详情用）。`record(&self, meta: &CallRecord, content: &CallContent)` 实现 `CallContentSink`：克隆 `meta`+`content` 入环。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` newest-first（`to_item(false)`、`total` 计全部命中）；`get(seq) -> Option<CallItem>`（`to_item(true)`）。容量 = `[dashboard].call_buffer`；单条 args/result 的字节上界由下游按 `[dashboard].payload_max_bytes`（默认 16384）截断后才入环，故常驻内存按 `call_buffer × payload_max_bytes` 有界（重启即丢）。
 
 ---
 

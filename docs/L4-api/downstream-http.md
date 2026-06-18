@@ -13,16 +13,19 @@ pub fn build_router(
     api_keys: Vec<String>,
     sinks: Arc<[Arc<dyn observe::CallSink>]>,
     discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
+    content_sinks: Arc<[Arc<dyn observe::CallContentSink>]>,
+    payload_max_bytes: usize,
 ) -> axum::Router
 ```
 
 **职责**：构造一个把 3 个元工具挂在 `path`（如 `/mcp`）下的 axum `Router`。
 
 - 用 `StreamableHttpService::new(factory, session_manager, config)` 构造服务：
-  - `factory`：`move || Ok(GatewayServer::new(state.clone(), default_top_k, sinks.clone(), discovery.clone()))`，
-    签名为 `Fn() -> Result<S, std::io::Error>`，每个会话克隆共享 `state`、`sinks` 与 `discovery`（仅克隆内部
-    `Arc`）复用同一份网关状态、同一组**观测 sink** 与同一组**发现追踪 sink**——故 HTTP 与 stdio 传输的调用
-    记录扇出到**同一组 sink**，`search_tools` 的发现追踪也扇出到**同一组 `discovery`**（空切片即不捕获）。
+  - `factory`：`move || Ok(GatewayServer::new(state.clone(), default_top_k, sinks.clone(), discovery.clone(), content_sinks.clone(), payload_max_bytes))`，
+    签名为 `Fn() -> Result<S, std::io::Error>`，每个会话克隆共享 `state`、`sinks`、`discovery` 与 `content_sinks`
+    （仅克隆内部 `Arc`）复用同一份网关状态、同一组**观测 sink**、同一组**发现追踪 sink** 与同一组**内容 sink**
+    （`payload_max_bytes` 按值拷贝）——故 HTTP 与 stdio 传输的调用记录扇出到**同一组 sink**，`search_tools` 的
+    发现追踪也扇出到**同一组 `discovery`**、`call_tool` 的内容也扇出到**同一组 `content_sinks`**（空切片即不捕获）。
   - `session_manager`：`Arc::new(LocalSessionManager::default())`（进程内会话表）。
   - `config`：`StreamableHttpServerConfig::default()`，其 `allowed_hosts` 默认
     `[localhost, 127.0.0.1, ::1]`，对本机 `127.0.0.1` e2e 放行。
@@ -47,7 +50,7 @@ pub fn build_router(
 ## 依赖
 
 - 内部：`crate::GatewayServer`、`gateway::GatewayState`、`observe`（`CallSink` 切片 + `DiscoverySink` 切片
-  透传给每会话的 `GatewayServer`）。
+  + `CallContentSink` 切片透传给每会话的 `GatewayServer`）。
 - 外部：`rmcp`（feature `transport-streamable-http-server`：`StreamableHttpService` /
   `StreamableHttpServerConfig` / `session::local::LocalSessionManager`）、`axum`（0.8，http 1 / hyper 1）、
   `subtle`（`ConstantTimeEq` 常量时间比较）。

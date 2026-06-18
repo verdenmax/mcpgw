@@ -12,6 +12,9 @@ sink」这一接缝的**单一来源**：T1（tracing）与 T3（审计 JSONL）
 分类、构造记录、扇出）发生在 `downstream::GatewayServer::call_tool`；`metatools` crate 保持**纯函数、不
 依赖 `observe`**。
 
+本 crate 还定义一条**与仅元数据 `CallRecord` 物理隔离**的调用**内容**扇出契约 `CallContent` + `CallContentSink`
+（args/result 文本），供 dashboard 把载荷捕获进内存环；内容**绝不**经 tracing/审计 sink 流出。
+
 ## 公开接口
 
 ### 类型 `CallRecord`
@@ -43,6 +46,18 @@ sink」这一接缝的**单一来源**：T1（tracing）与 T3（审计 JSONL）
 ### 类型 `TracingSink`
 实现 `CallSink`：把每条记录发为结构化 `tracing::info!(..., "tool_call")` 事件（复用进程 subscriber，
 只发元数据）。
+
+### 类型 `CallContent` / trait `CallContentSink`（调用内容契约，与元数据物理隔离）
+一条**与仅元数据 `CallRecord` 物理隔离**的调用**内容**扇出通道：捕获 args/result 文本**仅入 dashboard 内存环**，
+使内容**绝不**抵达 tracing/审计 sink。
+
+| 项 | 形状 / 签名 | 说明 |
+|----|------|------|
+| `CallContent` | `{ args: String, args_truncated: bool, result: String, result_truncated: bool }` | 一次调用的内容载荷：已序列化、已截断的 `args`（JSON 文本）与 `result`（序列化结果**或**上游错误纯文本）；`*_truncated` 标记是否触顶。**不** `Serialize`（dashboard 自有 `CallItem` 决定如何暴露） |
+| `CallContentSink` | trait `record(&self, meta: &CallRecord, content: &CallContent)`（`Send + Sync`） | 内容扇出目标，**同时**拿到元数据与内容（不重复元数据字段）。**契约：非阻塞、绝不 panic**。由 dashboard 的 `CallRingSink` 实现并**只**装进 `content_sinks` 切片 |
+
+下游 `call_tool` 仅在 `content_sinks` 非空时构造并扇出 `CallContent`（截断后），与仅元数据 `sinks` 路径**完全
+独立**——故 args/result 永不漏进 tracing/审计。逐项见 L4 `docs/L4-api/observe-lib.md`「调用内容契约」。
 
 ### 类型 `JsonlSink` / `spawn_writer` / `AuditWriter` / `AUDIT_CHANNEL_CAPACITY`（M6.T3，可选审计落盘）
 **可选的 JSONL 审计 sink**，std-only（无 tokio）。

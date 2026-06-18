@@ -31,7 +31,7 @@ pub struct Config {
 > 且**不得含通配/参数段**（即不含 `{`、`}`、`*`，如 `/{id}`、`/{*rest}`、`/a*b`）——否则 `Invalid`。
 > 后者同样在启动期、axum 之前校验：含这类段的路径会让 axum 在 `nest_service` 构建路由时 panic（`/{*rest}`），
 > 或把 MCP 静默挂到动态捕获段（`/{id}`）上。
-> 另：`[dashboard]` 段当 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`（否则 `Invalid`）。
+> 另：`[dashboard]` 段当 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`、`call_buffer > 0`、`payload_max_bytes > 0`（否则 `Invalid`）。
 
 ## `struct UpstreamConfig`
 ```rust
@@ -142,15 +142,20 @@ pub struct DashboardConfig {
     pub trace_queries: bool,       // 默认 false（opt-in 后才捕获 query 文本 + 命中工具名/分数）
     pub trace_path: Option<String>,// 默认 None（给出则把发现追踪另写 JSONL 供历史回放）
     pub trace_buffer: usize,       // 默认 500（内存发现 ring buffer 容量，须 > 0）
+    pub call_buffer: usize,        // 默认 2000（内存逐条调用 ring 容量，驱动 Calls 下钻列表，须 > 0）
+    pub payload_max_bytes: usize,  // 默认 16384（Calls 详情单条 args/result 捕获的字节上限，须 > 0）
 }
 ```
 `[dashboard]` 段（子系统 A）：可选的**只读可视化面板**——独立端口、localhost、无鉴权的 web server（实现见
 L3 [dashboard](../L3-details/dashboard.md)）。`enabled` 默认 `false`——**省略整个 `[dashboard]` 段 = 面板关闭**
 （经容器级 `#[serde(default)]` 取 `DashboardConfig::default()`）。`trace_queries` 控制是否捕获**与审计/观测物理
 隔离**的发现追踪通道（`DiscoveryRecord`，含 query 文本 + 命中工具名/分数），默认关闭；`trace_path` 给出时把该追踪
-另写一份 JSONL 供历史回放，否则仅内存 ring buffer。无 flatten，故 `#[serde(default, deny_unknown_fields)]` 生效
+另写一份 JSONL 供历史回放，否则仅内存 ring buffer。`call_buffer` 是逐条调用内存环（Calls 下钻列表）的容量；
+`payload_max_bytes` 是 Calls 详情里单条 `args`/`result` 内容捕获各自的字节上限（下游按它 UTF-8 截断后才入环，故
+内容常驻内存按 `call_buffer × payload_max_bytes` 有界，重启即丢）。无 flatten，故 `#[serde(default, deny_unknown_fields)]` 生效
 （段内未知键 → `Parse`）；实现 `Default`（`enabled=false`、`bind="127.0.0.1:8971"`、`trace_queries=false`、
-`trace_path=None`、`trace_buffer=500`）。`validate()` 仅在 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`
+`trace_path=None`、`trace_buffer=500`、`call_buffer=2000`、`payload_max_bytes=16384`）。`validate()` 仅在 `enabled` 时
+校验 `bind.trim()` 非空、`trace_buffer > 0`、`call_buffer > 0`、`payload_max_bytes > 0`
 （否则 `Invalid`）；端口能否绑定在 `serve` 启动期由预绑定监听 fail-fast 暴露。
 
 ## `struct RetrievalConfig`
@@ -214,6 +219,6 @@ pub enum ConfigError {
 }
 ```
 - `Parse`：TOML 语法错误或未知字段。
-- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`、upstream `name` 空白/含 `__`/以 `_` 开头或结尾/重复、`[server.http].path` 不以 `/` 开头或仅为 `/`、`[dashboard]` 启用时 `bind` 空白或 `trace_buffer == 0`）。
+- `Invalid`：语义校验失败（未知 strategy、`top_k == 0`、`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其字段空白、`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`、upstream `name` 空白/含 `__`/以 `_` 开头或结尾/重复、`[server.http].path` 不以 `/` 开头或仅为 `/`、`[dashboard]` 启用时 `bind` 空白或 `trace_buffer == 0` 或 `call_buffer == 0` 或 `payload_max_bytes == 0`）。
 
 > 行为细节见 L3：[config](../L3-details/config.md)
