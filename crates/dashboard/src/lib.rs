@@ -155,7 +155,7 @@ async fn h_trace_detail(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if id.starts_with('h') {
+    if api::is_history_id(&id) {
         let detail = tokio::task::spawn_blocking(move || api::trace_detail(&s, &id))
             .await
             .expect("trace detail replay task");

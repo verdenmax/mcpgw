@@ -1,5 +1,4 @@
 <script>
-  import { onMount } from "svelte";
   let { id } = $props();
   let t = $state(null);
   let error = $state(null);
@@ -14,7 +13,6 @@
     } catch (e) { error = String(e); }
   }
   $effect(() => { id; load(); });
-  onMount(() => { const iv = setInterval(load, 3000); return () => clearInterval(iv); });
   function when(ms) { return new Date(ms).toLocaleString(); }
 </script>
 

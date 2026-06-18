@@ -118,6 +118,9 @@ impl DiscoverySink for DiscoveryRingSink {
     fn record(&self, rec: &DiscoveryRecord) {
         {
             let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+            // Allocate the seq while holding the lock so physical ring order always matches seq
+            // order (the DiscoverySink fan-out calls record() concurrently); otherwise a race could
+            // push out of seq order.
             let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
             if ring.len() == self.cap {
                 ring.pop_front();

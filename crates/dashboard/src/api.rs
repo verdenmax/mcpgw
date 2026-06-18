@@ -271,7 +271,7 @@ pub fn traces(state: &AppState, limit: usize, source: &str) -> TracesResponse {
 /// Resolve one trace id: `h...` -> history (re-scan TRACE_HISTORY_SCAN + find), else decimal seq ->
 /// live ring. `None` if not found / source unavailable.
 pub fn trace_detail(state: &AppState, id: &str) -> Option<crate::trace::TraceItem> {
-    if id.starts_with('h') {
+    if is_history_id(id) {
         let p = state.discovery_path.as_ref()?;
         let (items, ok) = replay_discovery_items(p, TRACE_HISTORY_SCAN);
         if !ok {

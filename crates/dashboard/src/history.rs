@@ -31,7 +31,7 @@ pub fn replay_discovery_items(path: &Path, limit: usize) -> (Vec<TraceItem>, boo
     let Some(lines) = tail_lines(path, limit) else {
         return (Vec::new(), false);
     };
-    let mut ts_counts: std::collections::BTreeMap<u64, u32> = std::collections::BTreeMap::new();
+    let mut ts_counts: BTreeMap<u64, u32> = BTreeMap::new();
     let mut items: Vec<TraceItem> = Vec::new();
     for line in &lines {
         if let Ok(r) = serde_json::from_str::<observe::DiscoveryRecord>(line) {
