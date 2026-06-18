@@ -113,6 +113,22 @@ pub fn overview(state: &AppState) -> Overview {
     }
 }
 
+/// Resolve an upstream's connection status from the last rebuild summary: ingested -> "connected",
+/// skipped -> ("skipped", reason), otherwise -> "unknown" (incl. before the first rebuild).
+fn resolve_status(
+    summary: &Option<std::sync::Arc<gateway::RebuildSummary>>,
+    name: &str,
+) -> (&'static str, Option<String>) {
+    match summary {
+        None => ("unknown", None),
+        Some(s) if s.ingested.iter().any(|n| n == name) => ("connected", None),
+        Some(s) => match s.skipped.iter().find(|(n, _)| n == name) {
+            Some((_, why)) => ("skipped", Some(why.clone())),
+            None => ("unknown", None),
+        },
+    }
+}
+
 pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
     let snap = state.gateway.snapshot();
     let summary = state.gateway.last_summary();
@@ -121,18 +137,7 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
         .upstreams
         .iter()
         .map(|info| {
-            let (status, reason) = match &summary {
-                None => ("unknown", None),
-                Some(s) => {
-                    if s.ingested.iter().any(|n| n == &info.name) {
-                        ("connected", None)
-                    } else if let Some((_, why)) = s.skipped.iter().find(|(n, _)| n == &info.name) {
-                        ("skipped", Some(why.clone()))
-                    } else {
-                        ("unknown", None)
-                    }
-                }
-            };
+            let (status, reason) = resolve_status(&summary, &info.name);
             let tools = snap
                 .catalog()
                 .iter()
@@ -159,18 +164,7 @@ pub fn upstream_detail(state: &AppState, name: &str) -> Option<UpstreamDetail> {
     let snap = state.gateway.snapshot();
     let summary = state.gateway.last_summary();
     let m = state.metrics.snapshot();
-    let (status, reason) = match &summary {
-        None => ("unknown", None),
-        Some(s) => {
-            if s.ingested.iter().any(|n| n == &info.name) {
-                ("connected", None)
-            } else if let Some((_, why)) = s.skipped.iter().find(|(n, _)| n == &info.name) {
-                ("skipped", Some(why.clone()))
-            } else {
-                ("unknown", None)
-            }
-        }
-    };
+    let (status, reason) = resolve_status(&summary, &info.name);
     let tools: Vec<ToolView> = snap
         .catalog()
         .iter()

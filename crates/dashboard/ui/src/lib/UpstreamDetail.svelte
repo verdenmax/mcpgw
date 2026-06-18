@@ -8,6 +8,7 @@
   let notFound = $state(false);
   async function load() {
     try {
+      error = null; notFound = false;
       const r = await fetch(`/api/upstreams/${encodeURIComponent(name)}`);
       if (r.status === 404) { notFound = true; d = null; return; }
       if (!r.ok) throw new Error(`/api/upstreams/${name} -> ${r.status}`);
@@ -16,7 +17,11 @@
       calls = c.items ?? []; error = null;
     } catch (e) { error = String(e); }
   }
-  $effect(() => { name; load(); });
+  $effect(() => { name; load(); });          // reload when the upstream name changes
+  onMount(() => {                              // poll mutable data (calls/errors/recent calls)
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  });
   function when(ms) { return new Date(ms).toLocaleString(); }
 </script>
 
