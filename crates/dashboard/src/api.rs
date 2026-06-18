@@ -311,6 +311,9 @@ pub fn call_filter_from_query(
         outcome: q.get("outcome").cloned(),
         since_ms: q.get("since").and_then(|v| v.parse().ok()),
         until_ms: q.get("until").and_then(|v| v.parse().ok()),
+        q: q.get("q").cloned(),
+        arg_key: q.get("arg_key").cloned(),
+        arg_val: q.get("arg_val").cloned(),
     }
 }
 

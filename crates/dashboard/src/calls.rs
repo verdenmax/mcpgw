@@ -36,6 +36,41 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Case-insensitive substring of `needle` over `args` + (optional) `result`.
+fn content_contains(args: &str, result: Option<&str>, needle: &str) -> bool {
+    let n = needle.to_lowercase();
+    args.to_lowercase().contains(&n)
+        || result
+            .map(|r| r.to_lowercase().contains(&n))
+            .unwrap_or(false)
+}
+
+/// Parse `args` JSON and recursively check for a key `k` whose stringified value contains `v`
+/// (case-insensitive). Truncated/invalid JSON -> no match (best-effort).
+fn args_key_value_matches(args: &str, k: &str, v: &str) -> bool {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(args) else {
+        return false;
+    };
+    let needle = v.to_lowercase();
+    fn walk(val: &serde_json::Value, k: &str, needle: &str) -> bool {
+        match val {
+            serde_json::Value::Object(m) => m.iter().any(|(key, child)| {
+                let hit_here = key == k && {
+                    let s = match child {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    s.to_lowercase().contains(needle)
+                };
+                hit_here || walk(child, k, needle)
+            }),
+            serde_json::Value::Array(a) => a.iter().any(|x| walk(x, k, needle)),
+            _ => false,
+        }
+    }
+    walk(&val, k, &needle)
+}
+
 /// Filter for the calls list, applied identically to live and history items (operates on the
 /// already-built `CallItem`, so the two data sources share one matcher). All `None` = match all.
 /// `since_ms` and `until_ms` are BOTH inclusive: the time window is the closed interval `[since, until]`.
@@ -47,6 +82,9 @@ pub struct CallFilter {
     pub outcome: Option<String>,
     pub since_ms: Option<u64>,
     pub until_ms: Option<u64>,
+    pub q: Option<String>,
+    pub arg_key: Option<String>,
+    pub arg_val: Option<String>,
 }
 
 impl CallFilter {
@@ -79,6 +117,20 @@ impl CallFilter {
         if let Some(u) = self.until_ms {
             if c.ts_unix_ms > u {
                 return false;
+            }
+        }
+        // Content filters apply ONLY to items carrying content (live ring built with content);
+        // history / list-light items have `args == None` and are NOT excluded by content filters.
+        if let Some(args) = &c.args {
+            if let Some(q) = &self.q {
+                if !content_contains(args, c.result.as_deref(), q) {
+                    return false;
+                }
+            }
+            if let (Some(k), Some(v)) = (&self.arg_key, &self.arg_val) {
+                if !args_key_value_matches(args, k, v) {
+                    return false;
+                }
             }
         }
         true
@@ -154,6 +206,10 @@ impl CallRingSink {
         limit: usize,
         offset: usize,
     ) -> (Vec<CallItem>, usize) {
+        // Build content only when a content filter is active (q / arg pair); otherwise keep the
+        // light, allocation-free path for ordinary list polling.
+        let want_content =
+            filter.q.is_some() || (filter.arg_key.is_some() && filter.arg_val.is_some());
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         // Building a CallItem per ring entry (so the single CallFilter::matches(&CallItem) matcher is
         // reused across the live ring and JSONL history) is a deliberate readability/reuse tradeoff,
@@ -161,12 +217,21 @@ impl CallRingSink {
         let matched: Vec<CallItem> = ring
             .iter()
             .rev()
-            .map(|s| s.to_item(false))
+            .map(|s| s.to_item(want_content))
             .filter(|c| filter.matches(c))
             .collect();
         drop(ring); // pagination math below doesn't need the lock; release it off the record() hot path
         let total = matched.len();
-        let page = matched.into_iter().skip(offset).take(limit).collect();
+        let mut page: Vec<CallItem> = matched.into_iter().skip(offset).take(limit).collect();
+        if want_content {
+            // The list never returns content; we built it only to filter, now strip it.
+            for c in &mut page {
+                c.args = None;
+                c.args_truncated = false;
+                c.result = None;
+                c.result_truncated = false;
+            }
+        }
         (page, total)
     }
 
@@ -224,6 +289,15 @@ mod tests {
             args: "{\"text\":\"hi\"}".into(),
             args_truncated: false,
             result: "{\"ok\":true}".into(),
+            result_truncated: false,
+        }
+    }
+
+    fn content_of(args: &str, result: &str) -> observe::CallContent {
+        observe::CallContent {
+            args: args.into(),
+            args_truncated: false,
+            result: result.into(),
             result_truncated: false,
         }
     }
@@ -470,5 +544,92 @@ mod tests {
         let (items, _) = ring.query(&CallFilter::default(), 10, 0);
         assert_eq!(items[0].error_kind.as_deref(), Some("timeout"));
         assert_eq!(items[0].outcome, "timeout");
+    }
+
+    #[test]
+    fn query_free_text_filters_over_args_and_result() {
+        let ring = CallRingSink::new(10);
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content_of("{\"text\":\"hello\"}", "{\"ok\":1}"),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__b"),
+                CallOutcome::Ok,
+                2,
+            ),
+            &content_of("{\"text\":\"world\"}", "{\"ok\":2}"),
+        );
+        let f = CallFilter {
+            q: Some("hello".into()),
+            ..Default::default()
+        };
+        let (items, total) = ring.query(&f, 10, 0);
+        assert_eq!(total, 1, "free-text matches args content");
+        assert!(
+            items[0].args.is_none(),
+            "list omits args after content filter"
+        );
+    }
+
+    #[test]
+    fn query_arg_key_value_recurses_nested_args() {
+        let ring = CallRingSink::new(10);
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content_of("{\"name\":\"gh__a\",\"arguments\":{\"text\":\"hi\"}}", "{}"),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__b"),
+                CallOutcome::Ok,
+                2,
+            ),
+            &content_of(
+                "{\"name\":\"gh__b\",\"arguments\":{\"text\":\"bye\"}}",
+                "{}",
+            ),
+        );
+        let f = CallFilter {
+            arg_key: Some("text".into()),
+            arg_val: Some("hi".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ring.query(&f, 10, 0).1,
+            1,
+            "arg_key=text arg_val=hi matches nested"
+        );
+    }
+
+    #[test]
+    fn content_filters_skip_items_without_content() {
+        let ring = CallRingSink::new(10);
+        ring.record(
+            &rec(MetaTool::CallTool, Some("gh"), None, CallOutcome::Ok, 1),
+            &content_of("{}", "{}"),
+        );
+        let f = CallFilter {
+            meta_tool: Some("call_tool".into()),
+            ..Default::default()
+        };
+        assert_eq!(ring.query(&f, 10, 0).1, 1);
     }
 }
