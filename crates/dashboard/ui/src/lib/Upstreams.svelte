@@ -16,7 +16,7 @@
   <thead><tr><th>name</th><th>transport</th><th>status</th><th>tools</th><th>calls</th><th>errors</th></tr></thead>
   <tbody>
     {#each ups as u}
-      <tr>
+      <tr class="row-link" onclick={() => (location.hash = `#/upstreams/${encodeURIComponent(u.name)}`)}>
         <td>{u.name}</td>
         <td>{u.transport}</td>
         <td><span class="badge {u.status}">{u.status}</span>{#if u.reason} {u.reason}{/if}</td>

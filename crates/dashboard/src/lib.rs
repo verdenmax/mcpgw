@@ -43,6 +43,15 @@ async fn h_overview(State(s): State<Arc<AppState>>) -> Json<api::Overview> {
 async fn h_upstreams(State(s): State<Arc<AppState>>) -> Json<Vec<api::UpstreamView>> {
     Json(api::upstreams(&s))
 }
+async fn h_upstream_detail(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> axum::response::Response {
+    match api::upstream_detail(&s, &name) {
+        Some(d) => Json(d).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
 async fn h_tools(
     State(s): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
@@ -180,6 +189,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
     let router = axum::Router::new()
         .route("/api/overview", get(h_overview))
         .route("/api/upstreams", get(h_upstreams))
+        .route("/api/upstreams/{name}", get(h_upstream_detail))
         .route("/api/tools", get(h_tools))
         .route("/api/metrics", get(h_metrics))
         .route("/api/traces", get(h_traces))

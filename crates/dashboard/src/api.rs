@@ -52,6 +52,18 @@ pub struct UpstreamView {
 }
 
 #[derive(Serialize)]
+pub struct UpstreamDetail {
+    pub name: String,
+    pub transport: String,
+    pub status: &'static str,
+    pub reason: Option<String>,
+    pub tools_count: usize,
+    pub calls: u64,
+    pub errors: u64,
+    pub tools: Vec<ToolView>,
+}
+
+#[derive(Serialize)]
 pub struct ToolView {
     pub name: String,
     pub description: String,
@@ -138,6 +150,47 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
             }
         })
         .collect()
+}
+
+/// Single-upstream detail: its `UpstreamView` fields + the list of tools it currently exposes.
+/// `None` if `name` isn't a configured upstream.
+pub fn upstream_detail(state: &AppState, name: &str) -> Option<UpstreamDetail> {
+    let info = state.upstreams.iter().find(|u| u.name == name)?;
+    let snap = state.gateway.snapshot();
+    let summary = state.gateway.last_summary();
+    let m = state.metrics.snapshot();
+    let (status, reason) = match &summary {
+        None => ("unknown", None),
+        Some(s) => {
+            if s.ingested.iter().any(|n| n == &info.name) {
+                ("connected", None)
+            } else if let Some((_, why)) = s.skipped.iter().find(|(n, _)| n == &info.name) {
+                ("skipped", Some(why.clone()))
+            } else {
+                ("unknown", None)
+            }
+        }
+    };
+    let tools: Vec<ToolView> = snap
+        .catalog()
+        .iter()
+        .filter(|t| t.server == info.name)
+        .map(|t| ToolView {
+            name: t.qualified_name(),
+            description: t.description.clone(),
+        })
+        .collect();
+    let um = m.per_upstream.iter().find(|u| u.upstream == info.name);
+    Some(UpstreamDetail {
+        name: info.name.clone(),
+        transport: info.transport.clone(),
+        status,
+        reason,
+        tools_count: tools.len(),
+        calls: um.map(|u| u.calls).unwrap_or(0),
+        errors: um.map(|u| u.errors).unwrap_or(0),
+        tools,
+    })
 }
 
 pub fn tools(state: &AppState, q: Option<&str>) -> Vec<ToolView> {
@@ -624,5 +677,21 @@ mod tests {
         assert!(is_history_id("h5-0"));
         assert!(!is_history_id("0"));
         assert!(!is_history_id("42"));
+    }
+
+    #[tokio::test]
+    async fn upstream_detail_unknown_is_none() {
+        let st = seeded_state().await;
+        assert!(upstream_detail(&st, "nope").is_none());
+    }
+
+    #[tokio::test]
+    async fn upstream_detail_returns_view_and_tools() {
+        let st = seeded_state().await;
+        let d = upstream_detail(&st, "github").expect("configured upstream resolves");
+        assert_eq!(d.name, "github");
+        assert_eq!(d.transport, "stdio");
+        assert_eq!(d.status, "unknown");
+        assert!(d.tools.is_empty(), "empty catalog -> no tools");
     }
 }
