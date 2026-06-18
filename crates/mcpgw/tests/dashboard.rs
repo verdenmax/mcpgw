@@ -192,7 +192,15 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         .unwrap()
         .join("mock-stdio");
     if !mock.exists() {
-        eprintln!("skip: mock-stdio not built (run with --all-features); looked at {mock:?}");
+        // Opt-in strictness: when MCPGW_REQUIRE_MOCK is set, a missing binary is a hard failure
+        // (so a gate run can PROVE this test actually exercised the happy-paths rather than skipping).
+        // Build it first: `cargo build -p upstream --features testkit --bin mock-stdio`.
+        assert!(
+            std::env::var_os("MCPGW_REQUIRE_MOCK").is_none(),
+            "MCPGW_REQUIRE_MOCK set but mock-stdio not built at {mock:?} — \
+             run `cargo build -p upstream --features testkit --bin mock-stdio` first"
+        );
+        eprintln!("skip: mock-stdio not built; looked at {mock:?} (build it or set MCPGW_REQUIRE_MOCK to require it)");
         return;
     }
 
@@ -200,7 +208,7 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let port = 20000 + (nanos % 20000) as u16;
+    let port = 40000 + (nanos % 20000) as u16;
     let cfg_path = std::env::temp_dir().join(format!("mcpgw-m3-{nanos}.toml"));
     {
         let mut f = std::fs::File::create(&cfg_path).unwrap();

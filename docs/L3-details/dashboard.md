@@ -162,7 +162,7 @@
   返回该 query）+ 未知上游/工具/追踪 → 404；并新增第二个 `#[ignore]` e2e `dashboard_detail_endpoints_with_mock_upstream`：
   以真实 `mock-stdio` 上游（4 工具 echo/greet/slow/fail）驱动一次 search + 一次 `call_tool`，断言 `/api/upstreams/mock`
   （`tools_count=4`、含 `mock__echo`）、`/api/tools/mock__echo`（`server=mock` + `input_schema`）、`/api/traces/{id}` 详情
-  happy-path——若 `mock-stdio` 未构建则**优雅跳过**（`--all-features` 下会构建，故 CI 实跑）。
+  happy-path（mock-upstream 命中路径 e2e 默认 `#[ignore]`；mock-stdio 缺失时优雅跳过，**需先 `cargo build -p upstream --features testkit --bin mock-stdio` 再 `cargo test -p mcpgw --test dashboard -- --ignored`**，或设 `MCPGW_REQUIRE_MOCK=1` 让缺二进制时硬失败以确保真跑；仓库当前无 CI 跑 ignored 测试）。
 
 ## 相关
 
