@@ -1,6 +1,6 @@
 # L4 — `crates/downstream/src/lib.rs` API
 
-源文件：`crates/downstream/src/lib.rs`。把网关的 3 个固定元工具经 rmcp `ServerHandler`（stdio）暴露给 MCP 客户端，并在每次调用边界构造一条 `observe::CallRecord` 扇出到注入的 sink（**仅元数据**）。
+源文件：`crates/downstream/src/lib.rs`。把网关的 3 个固定元工具经 rmcp `ServerHandler`（stdio）暴露给 MCP 客户端，并在每次调用边界构造一条 `observe::CallRecord` 扇出到注入的 sink（**仅元数据**）；随后若 `content_sinks` 非空，再把一条**截断后的** `observe::CallContent`（args/result 文本）扇出到 `content_sinks`（**与元数据通道物理隔离**，只入 dashboard 内存环）。
 
 ## `struct GatewayServer`
 ```rust
@@ -10,10 +10,12 @@ pub struct GatewayServer {
     default_top_k: usize,                          // 私有，search_tools 省略 top_k 时的默认值
     sinks: Arc<[Arc<dyn observe::CallSink>]>,      // 私有，每次调用扇出到的观测 sink 切片
     discovery: Arc<[Arc<dyn observe::DiscoverySink>]>, // 私有，search_tools 扇出的发现追踪 sink 切片
+    content_sinks: Arc<[Arc<dyn observe::CallContentSink>]>, // 私有，call_tool 扇出调用内容的 sink 切片
+    payload_max_bytes: usize,                      // 私有，单条 args/result 捕获的字节上限
 }
 ```
-下游 MCP server。`Clone` 仅克隆内部 `Arc`（含 `sinks`/`discovery` 切片的 `Arc`），所有克隆共享同一份状态、
-同一组观测 sink 与同一组发现追踪 sink。
+下游 MCP server。`Clone` 仅克隆内部 `Arc`（含 `sinks`/`discovery`/`content_sinks` 切片的 `Arc`），所有克隆共享
+同一份状态、同一组观测 sink、同一组发现追踪 sink 与同一组内容 sink。
 
 ### `GatewayServer::new`
 ```rust
@@ -22,11 +24,15 @@ pub fn new(
     default_top_k: usize,
     sinks: Arc<[Arc<dyn observe::CallSink>]>,
     discovery: Arc<[Arc<dyn observe::DiscoverySink>]>,
+    content_sinks: Arc<[Arc<dyn observe::CallContentSink>]>,
+    payload_max_bytes: usize,
 ) -> Self
 ```
-用共享网关状态、默认 `top_k`（通常取自 `cfg.retrieval.top_k`）、**观测 sink 切片**与**发现追踪 sink 切片**
-构造。`sinks` 为空切片即「不观测」（每次调用仍会构造记录，只是无人接收）；`discovery` 为**空切片即不捕获
-发现追踪**（`search_tools` 跳过构造 `DiscoveryRecord`）。无错误。
+用共享网关状态、默认 `top_k`（通常取自 `cfg.retrieval.top_k`）、**观测 sink 切片**、**发现追踪 sink 切片**、
+**内容 sink 切片**与**载荷字节上限**构造。`sinks` 为空切片即「不观测」（每次调用仍会构造记录，只是无人接收）；
+`discovery` 为**空切片即不捕获发现追踪**（`search_tools` 跳过构造 `DiscoveryRecord`）；`content_sinks` 为**空切片
+即不捕获调用内容**（`call_tool` 跳过 `CallContent` 的构造与扇出，省去 args/result 的序列化+截断开销）。
+`payload_max_bytes` 是单条 `args`/`result` 文本各自的字节上限（装配取自 `[dashboard].payload_max_bytes`）。无错误。
 
 ## `fn classify`（私有）
 ```rust
@@ -60,6 +66,22 @@ fn discovery_record_for_search(
 discovery ring 已按 `trace_buffer` 封顶条数，但此前存的是**逐字 client query**，故海量超长 query（开了
 `trace_queries` 时）会放大内存；截断后 `DiscoveryRingSink` 的常驻内存按 `trace_buffer × 2048 字符`有界（不随
 client 输入大小膨胀）。短查询原样保留。
+
+## 调用内容截断辅助（私有）
+```rust
+fn truncate_utf8(s: String, cap: usize) -> (String, bool)
+fn cap_json<T: serde::Serialize>(value: &T, cap: usize) -> (String, bool)
+fn cap_response(response: &Result<CallToolResult, McpError>, cap: usize) -> (String, bool)
+```
+为 `call_tool` 的内容捕获服务的三个**UTF-8 安全**辅助：
+
+- `truncate_utf8`：把 `s` 截到**至多** `cap` 字节，返回 `(可能被截断的串, 是否截断)`。`s.len() <= cap` 时原样
+  返回（`truncated = false`）；否则从 `cap` 处向左回退到最近的 `char` 边界（`is_char_boundary`），**绝不切碎
+  码点**。
+- `cap_json`：先 `serde_json::to_string(value)` 紧凑序列化，再 `truncate_utf8` 截到 `cap`；序列化失败 →
+  `("<unserializable>", false)`。用于 `args`。
+- `cap_response`：把调用响应映成文本——`Ok(r)` 走 `cap_json(r, cap)`（序列化结果），`Err(e)` 走
+  `truncate_utf8(e.to_string(), cap)`（**上游错误纯文本**）。用于 `result`，故失败调用的错误文本也被捕获。
 
 ## `fn meta_tools`
 ```rust
@@ -136,6 +158,12 @@ async fn call_tool(
 5. 构造 `CallRecord { ts_unix_ms: now_unix_ms(), meta_tool, target_tool, upstream, latency_ms, outcome,
    error_kind, arg_bytes, result_bytes }`，`for sink in self.sinks.iter() { sink.record(&rec); }` 同步扇出，
    再返回 `response`。
+6. **调用内容捕获（M1）**：在上述**仅元数据扇出之后**，若 `self.content_sinks` **非空**（空则整段跳过），用
+   `cap_json(&args, self.payload_max_bytes)` 与 `cap_response(&response, self.payload_max_bytes)` 各取
+   `(文本, 是否截断)`，构造 `observe::CallContent { args, args_truncated, result, result_truncated }`，再
+   `for s in self.content_sinks.iter() { s.record(&rec, &content); }` 扇出（**同一条** `rec` 同时给内容 sink，
+   省去重复元数据）。内容**只**入 `content_sinks`（dashboard 内存环），**绝不**进 `sinks`，故 args/result 永不
+   漏进 tracing/审计；失败调用的上游错误文本经 `cap_response` 的 `Err` 臂一并捕获。
 
 **`error_kind` 取值表**（`classify` + 内联臂）。注意：上方 `classify` 表的 `CallOutcome` 列是 **Rust 变体名**（`Timeout`/`Error`，即函数返回类型），本表 `outcome` 列是其 **序列化字符串值**（snake_case，如 `timeout`/`error`），两者指同一枚举：
 
@@ -163,5 +191,11 @@ async fn call_tool(
 **发现追踪（dashboard）**：与上述仅元数据扇出**相互独立**——`search_tools` 在 `self.discovery` 非空时另扇出
 一条 `observe::DiscoveryRecord`（含 query 文本 + 命中工具名/分数）。它走 `DiscoverySink`，**绝不**进 `sinks`
 （仅元数据通道），故 query 永不漏进 tracing/审计。
+
+**调用内容捕获（dashboard）**：同样与仅元数据扇出**相互独立**——`call_tool` 在 `self.content_sinks` 非空时另扇出
+一条 `observe::CallContent`（截断后的 args/result 文本，含上游错误文本）。它走 `CallContentSink`，**绝不**进
+`sinks`，故内容永不漏进 tracing/审计；内容只入 dashboard 内存环，按 `payload_max_bytes` 单条 UTF-8 截断、
+重启即丢。`build_router`（HTTP 传输）也新增 `content_sinks` / `payload_max_bytes` 两参并透传给每会话的
+`GatewayServer`（见 [downstream-http](./downstream-http.md)）。
 
 > 详见 L3：[downstream](../L3-details/downstream.md)

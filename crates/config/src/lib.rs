@@ -163,6 +163,8 @@ pub struct DashboardConfig {
     pub trace_buffer: usize,
     /// In-memory per-call ring buffer size (drives the Calls drill-down list). Must be > 0.
     pub call_buffer: usize,
+    /// Per-call payload (args/result) capture cap in bytes for the Calls detail view. Must be > 0.
+    pub payload_max_bytes: usize,
 }
 
 impl Default for DashboardConfig {
@@ -174,6 +176,7 @@ impl Default for DashboardConfig {
             trace_path: None,
             trace_buffer: 500,
             call_buffer: 2000,
+            payload_max_bytes: 16384,
         }
     }
 }
@@ -378,6 +381,11 @@ impl Config {
             if self.dashboard.call_buffer == 0 {
                 return Err(ConfigError::Invalid(
                     "[dashboard].call_buffer must be > 0".into(),
+                ));
+            }
+            if self.dashboard.payload_max_bytes == 0 {
+                return Err(ConfigError::Invalid(
+                    "[dashboard].payload_max_bytes must be > 0".into(),
                 ));
             }
         }
@@ -862,5 +870,18 @@ mod tests {
             Config::from_toml_str("[dashboard]\nenabled = true\ntrace_buffer = 0\n").unwrap_err(),
             ConfigError::Invalid(_)
         ));
+    }
+
+    #[test]
+    fn dashboard_payload_max_bytes_defaults_to_16384() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg.dashboard.payload_max_bytes, 16384);
+    }
+
+    #[test]
+    fn dashboard_payload_max_bytes_zero_is_rejected() {
+        let err = Config::from_toml_str("[dashboard]\nenabled = true\npayload_max_bytes = 0\n")
+            .expect_err("payload_max_bytes=0 must be rejected");
+        assert!(err.to_string().contains("payload_max_bytes"), "got: {err}");
     }
 }

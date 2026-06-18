@@ -3,6 +3,10 @@
 //! Defines `CallRecord` (NO argument/result payloads — only sizes), the `CallSink` trait, and a
 //! `TracingSink`. This is the storage-free, HTTP-free seam that T1 (tracing) and T3 (audit JSONL)
 //! share: one record is built at the call boundary and fanned out to every configured sink.
+//!
+//! It also defines `CallContent` + `CallContentSink`, a SEPARATE content fan-out contract (call
+//! args/result text) kept physically distinct from the metadata-only `CallRecord`, so payload
+//! content never reaches the tracing/audit sinks.
 
 use serde::Serialize;
 
@@ -87,6 +91,26 @@ impl CallRecord {
 /// observation failure must never affect the tool call itself.
 pub trait CallSink: Send + Sync {
     fn record(&self, rec: &CallRecord);
+}
+
+/// One call's content payload (args + result), captured ONLY into the dashboard's in-memory ring —
+/// physically separate from the metadata-only `CallRecord`, so argument/result content never reaches
+/// the tracing/audit sinks. Fields are already-serialized, already-truncated text (easy to store /
+/// substring-search / render in `<pre>`): `args` is JSON text; `result` is the serialized result OR
+/// plain upstream error text. `*_truncated` flags whether the cap was hit.
+#[derive(Debug, Clone)]
+pub struct CallContent {
+    pub args: String,
+    pub args_truncated: bool,
+    pub result: String,
+    pub result_truncated: bool,
+}
+
+/// Fan-out target for call CONTENT. Gets both the metadata `CallRecord` and the `CallContent`, so
+/// the dashboard ring can store a rich record without duplicating the metadata fields. Like
+/// `CallSink`/`DiscoverySink`, implementations MUST be non-blocking and MUST NOT panic.
+pub trait CallContentSink: Send + Sync {
+    fn record(&self, meta: &CallRecord, content: &CallContent);
 }
 
 /// T1 sink: emit each record as a structured `tracing` event (reusing the process subscriber).
@@ -208,5 +232,46 @@ mod tests {
         assert!(!obj.contains_key("target_tool"));
         assert!(!obj.contains_key("upstream"));
         assert!(!obj.contains_key("error_kind"));
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn call_content_sink_receives_meta_and_content() {
+        struct Cap(Mutex<Vec<(String, String)>>); // (meta_tool, args)
+        impl CallContentSink for Cap {
+            fn record(&self, meta: &CallRecord, content: &CallContent) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((meta.meta_tool.as_str().to_string(), content.args.clone()));
+            }
+        }
+        let cap = Cap(Mutex::new(Vec::new()));
+        let meta = CallRecord {
+            ts_unix_ms: 0,
+            meta_tool: MetaTool::CallTool,
+            target_tool: Some("s__t".into()),
+            upstream: Some("s".into()),
+            latency_ms: 1,
+            outcome: CallOutcome::Ok,
+            error_kind: None,
+            arg_bytes: 0,
+            result_bytes: 0,
+        };
+        let content = CallContent {
+            args: "{\"x\":1}".into(),
+            args_truncated: false,
+            result: "ok".into(),
+            result_truncated: false,
+        };
+        cap.record(&meta, &content);
+        let got = cap.0.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0], ("call_tool".to_string(), "{\"x\":1}".to_string()));
     }
 }

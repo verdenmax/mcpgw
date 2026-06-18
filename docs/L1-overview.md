@@ -375,14 +375,14 @@ get-details 子命令：catalog.get(qualified_name) ──► 该工具完整 JS
 
 ```bash
 cargo build                 # 构建工作区（产出 target/debug/mcpgw）
-cargo test --all-features   # 全部测试（258 passed / 5 ignored：catalog 4 / config 42 /
+cargo test --all-features   # 全部测试（264 passed / 5 ignored：catalog 4 / config 44 /
                             #   retrieval 22 + caching 4 + embedder 3 + golden 1 + hybrid 6 + subagent 7 + vector 6 /
                             #   embedder(openai) 5 + chat(openai) 4 / mcpgw main 13 + cli 5 + audit 1 /
                             #   upstream 15 + 集成 11 + http_connect 1 /
                             #   metatools 4 + call_tool 4 / gateway 8 + rebuild 8 /
-                            #   observe 10 + capture 1 /
-                            #   downstream 10 + e2e(stdio) 10 + e2e(http) 5 /
-                            #   dashboard 48 ·
+                            #   observe 11 + capture 1 /
+                            #   downstream 12 + e2e(stdio) 10 + e2e(http) 5 /
+                            #   dashboard 49 ·
                             #   5 ignored = 门控真实冒烟（stdio + http + vector）+ dashboard e2e ×2）
                             # 注：upstream 集成测试、mock-stdio 二进制与 HTTP e2e 需 testkit feature，故用 --all-features
 cargo clippy --all-targets --all-features -- -D warnings   # 静态检查，零告警
@@ -423,6 +423,7 @@ cargo fmt --all             # 格式化
 - **子系统 A · M1（逐条调用数据层）✅ 已完成** —— `CallRingSink` 内存环（`[dashboard].call_buffer` 上界、满淘汰最旧）+ audit JSONL 历史回放（`replay_audit_calls`，最新优先、稳定 `"h{ts}-{n}"` id），支撑 dashboard **Calls 下钻**；新增 `/api/calls`（列表）与 `/api/calls/{id}`（详情），使只读 API 增至 **8 端点**。**随 dashboard 启用、仅元数据、不改网关热路径；默认策略仍 `bm25`。**
 - **子系统 A · M2（前端应用骨架）✅** —— vanilla-JS 扁平面板升级为 Svelte 5 + Vite 多视图 hash-路由应用（rust-embed 内嵌 ui/dist/、dist 入库故 cargo build 不依赖 node）；接通 Overview + Calls 下钻（指标卡→逐条列表→详情）并移植 Upstreams/Tools/Traces 基础视图（无回归）；静态交付由 include_str! 三文件改为 assets::static_handler fallback。
 - **子系统 A · M3（下钻详情页）✅** —— `/api/{upstreams/{name},tools/{name},traces/{id}}` 三个详情端点（只读 API 增至 11）；UpstreamDetail/ToolDetail/TraceDetail 三个详情视图 + 上游↔工具↔调用↔追踪交叉链接 + Overview 卡片可点；traces 像 calls 一样分配稳定 id（live=ring seq、history=`"h{ts}-{n}"`，list 与 detail 共用 `TRACE_HISTORY_SCAN`）。**只读、不改网关热路径；默认策略仍 `bm25`。**
+- **子系统 A · 调用内容捕获 ✅** —— 每次调用把 args/result（含上游错误文本）经独立 CallContentSink 通道捕获进面板内存环（call_buffer × 2 × payload_max_bytes 上界——args/result 各封顶、重启即丢、单条 UTF-8 截断）；CallDetail 展示、列表不含；元数据 CallRecord→tracing/audit/metrics 不变（审计仍仅元数据）。
 - **后续里程碑**：完整 OAuth/DCR/反向代理（M3）、运行时热吊销 API-Key（M4）、超时主动
   `notifications/cancelled`（继续延后）见路线图。
 

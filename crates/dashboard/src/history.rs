@@ -152,6 +152,10 @@ pub fn replay_audit_calls(
                 error_kind: a.error_kind,
                 arg_bytes: a.arg_bytes,
                 result_bytes: a.result_bytes,
+                args: None,
+                args_truncated: false,
+                result: None,
+                result_truncated: false,
             };
             if filter.matches(&item) {
                 items.push(item);

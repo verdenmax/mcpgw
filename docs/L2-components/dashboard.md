@@ -10,14 +10,17 @@
 本 crate 提供三个接入 `observe` 接缝的 sink：
 - `MetricsSink` 实现 `observe::CallSink`，**实时聚合**每个元工具的调用数/错误数/延迟分位（p50/p95/max）
   与每个上游的调用/错误数；
-- `CallRingSink` 实现 `observe::CallSink`，把**逐条** `CallRecord`（仅元数据）存进**有界环形缓冲**
-  （newest-first，上界 `[dashboard].call_buffer`），支撑 Calls 下钻的列表/详情；
+- `CallRingSink` 实现 `observe::CallContentSink`，把**逐条** `CallRecord`（元数据）**与** `CallContent`
+  （args/result 内容）一并存进**有界环形缓冲**（newest-first，上界 `[dashboard].call_buffer`），支撑 Calls 下钻的
+  列表（省略内容）/详情（带内容）；
 - `DiscoveryRingSink` 实现 `observe::DiscoverySink`，把 `search_tools` 的 `query → 命中工具+分数`
   追踪存进**有界环形缓冲**（newest-first），并可选地经后台 writer 线程落一份 discovery JSONL 供历史回放。
 
 **隐私边界**：调用观测的 `CallRecord`/审计 JSONL 仍是**仅元数据**（无 query/参数/结果内容），面板的
 **指标**视图只读这些元数据；**query 文本 + 命中工具名**是**另一条独立、opt-in（`[dashboard].trace_queries`）
-的 discovery 通道**，绝不混入仅元数据的调用 sink。
+的 discovery 通道**，绝不混入仅元数据的调用 sink；**逐条调用的 args/result 内容**则走**第三条独立通道**
+`CallContentSink`，只入 `CallRingSink` 内存环（按 `[dashboard].payload_max_bytes` 单条 UTF-8 截断、重启即丢），
+同样绝不混入仅元数据的 `CallSink`/审计。
 
 ## 公开接口
 
@@ -48,11 +51,11 @@
 
 | 项 | 签名 | 说明 |
 |----|------|------|
-| `CallRingSink` | impl `observe::CallSink` | 逐条 `CallRecord` 的有界环（满淘汰最旧），每条插入在锁内分配单调 `seq` 作 live id；容量 `[dashboard].call_buffer` |
+| `CallRingSink` | impl `observe::CallContentSink` | 逐条 `StoredCall{seq, record: CallRecord, content: CallContent}` 的有界环（满淘汰最旧），每条插入在锁内分配单调 `seq` 作 live id；`record(&self, meta, content)` 存元数据+内容；容量 `[dashboard].call_buffer` |
 | `CallRingSink::new` | `(cap: usize) -> Self`（`cap.max(1)`） | 空环 |
-| `CallRingSink::query` | `(&CallFilter, limit, offset) -> (Vec<CallItem>, usize)` | newest-first 一页 + `total`（计全部命中，独立于分页） |
-| `CallRingSink::get` | `(&self, seq: u64) -> Option<CallItem>` | 按 live seq 取单条 |
-| `CallItem` | `Serialize` | live 环与 history 回放共用的 owned 项：`id` / `ts_unix_ms` / `meta_tool` / `target_tool?` / `upstream?` / `latency_ms` / `outcome` / `error_kind?` / `arg_bytes` / `result_bytes`。仅元数据 |
+| `CallRingSink::query` | `(&CallFilter, limit, offset) -> (Vec<CallItem>, usize)` | newest-first 一页（`to_item(false)`，**省略内容**）+ `total`（计全部命中，独立于分页） |
+| `CallRingSink::get` | `(&self, seq: u64) -> Option<CallItem>` | 按 live seq 取单条（`to_item(true)`，**带 args/result 内容**） |
+| `CallItem` | `Serialize` | live 环与 history 回放共用的 owned 项：`id` / `ts_unix_ms` / `meta_tool` / `target_tool?` / `upstream?` / `latency_ms` / `outcome` / `error_kind?` / `arg_bytes` / `result_bytes`，外加可选内容 `args?` / `args_truncated` / `result?` / `result_truncated`（仅详情填充，列表与 history 回放省略） |
 | `CallFilter` | `Default` | `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`（均 `Option`，`None`=全匹配；时间为闭区间）；`matches(&CallItem)` 统一过滤 live 与 history |
 
 ### 历史回放 `replay_audit_metrics` / `replay_discovery_items` / `replay_audit_calls` / `MetricBucket`（`history.rs`）
@@ -80,8 +83,8 @@
 
 ## 依赖
 
-- 内部：`gateway`（`GatewayState`：读活快照 + `last_summary`）、`observe`（`CallSink`/`CallRecord` 与
-  `DiscoverySink`/`DiscoveryRecord` 契约）、`catalog`（经 `GatewaySnapshot::catalog()` 列工具）、`config`
+- 内部：`gateway`（`GatewayState`：读活快照 + `last_summary`）、`observe`（`CallSink`/`CallRecord`、
+  `CallContentSink`/`CallContent` 与 `DiscoverySink`/`DiscoveryRecord` 契约）、`catalog`（经 `GatewaySnapshot::catalog()` 列工具）、`config`
   （装配期取上游/策略/路径）。
 - 外部：`axum`（router/handler）、`tokio`（serve）、`serde`/`serde_json`（视图序列化、JSONL 读写）、`tracing`、
   `rust-embed`（编译期内嵌 `ui/dist/` 静态产物，`debug-embed`+`mime-guess`）。
@@ -92,9 +95,11 @@
 
 ## 被谁使用
 
-- `mcpgw`（bin）的 `serve`：`[dashboard].enabled` 时构造 `MetricsSink` 与 `CallRingSink`（均加进 `CallSink`
-  切片）、按 `trace_queries` 构造 `DiscoveryRingSink`（注入 stdio + HTTP 两个下游的 `DiscoverySink` 切片），
-  并把面板起为**自己端口上的独立 task**（默认 `127.0.0.1:8971`，localhost、无鉴权），带优雅关停与有界 writer drain。
+- `mcpgw`（bin）的 `serve`：`[dashboard].enabled` 时构造 `MetricsSink`（加进**元数据 `CallSink` 切片**）与
+  `CallRingSink`（加进**独立的 `CallContentSink` 切片** `content_sinks`，**不**进元数据 sinks，故内容不入
+  tracing/审计/指标）、按 `trace_queries` 构造 `DiscoveryRingSink`（注入 stdio + HTTP 两个下游的 `DiscoverySink` 切片），
+  并把 `[dashboard].payload_max_bytes` 一并透传给 stdio + HTTP 两个传输；面板起为**自己端口上的独立 task**
+  （默认 `127.0.0.1:8971`，localhost、无鉴权），带优雅关停与有界 writer drain。
   详见 L4 [mcpgw-main](../L4-api/mcpgw-main.md)。
 
 ## 不负责

@@ -48,9 +48,9 @@
 | `/api/traces?source=history` | `replay_discovery_items(discovery_path, TRACE_HISTORY_SCAN)`（discovery JSONL 回放；无 path → `history_unavailable`） |
 | `/api/traces/{id}` | `h…` → discovery 回放定位（重扫 `TRACE_HISTORY_SCAN`）；否则 `DiscoveryRingSink::get(seq)`；找不到 → 404 |
 | `/api/metrics/history` | `replay_audit_metrics(audit_path, limit, bucket_ms)`（审计 JSONL 回放；无 path → `history_unavailable`） |
-| `/api/calls?source=live` | `CallRingSink::query(filter, limit, offset)`（内存环；未启用 → 空、`history_unavailable=false`） |
-| `/api/calls?source=history` | `replay_audit_calls(audit_path, scan_limit, filter)`（审计 JSONL 回放；无 path → `history_unavailable`） |
-| `/api/calls/{id}` | `h…` → 审计回放定位（重扫 `CALL_HISTORY_SCAN`）；否则 `CallRingSink::get(seq)`；找不到 → 404 |
+| `/api/calls?source=live` | `CallRingSink::query(filter, limit, offset)`（内存环；未启用 → 空、`history_unavailable=false`；**列表省略 args/result 内容**） |
+| `/api/calls?source=history` | `replay_audit_calls(audit_path, scan_limit, filter)`（审计 JSONL 回放；无 path → `history_unavailable`；**审计仅元数据，内容恒 `None`**） |
+| `/api/calls/{id}` | `h…` → 审计回放定位（重扫 `CALL_HISTORY_SCAN`）；否则 `CallRingSink::get(seq)`（**详情带 args/result 内容**）；找不到 → 404 |
 
 即面板把**五类来源**拼起来：① 活快照（catalog + last_summary）、② 实时 `MetricsSink`、③ 实时
 `DiscoveryRingSink`、④ 实时 `CallRingSink`（逐条调用环）、⑤ 历史 JSONL 回放（审计 + discovery，审计同时供
@@ -96,6 +96,26 @@
 - SPA 渲染对**所有不可信字段**（query、工具名、上游名、skip 原因、transport、meta_tool 名）依赖 Svelte 的 `{expr}`
   **自动 HTML 转义**，全前端**不用** `{@html}`，避免上游/客户端控制的字符串造成 stored XSS（`assets.rs` 单测扫描
   `ui/src` 锁死「无 `{@html}`」）。
+
+## 调用内容捕获（M1，与元数据/审计隔离）
+
+逐条调用的 **args/result 内容**（含上游错误文本）经一条**独立** `observe::CallContentSink` 通道捕获——**与
+仅元数据 `CallRecord` → tracing/审计/metrics 路径完全独立、互不影响**：
+
+- **独立通道、元数据路径不变**：下游 `call_tool` 先按原样把 `CallRecord` 扇出给 `sinks`（tracing / 审计 JSONL /
+  `MetricsSink`，**这条仅元数据路径一字未改**），随后**仅当** `content_sinks` 非空时，另把一条
+  `CallContent { args, args_truncated, result, result_truncated }` 扇出给 `content_sinks`。dashboard 的
+  `CallRingSink` **只**注入 `content_sinks`，`MetricsSink` 仍在元数据 `sinks`——故内容**绝不**抵达 tracing/审计/指标。
+  **审计 JSONL 仍仅元数据**（`replay_audit_calls` 回放出的 history `CallItem` 内容恒 `None`）。
+- **只在内存、重启即丢**：内容仅活在 `CallRingSink` 的内存环里（容量 `[dashboard].call_buffer`，满淘汰最旧，
+  **不落盘**），故常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args 与 result 各自封顶 `payload_max_bytes`）、进程重启即全部丢失。
+- **单条 UTF-8 截断**：下游用 `cap_json`（args）/`cap_response`（result，`Err` 走上游错误纯文本）把每条载荷各自
+  截到 `[dashboard].payload_max_bytes`（默认 16384）字节，截断在 `char` 边界进行（**绝不切碎码点**），并以
+  `*_truncated` 标记是否触顶。
+- **详情含内容、列表不含**：`CallRingSink::get(seq)`（→ `/api/calls/{id}` 详情）以 `to_item(true)` 带出
+  args/result；`query`（→ `/api/calls` 列表）以 `to_item(false)` **省略**内容（`CallItem` 的内容字段 `None` 经
+  `skip_serializing_if` 不出现）——故列表轻量、内容只在按 id 下钻时回显，`CallDetail.svelte` 展示 Arguments/Result。
+- SPA 同样对 args/result 走 Svelte `{expr}` 自动转义（无 `{@html}`），故捕获的载荷文本不构成 XSS。
 
 ## `MetricsSink`：固定桶直方图 + 近似分位
 
@@ -151,8 +171,10 @@
   `trace_detail`（live seq 解析、未知 seq / 非数字 → `None`）。
 - `calls.rs`（**M1 逐条调用层**）：`CallRingSink` 满淘汰最旧 + 单调 `seq` 作 live id、`query` 最新优先且
   `total` 计全部命中、分页 `limit`/`offset`、`get(seq)`；`CallFilter::matches` 各字段过滤与 `since`/`until`
-  闭区间。
-- `config`（**M1**）：`[dashboard].call_buffer` 默认 `2000`、`call_buffer = 0` 被 `validate` 拒绝。
+  闭区间；**M1 内容捕获** `ring_stores_content_detail_includes_list_omits`：环存 `CallContent`，`get`（详情）带出
+  args/result、`query`（列表）省略它们。
+- `config`（**M1**）：`[dashboard].call_buffer` 默认 `2000`、`call_buffer = 0` 被 `validate` 拒绝；
+  `[dashboard].payload_max_bytes` 默认 `16384`、`payload_max_bytes = 0` 被 `validate` 拒绝。
 - `lib.rs` / `assets.rs`：内嵌 UI 就位且接线（`assets.rs` 测内嵌 `index.html` 含 Svelte 挂载点 `id="app"`、
   `assets/` 下有一份 hash JS、`no_svelte_component_uses_raw_html` 扫描 `ui/src` 禁 `{@html}` 防 XSS）、`host_is_local`
   接受回环/`localhost`/IPv6 `[::1]` 且拒远端域名、非回环 IP、含 `@` 的 Host 与缺失 Host。
@@ -162,7 +184,9 @@
   返回该 query）+ 未知上游/工具/追踪 → 404；并新增第二个 `#[ignore]` e2e `dashboard_detail_endpoints_with_mock_upstream`：
   以真实 `mock-stdio` 上游（4 工具 echo/greet/slow/fail）驱动一次 search + 一次 `call_tool`，断言 `/api/upstreams/mock`
   （`tools_count=4`、含 `mock__echo`）、`/api/tools/mock__echo`（`server=mock` + `input_schema`）、`/api/traces/{id}` 详情
-  happy-path（mock-upstream 命中路径 e2e 默认 `#[ignore]`；mock-stdio 缺失时优雅跳过，**需先 `cargo build -p upstream --features testkit --bin mock-stdio` 再 `cargo test -p mcpgw --test dashboard -- --ignored`**，或设 `MCPGW_REQUIRE_MOCK=1` 让缺二进制时硬失败以确保真跑；仓库当前无 CI 跑 ignored 测试）。
+  happy-path，**并（M1 内容捕获）**断言 `/api/calls?source=live&meta=call_tool` 列表项**不含** `args`，再按其 id 取
+  `/api/calls/{id}` 详情**含** `args`（含回显文本 `hi`）与 `result`（mock-upstream 命中路径 e2e 默认 `#[ignore]`；
+  mock-stdio 缺失时优雅跳过，**需先 `cargo build -p upstream --features testkit --bin mock-stdio` 再 `cargo test -p mcpgw --test dashboard -- --ignored`**，或设 `MCPGW_REQUIRE_MOCK=1` 让缺二进制时硬失败以确保真跑；仓库当前无 CI 跑 ignored 测试）。
 
 ## 相关
 

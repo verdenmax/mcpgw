@@ -312,6 +312,35 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         200
     );
 
+    // M1 payload capture: the call_tool above captured args + result into the live ring.
+    let calls: serde_json::Value = http
+        .get(format!("{base}/api/calls?source=live&meta=call_tool"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = calls["items"].as_array().expect("items array");
+    assert!(!items.is_empty(), "at least one call_tool row");
+    // list omits content (both args and result):
+    assert!(items[0].get("args").is_none(), "list omits args");
+    assert!(items[0].get("result").is_none(), "list omits result");
+    let cid = items[0]["id"].as_str().expect("a call_tool id").to_string();
+    // detail includes content; mock__echo echoes the sent text back, so both carry "hi":
+    let cd: serde_json::Value = http
+        .get(format!("{base}/api/calls/{cid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let args = cd["args"].as_str().expect("detail has args");
+    assert!(args.contains("hi"), "args contain the echoed text: {args}");
+    let result = cd["result"].as_str().expect("detail has result");
+    assert!(result.contains("hi"), "result echoes the text: {result}");
+
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
 }

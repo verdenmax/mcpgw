@@ -7,6 +7,10 @@
 `downstream::GatewayServer::call_tool` 里构造一次，再被分发给每个 sink（M6.T3 的可选 JSONL 落盘 `JsonlSink`
 在同 crate 的 `audit.rs`，见 [observe-audit](./observe-audit.md)）。
 
+本文件还定义 `CallContent` + `CallContentSink`：一条**与仅元数据 `CallRecord` 物理隔离**的调用**内容**
+（args/result 文本）扇出契约，使参数/结果内容**绝不**经 tracing/审计 sink 流出，只入 dashboard 的内存环
+（见下文「调用内容契约」）。
+
 子系统 A（dashboard）另起一条**与仅元数据 `CallRecord` 隔离、opt-in** 的发现追踪通道：`DiscoveryRecord` /
 `DiscoveryHit` / `DiscoverySink`（`discovery.rs`，经 `lib.rs` re-export，见文末「发现追踪契约」）。
 
@@ -101,6 +105,45 @@ pub trait CallSink: Send + Sync {
 本身（下游在每次调用尾部 `for sink in self.sinks.iter() { sink.record(&rec); }` 同步扇出）。
 `Send + Sync` 使其可放进跨线程共享的 `Arc<[Arc<dyn CallSink>]>`。
 
+## 调用内容契约（`CallContent` + `CallContentSink`）
+
+与仅元数据 `CallRecord` **物理隔离**的一条调用**内容**扇出通道：把一次调用的 args/result 文本捕获**仅入
+dashboard 内存环**，使参数/结果内容**绝不**抵达 tracing/审计 sink。下游在元数据 `sinks` 扇出之后、且
+`content_sinks` **非空**时才构造并扇出 `CallContent`（见 [downstream-lib](./downstream-lib.md)）。
+
+### `struct CallContent`
+```rust
+#[derive(Debug, Clone)]
+pub struct CallContent {
+    pub args: String,
+    pub args_truncated: bool,
+    pub result: String,
+    pub result_truncated: bool,
+}
+```
+一次调用的内容载荷（args + result），**只**被捕获进 dashboard 内存环——与仅元数据 `CallRecord` 物理分离。
+字段均为**已序列化、已截断**的文本（便于存储 / 子串搜索 / 在 `<pre>` 渲染）：`args` 是 JSON 文本；`result`
+是序列化后的结果**或**上游错误纯文本（`Err` 路径）。`*_truncated` 标记是否触达上限。**注意**：与 `CallRecord`
+不同，本类型**不** `Serialize`（dashboard 自有 `CallItem` 决定怎样以及是否对外暴露）。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `args` | `String` | 入参的 JSON 文本（已截断） |
+| `args_truncated` | `bool` | `args` 是否被截断 |
+| `result` | `String` | 成功结果的序列化文本，或失败时的上游错误纯文本（已截断） |
+| `result_truncated` | `bool` | `result` 是否被截断 |
+
+### `trait CallContentSink`
+```rust
+pub trait CallContentSink: Send + Sync {
+    fn record(&self, meta: &CallRecord, content: &CallContent);
+}
+```
+调用**内容**的扇出目标。**同时拿到**元数据 `CallRecord` 与 `CallContent`，故 dashboard 环可存一条富记录而
+**不必重复**元数据字段。与 `CallSink` / `DiscoverySink` 一样，实现**必须非阻塞、且绝不 panic**。由 dashboard 的
+`CallRingSink`（内存 ring）实现并仅装进 `content_sinks` 切片——**绝不**装进元数据 `sinks`，使内容永不入
+tracing/审计。`Send + Sync` 使其可放进跨线程共享的 `Arc<[Arc<dyn CallContentSink>]>`。
+
 ## `struct TracingSink`
 ```rust
 pub struct TracingSink;
@@ -192,6 +235,8 @@ JSONL writer）实现。下游 `search_tools` 分支在 discovery 切片**非空
 ## 测试
 - `crates/observe/src/lib.rs` 单测：枚举序列化为 snake_case 短串且 `as_str()` 与之一致；序列化 key 集合
   **恰好**是 9 个元数据键（锁死「无载荷」不变量）；`None` Optional 不序列化。
+- `crates/observe/src/lib.rs` `content_tests`：`CallContentSink::record` **同时收到** `CallRecord` 与
+  `CallContent`（验证内容扇出契约把元数据与内容一并交付）。
 - `crates/observe/tests/capture.rs`（需 `testkit`）：`CaptureSink` 按顺序记录多条 `CallRecord`。
 
 > 谁产生记录、如何分类 `error_kind`、延迟测量基准见 L3：[downstream](../L3-details/downstream.md)；

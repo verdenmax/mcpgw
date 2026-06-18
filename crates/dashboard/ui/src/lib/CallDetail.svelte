@@ -16,6 +16,9 @@
     load();
   });
   function when(ms) { return new Date(ms).toLocaleString(); }
+  function pretty(s) {
+    try { return JSON.stringify(JSON.parse(s), null, 2); } catch (_) { return s; }
+  }
 </script>
 
 <p><a href="#/calls">‹ back to Calls</a></p>
@@ -38,6 +41,20 @@
       <tr><th>result_bytes</th><td>{item.result_bytes}</td></tr>
     </tbody>
   </table>
+
+  <h3>Arguments{#if item.args_truncated} <span class="muted">(truncated)</span>{/if}</h3>
+  {#if item.args != null}
+    <pre class="schema">{pretty(item.args)}</pre>
+  {:else}
+    <p class="muted">(content not retained)</p>
+  {/if}
+
+  <h3>Result{#if item.result_truncated} <span class="muted">(truncated)</span>{/if}</h3>
+  {#if item.result != null}
+    <pre class="schema">{pretty(item.result)}</pre>
+  {:else}
+    <p class="muted">(content not retained)</p>
+  {/if}
 {:else if !error}
   <p class="muted">loading…</p>
 {/if}
