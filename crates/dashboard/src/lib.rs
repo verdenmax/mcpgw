@@ -16,13 +16,14 @@ pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery, Me
 mod api;
 pub use api::{AppState, UpstreamInfo};
 
+mod assets;
+
 use axum::extract::Request;
 use axum::extract::{Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
 use axum::http::header::HOST;
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Json;
 use std::collections::HashMap;
@@ -132,20 +133,6 @@ async fn h_call_detail(
     }
 }
 
-const INDEX_HTML: &str = include_str!("../assets/index.html");
-const APP_JS: &str = include_str!("../assets/app.js");
-const STYLE_CSS: &str = include_str!("../assets/style.css");
-
-async fn h_index() -> impl IntoResponse {
-    Html(INDEX_HTML)
-}
-async fn h_app_js() -> impl IntoResponse {
-    ([(CONTENT_TYPE, "application/javascript")], APP_JS)
-}
-async fn h_style_css() -> impl IntoResponse {
-    ([(CONTENT_TYPE, "text/css")], STYLE_CSS)
-}
-
 /// True if the `Host` header names the local machine (the literal `localhost`, or an IP that is a
 /// loopback address). Defends the unauthenticated dashboard against DNS rebinding when bound to
 /// loopback: a remote page that rebinds its hostname to 127.0.0.1 still sends its OWN hostname in
@@ -199,53 +186,12 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         .route("/api/metrics/history", get(h_metrics_history))
         .route("/api/calls", get(h_calls))
         .route("/api/calls/{id}", get(h_call_detail))
-        .route("/", get(h_index))
-        .route("/app.js", get(h_app_js))
-        .route("/style.css", get(h_style_css))
+        .fallback(assets::static_handler)
         .with_state(state);
     if enforce_loopback_host {
         router.layer(middleware::from_fn(require_local_host))
     } else {
         router
-    }
-}
-
-#[cfg(test)]
-mod asset_tests {
-    use super::{APP_JS, INDEX_HTML, STYLE_CSS};
-
-    #[test]
-    fn embedded_assets_are_present_and_wired() {
-        assert!(INDEX_HTML.contains("<title>"), "index has a title");
-        assert!(INDEX_HTML.contains("app.js"), "index loads app.js");
-        assert!(APP_JS.contains("/api/overview"), "app.js polls the API");
-        assert!(STYLE_CSS.contains("{"), "style.css is non-empty CSS");
-    }
-
-    #[test]
-    fn untrusted_trace_fields_are_html_escaped() {
-        // The discovery trace renders client/upstream-controlled strings (query text and tool
-        // names) into innerHTML, so they must go through escapeHtml to avoid stored XSS.
-        assert!(
-            APP_JS.contains("escapeHtml(r.query)"),
-            "trace query is escaped"
-        );
-        assert!(
-            APP_JS.contains("escapeHtml(h.name)"),
-            "trace tool name is escaped"
-        );
-        assert!(
-            APP_JS.contains("escapeHtml(u.reason)"),
-            "upstream skip reason is escaped"
-        );
-        assert!(
-            APP_JS.contains("escapeHtml(u.name)") && APP_JS.contains("escapeHtml(u.transport)"),
-            "upstream name and transport are escaped"
-        );
-        assert!(
-            APP_JS.contains("escapeHtml(x.meta_tool)"),
-            "meta-tool name is escaped"
-        );
     }
 }
 

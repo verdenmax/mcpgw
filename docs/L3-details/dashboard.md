@@ -58,6 +58,20 @@
   历史回放（`replay_audit_calls`），与 Traces 的「实时环 + 历史回放」双源模型一致；经 `/api/calls`（列表）与
   `/api/calls/{id}`（详情）暴露。
 
+## 前端与构建链（Svelte 5 + Vite，产物内嵌）
+
+- **从原生 JS 升级为 Svelte 5 + Vite**：面板前端由原先约 55 行的零依赖 vanilla-JS 单面板，升级为 `crates/dashboard/ui/`
+  下的 **Svelte 5 + Vite** 多视图 hash-路由应用（组件源在 `ui/src/`）。
+- **构建链**：`npm run build`（Vite）→ `ui/dist/`（hash 命名的多文件 JS/CSS + `index.html`，**已入库**）→
+  `rust-embed` 在 `assets.rs` 编译期整目录内嵌 → `cargo build --locked` **无需 node 工具链**（产物即仓库内静态文件，
+  `node_modules/` gitignore、`dist/**` 在 `.gitattributes` 标记 generated）。改了前端须重跑 `npm run build` 再提交 `dist/`。
+- **静态交付变化**：由原先 `include_str!` 三文件（`/`、`/app.js`、`/style.css`）改为单个 `assets::static_handler`
+  挂在 router `.fallback`（`/` → 内嵌 `index.html`、`/assets/*` → 内嵌资源；未知路径回退 `index.html`）。**hash 路由**
+  让 fragment 不发往服务端，故深链刷新只请求 `/`，**无需 history 回退改写**。`/api/*` 端点数不变（仍 8 个）。
+- **视图**：Overview（指标卡）、Calls（指标卡 → 逐条列表 → 详情下钻：`/api/metrics` 可点击卡过滤 `/api/calls`，行进
+  `/api/calls/{id}`）、Upstreams / Tools / Traces（基础列表，从旧面板移植、无回归；逐条详情页属 M3）。各视图每 3s 轮询既有
+  `/api/*`。
+
 ## 隐私边界（与调用观测隔离）
 
 - 调用观测的 `observe::CallRecord` 与审计 JSONL **仍是仅元数据**——只有 size、分类、上游名等，**永不含**
@@ -66,8 +80,9 @@
   且**默认关闭**：仅当 `[dashboard].trace_queries = true` 时才构造 `DiscoveryRingSink` 并注入下游，下游的
   `search_tools` 分支才扇出 `DiscoveryRecord`。该通道与仅元数据的 `CallSink` 物理隔离，绝不让 query 漏进
   tracing/审计。`/api/traces` 是唯一会回显 query/工具名的端点。
-- SPA 渲染时对**所有不可信字段**（query、工具名、上游名、skip 原因、transport、meta_tool 名）一律
-  `escapeHtml` 后再写入 `innerHTML`，避免上游/客户端控制的字符串造成 stored XSS（crate 单测锁死这六处转义）。
+- SPA 渲染对**所有不可信字段**（query、工具名、上游名、skip 原因、transport、meta_tool 名）依赖 Svelte 的 `{expr}`
+  **自动 HTML 转义**，全前端**不用** `{@html}`，避免上游/客户端控制的字符串造成 stored XSS（`assets.rs` 单测扫描
+  `ui/src` 锁死「无 `{@html}`」）。
 
 ## `MetricsSink`：固定桶直方图 + 近似分位
 
@@ -121,10 +136,12 @@
   `total` 计全部命中、分页 `limit`/`offset`、`get(seq)`；`CallFilter::matches` 各字段过滤与 `since`/`until`
   闭区间。
 - `config`（**M1**）：`[dashboard].call_buffer` 默认 `2000`、`call_buffer = 0` 被 `validate` 拒绝。
-- `lib.rs`：内嵌资源就位且接线、SPA 六处不可信字段均经 `escapeHtml`、`host_is_local` 接受回环/`localhost`/IPv6
-  `[::1]` 且拒远端域名、非回环 IP、含 `@` 的 Host 与缺失 Host。
+- `lib.rs` / `assets.rs`：内嵌 UI 就位且接线（`assets.rs` 测内嵌 `index.html` 含 Svelte 挂载点 `id="app"`、
+  `assets/` 下有一份 hash JS、`no_svelte_component_uses_raw_html` 扫描 `ui/src` 禁 `{@html}` 防 XSS）、`host_is_local`
+  接受回环/`localhost`/IPv6 `[::1]` 且拒远端域名、非回环 IP、含 `@` 的 Host 与缺失 Host。
 - `crates/mcpgw/tests/dashboard.rs`（**默认 `#[ignore]`**，绑端口，`--ignored` 跑）：`serve` 起面板、
-  `/api/overview` 报 `strategy=bm25`、一次 `search_tools` 被 `/api/traces?source=live` 捕获到 query。
+  `/api/overview` 报 `strategy=bm25`、一次 `search_tools` 被 `/api/traces?source=live` 捕获到 query；**M2 新增**断言
+  `/` 交付内嵌 SPA（`text/html` 且含挂载点 `id="app"`）。
 
 ## 相关
 

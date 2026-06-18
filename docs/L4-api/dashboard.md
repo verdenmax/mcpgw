@@ -1,8 +1,9 @@
 # L4 — `crates/dashboard` API
 
-源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api}.rs` + `assets/`。只读可视化面板（子系统 A）：
-把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL 聚合成 8 个 `/api/*` JSON 端点 + 一个零构建原生 JS
-SPA，跑在独立 localhost 端口上。所有对外类型经 `lib.rs` re-export。
+源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api,assets}.rs` + `ui/`（Svelte 5 + Vite
+前端工程，产物内嵌）。只读可视化面板（子系统 A）：把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL
+聚合成 8 个 `/api/*` JSON 端点 + 一个由 `rust-embed` 内嵌的 Svelte SPA，跑在独立 localhost 端口上。所有对外
+类型经 `lib.rs` re-export。
 
 ---
 
@@ -185,6 +186,31 @@ pub struct CallsResponse { source, history_unavailable, total, items: Vec<CallIt
 
 ---
 
+## `assets.rs`：内嵌 UI 资源（rust-embed）
+
+### `struct Assets`
+```rust
+#[derive(RustEmbed)]
+#[folder = "ui/dist/"]
+struct Assets;
+```
+把构建好的 Svelte 前端（`ui/dist/`，见下「前端 SPA」）在**编译期**整目录内嵌进二进制。`rust-embed` 开
+`debug-embed`（debug 构建也内嵌，不靠运行时读盘）+ `mime-guess`（按扩展名推 MIME）两个 feature。`ui/dist/`
+**已入库**，故 `cargo build` 无需 node 工具链——前端产物已是仓库内的静态文件。
+
+### `static_handler`
+```rust
+pub async fn static_handler(uri: Uri) -> Response
+```
+按请求路径回内嵌资源，作为 router 的 `.fallback` 挂在所有 `/api/*` 路由之后（凡未命中 `/api/*` 的请求都落到它）：
+
+- `/`（空路径）→ 内嵌 `index.html`（`Content-Type: text/html`）；
+- `/assets/*` → 该内嵌资源，`Content-Type` 取 `content.metadata.mimetype()`（hash 命名的 JS/CSS）；
+- 未知路径 → **回退** `index.html`（无害：SPA 用 hash 路由，真实请求只有 `/` 与 `/assets/*`，此回退只让误打的深链刷新仍加载 app）；
+- 连 `index.html` 都取不到 → `404`。
+
+---
+
 ## `lib.rs`：路由装配
 
 ### `build_dashboard_router`
@@ -205,12 +231,11 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 | GET | `/api/metrics/history?limit=&bucket_ms=` | `Json<HistoryResponse>`（`limit` 缺省 5000、封顶 50_000；`bucket_ms` 缺省 60_000） |
 | GET | `/api/calls?source=live\|history&meta=&upstream=&tool=&outcome=&since=&until=&limit=&offset=` | `Json<CallsResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`offset` 缺省 0；`source` 缺省 `"live"`；history 路径走 `spawn_blocking`） |
 | GET | `/api/calls/{id}` | `Json<CallItem>` 或 404（`h…`→历史回放定位；否则按 live seq 取环） |
-| GET | `/` | `Html(INDEX_HTML)`（内嵌 `assets/index.html`） |
-| GET | `/app.js` | `application/javascript`（内嵌 `assets/app.js`） |
-| GET | `/style.css` | `text/css`（内嵌 `assets/style.css`） |
+| —（fallback） | 任意非 `/api/*` 路径 | `assets::static_handler`：`/`→内嵌 `index.html`、`/assets/*`→内嵌资源（带 hash），其余回退 index |
 
 私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
-静态资源经 `include_str!` 内嵌进二进制（零外部文件依赖）。
+静态资源经 `assets::static_handler`（router `.fallback`）从 `rust-embed` 内嵌的 `ui/dist/` 交付（见
+[`assets.rs`](#assetsrs内嵌-ui-资源rust-embed)）。
 
 ### Host 头校验：`host_is_local` / `require_local_host`（私有）
 ```rust
@@ -223,10 +248,18 @@ async fn require_local_host(req: Request, next: Next) -> axum::response::Respons
 时挂载；绑非 loopback 则跳过。`host_is_local`：剥端口、处理 IPv6 `[::1]`，`localhost`（忽略大小写）/回环 IP
 判为本地；含 `@`（userinfo）的 Host 防御性直接拒（合法 `Host` 永不含 `@`），缺/不可解析 Host → 非本地。
 
-### SPA（`assets/app.js` + `index.html` + `style.css`）
-零依赖原生 JS，每 `REFRESH_MS = 3000` 轮询 `/api/overview`、`/api/upstreams`、`/api/metrics`、
-`/api/traces`。**所有不可信字段**（`r.query`、`h.name`、`u.reason`、`u.name`、`u.transport`、`x.meta_tool`）
-经 `escapeHtml` 后才写入 `innerHTML`，防 stored XSS（crate 单测锁死这六处转义）。
+### 前端 SPA（`ui/`：Svelte 5 + Vite，产物内嵌）
+源在 `crates/dashboard/ui/src/`，`npm run build` 经 Vite 产出 `ui/dist/`（hash 命名的多文件，**已入库**），再由
+[`assets.rs`](#assetsrs内嵌-ui-资源rust-embed) 经 `rust-embed` 编译期内嵌，故 `cargo build` 不依赖 node。
+
+- **左侧导航**（`Nav.svelte`）：Overview / Upstreams / Tools / Calls / Traces。
+- **hash 路由**（`router.svelte.js`）：`#/<view>/<...params>`（如 `#/calls`、`#/calls/{id}`）；fragment 不发往
+  服务端，故深链刷新只请求 `/`（不需要 history 回退改写）。
+- 各视图每 3s 轮询既有 `/api/*` 端点（`api.js` 的 `getJSON`）。**Calls 页**用 `/api/metrics` 的可点击指标卡过滤
+  `/api/calls` 逐条列表，行点击进 `/api/calls/{id}` 详情下钻。
+- **XSS 防线**：Svelte 的 `{expr}` 插值**自动转义**，全前端**不用** `{@html}`（`assets.rs` 的
+  `no_svelte_component_uses_raw_html` 单测扫描 `ui/src` 锁死这一点），故 query 文本/工具名/上游名/错误原因等不可信
+  字段绝不以原始 HTML 注入。
 
 ## 依赖与扩展点
 

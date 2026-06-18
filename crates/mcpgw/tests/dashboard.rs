@@ -117,6 +117,20 @@ async fn dashboard_serves_api_and_captures_a_trace() {
         .unwrap();
     assert_eq!(missing.status(), 404);
 
+    // M2: `/` serves the embedded Svelte app (text/html with the mount point).
+    let root = http.get(format!("{base}/")).send().await.unwrap();
+    assert_eq!(root.status(), 200);
+    let ctype = root
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(ctype.starts_with("text/html"), "/ is HTML, got {ctype}");
+    let body = root.text().await.unwrap();
+    assert!(body.contains("id=\"app\""), "/ returns the SPA mount point");
+
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
 }
