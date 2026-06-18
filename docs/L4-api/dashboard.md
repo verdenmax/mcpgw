@@ -142,7 +142,7 @@ live 环与 history 回放共用的 owned 项：`id`（live=十进制 seq；hist
 `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`，均 `Option`（`None`=全匹配；`since_ms`/`until_ms` 为闭区间，含端点）；`matches(&CallItem)` 对 live 与 history 两数据源统一过滤。
 
 ### `struct CallRingSink`（实现 `observe::CallContentSink`）
-有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。环内每条是 `StoredCall { seq, record: CallRecord, content: CallContent }`——**同时**存元数据与内容（一条记录富含两者，不重复元数据字段）；私有 `to_item(with_content: bool)` 转出 `CallItem`，`with_content=false` 时内容四字段留空（列表用），`true` 时带出 args/result（详情用）。`record(&self, meta: &CallRecord, content: &CallContent)` 实现 `CallContentSink`：克隆 `meta`+`content` 入环。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` newest-first（`to_item(false)`、`total` 计全部命中）；`get(seq) -> Option<CallItem>`（`to_item(true)`）。容量 = `[dashboard].call_buffer`；单条 args/result 的字节上界由下游按 `[dashboard].payload_max_bytes`（默认 16384）截断后才入环，故常驻内存按 `call_buffer × payload_max_bytes` 有界（重启即丢）。
+有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。环内每条是 `StoredCall { seq, record: CallRecord, content: CallContent }`——**同时**存元数据与内容（一条记录富含两者，不重复元数据字段）；私有 `to_item(with_content: bool)` 转出 `CallItem`，`with_content=false` 时内容四字段留空（列表用），`true` 时带出 args/result（详情用）。`record(&self, meta: &CallRecord, content: &CallContent)` 实现 `CallContentSink`：克隆 `meta`+`content` 入环。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` newest-first（`to_item(false)`、`total` 计全部命中）；`get(seq) -> Option<CallItem>`（`to_item(true)`）。容量 = `[dashboard].call_buffer`；单条 args/result 的字节上界由下游按 `[dashboard].payload_max_bytes`（默认 16384）截断后才入环，故常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args 与 result 各自封顶 `payload_max_bytes`，重启即丢）。
 
 ---
 

@@ -108,7 +108,7 @@
   `CallRingSink` **只**注入 `content_sinks`，`MetricsSink` 仍在元数据 `sinks`——故内容**绝不**抵达 tracing/审计/指标。
   **审计 JSONL 仍仅元数据**（`replay_audit_calls` 回放出的 history `CallItem` 内容恒 `None`）。
 - **只在内存、重启即丢**：内容仅活在 `CallRingSink` 的内存环里（容量 `[dashboard].call_buffer`，满淘汰最旧，
-  **不落盘**），故常驻内存按 `call_buffer × payload_max_bytes` 有界、进程重启即全部丢失。
+  **不落盘**），故常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args 与 result 各自封顶 `payload_max_bytes`）、进程重启即全部丢失。
 - **单条 UTF-8 截断**：下游用 `cap_json`（args）/`cap_response`（result，`Err` 走上游错误纯文本）把每条载荷各自
   截到 `[dashboard].payload_max_bytes`（默认 16384）字节，截断在 `char` 边界进行（**绝不切碎码点**），并以
   `*_truncated` 标记是否触顶。

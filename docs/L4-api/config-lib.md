@@ -152,7 +152,7 @@ L3 [dashboard](../L3-details/dashboard.md)）。`enabled` 默认 `false`——**
 隔离**的发现追踪通道（`DiscoveryRecord`，含 query 文本 + 命中工具名/分数），默认关闭；`trace_path` 给出时把该追踪
 另写一份 JSONL 供历史回放，否则仅内存 ring buffer。`call_buffer` 是逐条调用内存环（Calls 下钻列表）的容量；
 `payload_max_bytes` 是 Calls 详情里单条 `args`/`result` 内容捕获各自的字节上限（下游按它 UTF-8 截断后才入环，故
-内容常驻内存按 `call_buffer × payload_max_bytes` 有界，重启即丢）。无 flatten，故 `#[serde(default, deny_unknown_fields)]` 生效
+内容常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args + result 各封顶），重启即丢）。无 flatten，故 `#[serde(default, deny_unknown_fields)]` 生效
 （段内未知键 → `Parse`）；实现 `Default`（`enabled=false`、`bind="127.0.0.1:8971"`、`trace_queries=false`、
 `trace_path=None`、`trace_buffer=500`、`call_buffer=2000`、`payload_max_bytes=16384`）。`validate()` 仅在 `enabled` 时
 校验 `bind.trim()` 非空、`trace_buffer > 0`、`call_buffer > 0`、`payload_max_bytes > 0`
