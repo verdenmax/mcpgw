@@ -116,6 +116,8 @@
   args/result；`query`（→ `/api/calls` 列表）以 `to_item(false)` **省略**内容（`CallItem` 的内容字段 `None` 经
   `skip_serializing_if` 不出现）——故列表轻量、内容只在按 id 下钻时回显，`CallDetail.svelte` 展示 Arguments/Result。
 - SPA 同样对 args/result 走 Svelte `{expr}` 自动转义（无 `{@html}`），故捕获的载荷文本不构成 XSS。
+- **内容过滤（M2，仅 live）**：`/api/calls` 支持 `q`（自由文本：对 args+result 的截断 JSON 文本做大小写不敏感子串，故可命中 JSON 键名与标点）与 `arg_key`+`arg_val`（结构化：解析 args JSON 后**递归**找任一键 `== arg_key`（精确、大小写敏感）且字符串化值 `contains` `arg_val`（大小写不敏感）；容器值会被字符串化，截断/非法 JSON → 不命中）。两参数**必须成对**给出，缺其一静默忽略。内容过滤**只对带内容的 live 项**生效：`CallFilter::matches` 把内容检查门控在 `Some(args)` 之内，history 回放无内容（`args==None`）故 `source=history` 时内容过滤被自然忽略。**性能（metadata-first）**：`query` 仅当存在内容过滤时 `want_content=true`；先用轻量 `to_item(false)` 跑元数据谓词，无内容过滤时直接走轻量路径（与 M1 同成本），**仅对元数据幸存者**才付 `to_item(true)` 构建内容并复跑过滤，最后剥离页内内容——**列表始终不含内容**。前端在主 Calls 页与 `UpstreamDetail`/`ToolDetail` 详情页的 Recent-calls 列表均提供内容搜索 UI（history 下禁用）。
+- **测试覆盖**：`calls.rs` 内容过滤单测（`query_free_text_filters_over_args_and_result`、`query_arg_key_value_recurses_nested_args`、`query_free_text_matches_result_only` 等，含截断/非法 JSON 不命中的边界）+ mock-上游 e2e（`q=hi`/`arg_key=text&arg_val=hi` 命中、非匹配 `q` 返回 `total=0`）。
 
 ## `MetricsSink`：固定桶直方图 + 近似分位
 
@@ -172,7 +174,10 @@
 - `calls.rs`（**M1 逐条调用层**）：`CallRingSink` 满淘汰最旧 + 单调 `seq` 作 live id、`query` 最新优先且
   `total` 计全部命中、分页 `limit`/`offset`、`get(seq)`；`CallFilter::matches` 各字段过滤与 `since`/`until`
   闭区间；**M1 内容捕获** `ring_stores_content_detail_includes_list_omits`：环存 `CallContent`，`get`（详情）带出
-  args/result、`query`（列表）省略它们。
+  args/result、`query`（列表）省略它们。**M2 内容过滤** `query_free_text_filters_over_args_and_result`/
+  `query_free_text_matches_result_only`（`q` 子串扫 args+result）、`query_arg_key_value_recurses_nested_args`/
+  `arg_filter_matches_numeric_value`（`arg_key`+`arg_val` 递归命中含数值）、`content_filters_skip_items_without_content`
+  （无内容项不被内容过滤排除）、`arg_filter_invalid_json_does_not_match_or_panic`（非法/截断 JSON 不命中、不 panic）。
 - `config`（**M1**）：`[dashboard].call_buffer` 默认 `2000`、`call_buffer = 0` 被 `validate` 拒绝；
   `[dashboard].payload_max_bytes` 默认 `16384`、`payload_max_bytes = 0` 被 `validate` 拒绝。
 - `lib.rs` / `assets.rs`：内嵌 UI 就位且接线（`assets.rs` 测内嵌 `index.html` 含 Svelte 挂载点 `id="app"`、
@@ -186,6 +191,8 @@
   （`tools_count=4`、含 `mock__echo`）、`/api/tools/mock__echo`（`server=mock` + `input_schema`）、`/api/traces/{id}` 详情
   happy-path，**并（M1 内容捕获）**断言 `/api/calls?source=live&meta=call_tool` 列表项**不含** `args`，再按其 id 取
   `/api/calls/{id}` 详情**含** `args`（含回显文本 `hi`）与 `result`（mock-upstream 命中路径 e2e 默认 `#[ignore]`；
+  **并（M2 内容过滤）**断言 `/api/calls?source=live&meta=call_tool&q=hi` 与 `&arg_key=text&arg_val=hi` 各命中 ≥1、
+  非匹配 `q=zzz_no_match_zzz` 返回 `total=0`；
   mock-stdio 缺失时优雅跳过，**需先 `cargo build -p upstream --features testkit --bin mock-stdio` 再 `cargo test -p mcpgw --test dashboard -- --ignored`**，或设 `MCPGW_REQUIRE_MOCK=1` 让缺二进制时硬失败以确保真跑；仓库当前无 CI 跑 ignored 测试）。
 
 ## 相关
