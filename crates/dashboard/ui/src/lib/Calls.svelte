@@ -7,6 +7,9 @@
   let source = $state("live");  // live | history
   let meta = $state("");        // "" = all meta-tools
   let outcome = $state("");     // "" = all outcomes
+  let qtext = $state("");   // free-text content search
+  let argKey = $state("");  // structured arg filter key
+  let argVal = $state("");  // structured arg filter value
   let offset = $state(0);
   let resp = $state(null);      // CallsResponse
   let error = $state(null);
@@ -16,6 +19,8 @@
     q.set("source", source);
     if (meta) q.set("meta", meta);
     if (outcome) q.set("outcome", outcome);
+    if (qtext) q.set("q", qtext);
+    if (argKey && argVal) { q.set("arg_key", argKey); q.set("arg_val", argVal); }
     q.set("limit", String(LIMIT));
     q.set("offset", String(offset));
     return q.toString();
@@ -64,6 +69,16 @@
     <span class="chip" class:active={outcome === o} onclick={() => setOutcome(o)}>{o}</span>
   {/each}
   {#if meta}<span class="chip active" onclick={() => pickMeta(meta)}>meta: {meta} ✕</span>{/if}
+</div>
+
+<div class="chips">
+  <input class="search" placeholder="search content (args/result)…" bind:value={qtext}
+         oninput={() => (offset = 0)} disabled={source === "history"} />
+  <input class="search narrow" placeholder="arg key" bind:value={argKey}
+         oninput={() => (offset = 0)} disabled={source === "history"} />
+  <input class="search narrow" placeholder="value" bind:value={argVal}
+         oninput={() => (offset = 0)} disabled={source === "history"} />
+  {#if source === "history"}<span class="muted">content filters apply to live only</span>{/if}
 </div>
 
 {#if error}<p class="error">{error}</p>{/if}
