@@ -45,8 +45,8 @@ fn content_contains(args: &str, result: Option<&str>, needle: &str) -> bool {
             .unwrap_or(false)
 }
 
-/// Parse `args` JSON and recursively check for a key `k` whose stringified value contains `v`
-/// (case-insensitive). Truncated/invalid JSON -> no match (best-effort).
+/// Parse `args` JSON and recursively check for a key `k` (exact, case-sensitive) whose stringified
+/// value contains `v` (case-insensitive). Truncated/invalid JSON -> no match (best-effort).
 fn args_key_value_matches(args: &str, k: &str, v: &str) -> bool {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(args) else {
         return false;
@@ -57,10 +57,10 @@ fn args_key_value_matches(args: &str, k: &str, v: &str) -> bool {
             serde_json::Value::Object(m) => m.iter().any(|(key, child)| {
                 let hit_here = key == k && {
                     let s = match child {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
+                        serde_json::Value::String(s) => s.to_lowercase(),
+                        other => other.to_string().to_lowercase(),
                     };
-                    s.to_lowercase().contains(needle)
+                    s.contains(needle)
                 };
                 hit_here || walk(child, k, needle)
             }),
@@ -217,8 +217,20 @@ impl CallRingSink {
         let matched: Vec<CallItem> = ring
             .iter()
             .rev()
-            .map(|s| s.to_item(want_content))
-            .filter(|c| filter.matches(c))
+            .filter_map(|s| {
+                // First pass on a light item: matches() checks metadata only (content filters are
+                // gated by Some(args), which a light item lacks). Build full content + re-check
+                // (now applying content filters) ONLY for metadata survivors.
+                let light = s.to_item(false);
+                if !filter.matches(&light) {
+                    return None;
+                }
+                if !want_content {
+                    return Some(light);
+                }
+                let full = s.to_item(true);
+                filter.matches(&full).then_some(full)
+            })
             .collect();
         drop(ring); // pagination math below doesn't need the lock; release it off the record() hot path
         let total = matched.len();
@@ -631,5 +643,79 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(ring.query(&f, 10, 0).1, 1);
+    }
+
+    #[test]
+    fn query_free_text_matches_result_only() {
+        let ring = CallRingSink::new(10);
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content_of("{\"text\":\"x\"}", "{\"echoed\":\"needle42\"}"),
+        );
+        let f = CallFilter {
+            q: Some("needle42".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ring.query(&f, 10, 0).1,
+            1,
+            "free-text matches result content (not just args)"
+        );
+    }
+
+    #[test]
+    fn arg_filter_invalid_json_does_not_match_or_panic() {
+        let ring = CallRingSink::new(10);
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content_of("{not valid json", "{}"),
+        );
+        let f = CallFilter {
+            arg_key: Some("text".into()),
+            arg_val: Some("hi".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ring.query(&f, 10, 0).1,
+            0,
+            "invalid args JSON -> no match, no panic"
+        );
+    }
+
+    #[test]
+    fn arg_filter_matches_numeric_value() {
+        let ring = CallRingSink::new(10);
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                1,
+            ),
+            &content_of("{\"n\":42}", "{}"),
+        );
+        let f = CallFilter {
+            arg_key: Some("n".into()),
+            arg_val: Some("42".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ring.query(&f, 10, 0).1,
+            1,
+            "numeric value stringified and matched"
+        );
     }
 }
