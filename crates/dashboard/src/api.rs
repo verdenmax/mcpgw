@@ -1,4 +1,6 @@
-use crate::history::{replay_audit_calls, replay_audit_metrics, replay_discovery, MetricBucket};
+use crate::history::{
+    replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket,
+};
 use crate::metrics::{MetricsSink, MetricsSnapshot};
 use crate::trace::DiscoveryRingSink;
 use gateway::GatewayState;
@@ -52,16 +54,36 @@ pub struct UpstreamView {
 }
 
 #[derive(Serialize)]
+pub struct UpstreamDetail {
+    pub name: String,
+    pub transport: String,
+    pub status: &'static str,
+    pub reason: Option<String>,
+    pub tools_count: usize,
+    pub calls: u64,
+    pub errors: u64,
+    pub tools: Vec<ToolView>,
+}
+
+#[derive(Serialize)]
 pub struct ToolView {
     pub name: String,
     pub description: String,
 }
 
 #[derive(Serialize)]
+pub struct ToolDetail {
+    pub name: String,
+    pub server: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+#[derive(Serialize)]
 pub struct TracesResponse {
     pub source: String,
     pub history_unavailable: bool,
-    pub traces: Vec<observe::DiscoveryRecord>,
+    pub traces: Vec<crate::trace::TraceItem>,
 }
 
 #[derive(Serialize)]
@@ -101,6 +123,22 @@ pub fn overview(state: &AppState) -> Overview {
     }
 }
 
+/// Resolve an upstream's connection status from the last rebuild summary: ingested -> "connected",
+/// skipped -> ("skipped", reason), otherwise -> "unknown" (incl. before the first rebuild).
+fn resolve_status(
+    summary: &Option<std::sync::Arc<gateway::RebuildSummary>>,
+    name: &str,
+) -> (&'static str, Option<String>) {
+    match summary {
+        None => ("unknown", None),
+        Some(s) if s.ingested.iter().any(|n| n == name) => ("connected", None),
+        Some(s) => match s.skipped.iter().find(|(n, _)| n == name) {
+            Some((_, why)) => ("skipped", Some(why.clone())),
+            None => ("unknown", None),
+        },
+    }
+}
+
 pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
     let snap = state.gateway.snapshot();
     let summary = state.gateway.last_summary();
@@ -109,18 +147,7 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
         .upstreams
         .iter()
         .map(|info| {
-            let (status, reason) = match &summary {
-                None => ("unknown", None),
-                Some(s) => {
-                    if s.ingested.iter().any(|n| n == &info.name) {
-                        ("connected", None)
-                    } else if let Some((_, why)) = s.skipped.iter().find(|(n, _)| n == &info.name) {
-                        ("skipped", Some(why.clone()))
-                    } else {
-                        ("unknown", None)
-                    }
-                }
-            };
+            let (status, reason) = resolve_status(&summary, &info.name);
             let tools = snap
                 .catalog()
                 .iter()
@@ -138,6 +165,48 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
             }
         })
         .collect()
+}
+
+/// Single-upstream detail: its `UpstreamView` fields + the list of tools it currently exposes.
+/// `None` if `name` isn't a configured upstream.
+pub fn upstream_detail(state: &AppState, name: &str) -> Option<UpstreamDetail> {
+    let info = state.upstreams.iter().find(|u| u.name == name)?;
+    let snap = state.gateway.snapshot();
+    let summary = state.gateway.last_summary();
+    let m = state.metrics.snapshot();
+    let (status, reason) = resolve_status(&summary, &info.name);
+    let tools: Vec<ToolView> = snap
+        .catalog()
+        .iter()
+        .filter(|t| t.server == info.name)
+        .map(|t| ToolView {
+            name: t.qualified_name(),
+            description: t.description.clone(),
+        })
+        .collect();
+    let um = m.per_upstream.iter().find(|u| u.upstream == info.name);
+    Some(UpstreamDetail {
+        name: info.name.clone(),
+        transport: info.transport.clone(),
+        status,
+        reason,
+        tools_count: tools.len(),
+        calls: um.map(|u| u.calls).unwrap_or(0),
+        errors: um.map(|u| u.errors).unwrap_or(0),
+        tools,
+    })
+}
+
+/// Single-tool detail from the catalog (keyed by qualified name `{server}__{tool}`). `None` if absent.
+pub fn tool_detail(state: &AppState, name: &str) -> Option<ToolDetail> {
+    let snap = state.gateway.snapshot();
+    let def = snap.catalog().get(name)?;
+    Some(ToolDetail {
+        name: def.qualified_name(),
+        server: def.server.clone(),
+        description: def.description.clone(),
+        input_schema: def.input_schema.clone(),
+    })
 }
 
 pub fn tools(state: &AppState, q: Option<&str>) -> Vec<ToolView> {
@@ -163,11 +232,16 @@ pub fn metrics(state: &AppState) -> MetricsSnapshot {
     state.metrics.snapshot()
 }
 
+/// Discovery lines scanned for BOTH the traces list (source=history) and single-id resolution, so a
+/// history id assigned by the list always resolves identically in detail (mirrors CALL_HISTORY_SCAN).
+pub const TRACE_HISTORY_SCAN: usize = 50_000;
+
 pub fn traces(state: &AppState, limit: usize, source: &str) -> TracesResponse {
     if source == "history" {
         match &state.discovery_path {
             Some(p) => {
-                let (traces, ok) = replay_discovery(p, limit);
+                let (mut traces, ok) = replay_discovery_items(p, TRACE_HISTORY_SCAN);
+                traces.truncate(limit);
                 TracesResponse {
                     source: "history".into(),
                     history_unavailable: !ok,
@@ -191,6 +265,22 @@ pub fn traces(state: &AppState, limit: usize, source: &str) -> TracesResponse {
             history_unavailable: false,
             traces,
         }
+    }
+}
+
+/// Resolve one trace id: `h...` -> history (re-scan TRACE_HISTORY_SCAN + find), else decimal seq ->
+/// live ring. `None` if not found / source unavailable.
+pub fn trace_detail(state: &AppState, id: &str) -> Option<crate::trace::TraceItem> {
+    if is_history_id(id) {
+        let p = state.discovery_path.as_ref()?;
+        let (items, ok) = replay_discovery_items(p, TRACE_HISTORY_SCAN);
+        if !ok {
+            return None;
+        }
+        items.into_iter().find(|t| t.id == id)
+    } else {
+        let seq: u64 = id.parse().ok()?;
+        state.discovery.as_ref()?.get(seq)
     }
 }
 
@@ -368,6 +458,27 @@ mod tests {
         let t = traces(&st, 10, "history");
         assert!(t.history_unavailable);
         assert!(t.traces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn trace_detail_live_by_seq_and_404() {
+        use observe::DiscoverySink;
+        let (ring, _w) = crate::trace::DiscoveryRingSink::spawn(10, None).unwrap();
+        ring.record(&observe::DiscoveryRecord {
+            ts_unix_ms: 5,
+            query: "weather".into(),
+            top_k: 1,
+            results: vec![],
+            latency_ms: 2,
+        });
+        let st = AppState {
+            discovery: Some(std::sync::Arc::new(ring)),
+            ..seeded_state().await
+        };
+        let t = trace_detail(&st, "0").expect("seq 0 present");
+        assert_eq!(t.query, "weather");
+        assert!(trace_detail(&st, "999").is_none());
+        assert!(trace_detail(&st, "not-a-number").is_none());
     }
 
     #[tokio::test]
@@ -624,5 +735,27 @@ mod tests {
         assert!(is_history_id("h5-0"));
         assert!(!is_history_id("0"));
         assert!(!is_history_id("42"));
+    }
+
+    #[tokio::test]
+    async fn upstream_detail_unknown_is_none() {
+        let st = seeded_state().await;
+        assert!(upstream_detail(&st, "nope").is_none());
+    }
+
+    #[tokio::test]
+    async fn upstream_detail_returns_view_and_tools() {
+        let st = seeded_state().await;
+        let d = upstream_detail(&st, "github").expect("configured upstream resolves");
+        assert_eq!(d.name, "github");
+        assert_eq!(d.transport, "stdio");
+        assert_eq!(d.status, "unknown");
+        assert!(d.tools.is_empty(), "empty catalog -> no tools");
+    }
+
+    #[tokio::test]
+    async fn tool_detail_unknown_is_none() {
+        let st = seeded_state().await;
+        assert!(tool_detail(&st, "nope__missing").is_none());
     }
 }

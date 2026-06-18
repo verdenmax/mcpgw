@@ -24,7 +24,9 @@
   <thead><tr><th>name</th><th>description</th></tr></thead>
   <tbody>
     {#each tools as t}
-      <tr><td>{t.name}</td><td>{t.description}</td></tr>
+      <tr class="row-link" onclick={() => (location.hash = `#/tools/${encodeURIComponent(t.name)}`)}>
+        <td>{t.name}</td><td>{t.description}</td>
+      </tr>
     {/each}
   </tbody>
 </table>

@@ -2,7 +2,9 @@
 // fragment is never sent to the server, so deep-link refresh only ever requests `/`.
 function parse() {
   const raw = window.location.hash.replace(/^#\/?/, "");
-  const parts = raw.split("/").filter(Boolean);
+  const parts = raw.split("/").filter(Boolean).map((p) => {
+    try { return decodeURIComponent(p); } catch (_) { return p; }
+  });
   return { view: parts[0] || "overview", params: parts.slice(1) };
 }
 

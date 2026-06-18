@@ -1,3 +1,4 @@
+use observe::DiscoveryHit;
 use observe::{DiscoveryRecord, DiscoverySink};
 use std::collections::VecDeque;
 use std::io::{BufWriter, Write};
@@ -20,11 +21,43 @@ impl DiscoveryWriter {
     }
 }
 
+/// One discovery trace as exposed by the API: a stable id (live = decimal ring seq; history =
+/// `"h{ts}-{n}"`) + the trace fields. Mirrors `calls::CallItem`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TraceItem {
+    pub id: String,
+    pub ts_unix_ms: u64,
+    pub query: String,
+    pub top_k: usize,
+    pub results: Vec<DiscoveryHit>,
+    pub latency_ms: u64,
+}
+
+struct StoredTrace {
+    seq: u64,
+    record: DiscoveryRecord,
+}
+
+impl StoredTrace {
+    fn to_item(&self) -> TraceItem {
+        let r = &self.record;
+        TraceItem {
+            id: self.seq.to_string(),
+            ts_unix_ms: r.ts_unix_ms,
+            query: r.query.clone(),
+            top_k: r.top_k,
+            results: r.results.clone(),
+            latency_ms: r.latency_ms,
+        }
+    }
+}
+
 /// In-memory ring buffer of recent discovery traces (newest-first on read), with an optional
 /// background writer appending each record as a JSON line to a discovery JSONL file.
 pub struct DiscoveryRingSink {
     cap: usize,
-    ring: Mutex<VecDeque<DiscoveryRecord>>,
+    ring: Mutex<VecDeque<StoredTrace>>,
+    next_seq: AtomicU64,
     tx: Option<SyncSender<String>>,
     dropped: AtomicU64,
 }
@@ -55,6 +88,7 @@ impl DiscoveryRingSink {
             Self {
                 cap,
                 ring: Mutex::new(VecDeque::with_capacity(cap)),
+                next_seq: AtomicU64::new(0),
                 tx,
                 dropped: AtomicU64::new(0),
             },
@@ -62,10 +96,16 @@ impl DiscoveryRingSink {
         ))
     }
 
-    /// Most recent records, newest first, capped at `limit`.
-    pub fn recent(&self, limit: usize) -> Vec<DiscoveryRecord> {
+    /// Most recent traces, newest first, capped at `limit` (each with its live id = ring seq).
+    pub fn recent(&self, limit: usize) -> Vec<TraceItem> {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        ring.iter().rev().take(limit).cloned().collect()
+        ring.iter().rev().take(limit).map(|s| s.to_item()).collect()
+    }
+
+    /// Resolve a live id (decimal seq) to its trace item, or `None` if evicted/never existed.
+    pub fn get(&self, seq: u64) -> Option<TraceItem> {
+        let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        ring.iter().find(|s| s.seq == seq).map(|s| s.to_item())
     }
 
     /// Count of records dropped because the writer channel was full (test/diagnostics).
@@ -78,10 +118,17 @@ impl DiscoverySink for DiscoveryRingSink {
     fn record(&self, rec: &DiscoveryRecord) {
         {
             let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+            // Allocate the seq while holding the lock so physical ring order always matches seq
+            // order (the DiscoverySink fan-out calls record() concurrently); otherwise a race could
+            // push out of seq order.
+            let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
             if ring.len() == self.cap {
                 ring.pop_front();
             }
-            ring.push_back(rec.clone());
+            ring.push_back(StoredTrace {
+                seq,
+                record: rec.clone(),
+            });
         }
         if let Some(tx) = &self.tx {
             if let Ok(line) = serde_json::to_string(rec) {
@@ -147,6 +194,20 @@ mod tests {
             sink.record(&rec(q));
         }
         assert_eq!(sink.recent(2).len(), 2);
+    }
+
+    #[test]
+    fn ring_assigns_seq_ids_newest_first_and_get_resolves() {
+        let (sink, _w) = DiscoveryRingSink::spawn(10, None).unwrap();
+        sink.record(&rec("a"));
+        sink.record(&rec("b"));
+        let items = sink.recent(10);
+        assert_eq!(items[0].id, "1");
+        assert_eq!(items[0].query, "b");
+        assert_eq!(items[1].id, "0");
+        let got = sink.get(0).expect("seq 0 present");
+        assert_eq!(got.query, "a");
+        assert!(sink.get(999).is_none());
     }
 
     #[test]

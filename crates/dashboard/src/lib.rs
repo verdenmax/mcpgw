@@ -5,13 +5,13 @@ mod metrics;
 pub use metrics::{MetaToolMetrics, MetricsSink, MetricsSnapshot, UpstreamMetrics};
 
 mod trace;
-pub use trace::{DiscoveryRingSink, DiscoveryWriter};
+pub use trace::{DiscoveryRingSink, DiscoveryWriter, TraceItem};
 
 mod calls;
 pub use calls::{CallFilter, CallItem, CallRingSink};
 
 mod history;
-pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery, MetricBucket};
+pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket};
 
 mod api;
 pub use api::{AppState, UpstreamInfo};
@@ -43,11 +43,29 @@ async fn h_overview(State(s): State<Arc<AppState>>) -> Json<api::Overview> {
 async fn h_upstreams(State(s): State<Arc<AppState>>) -> Json<Vec<api::UpstreamView>> {
     Json(api::upstreams(&s))
 }
+async fn h_upstream_detail(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> axum::response::Response {
+    match api::upstream_detail(&s, &name) {
+        Some(d) => Json(d).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
 async fn h_tools(
     State(s): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Json<Vec<api::ToolView>> {
     Json(api::tools(&s, q.get("q").map(|v| v.as_str())))
+}
+async fn h_tool_detail(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> axum::response::Response {
+    match api::tool_detail(&s, &name) {
+        Some(d) => Json(d).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 async fn h_metrics(State(s): State<Arc<AppState>>) -> Json<MetricsSnapshot> {
     Json(api::metrics(&s))
@@ -133,6 +151,26 @@ async fn h_call_detail(
     }
 }
 
+async fn h_trace_detail(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    if api::is_history_id(&id) {
+        let detail = tokio::task::spawn_blocking(move || api::trace_detail(&s, &id))
+            .await
+            .expect("trace detail replay task");
+        match detail {
+            Some(t) => Json(t).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    } else {
+        match api::trace_detail(&s, &id) {
+            Some(t) => Json(t).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+}
+
 /// True if the `Host` header names the local machine (the literal `localhost`, or an IP that is a
 /// loopback address). Defends the unauthenticated dashboard against DNS rebinding when bound to
 /// loopback: a remote page that rebinds its hostname to 127.0.0.1 still sends its OWN hostname in
@@ -180,9 +218,12 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
     let router = axum::Router::new()
         .route("/api/overview", get(h_overview))
         .route("/api/upstreams", get(h_upstreams))
+        .route("/api/upstreams/{name}", get(h_upstream_detail))
         .route("/api/tools", get(h_tools))
+        .route("/api/tools/{name}", get(h_tool_detail))
         .route("/api/metrics", get(h_metrics))
         .route("/api/traces", get(h_traces))
+        .route("/api/traces/{id}", get(h_trace_detail))
         .route("/api/metrics/history", get(h_metrics_history))
         .route("/api/calls", get(h_calls))
         .route("/api/calls/{id}", get(h_call_detail))

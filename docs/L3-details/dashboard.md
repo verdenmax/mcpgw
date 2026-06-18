@@ -40,10 +40,13 @@
 |-------------|----------|
 | `/api/overview` | 活快照 `gateway.snapshot().catalog().len()`（工具数）、`MetricsSink::snapshot().total_calls`、`gateway.last_summary()`（本次重建 `skipped` 数）、`upstreams` 配置数与连接数、`uptime` |
 | `/api/upstreams` | 每个配置上游：状态来自 `last_summary`（`ingested` → `connected`、`skipped` → `skipped`+原因、无 summary → `unknown`）、工具数来自 `catalog()` 按 `server` 过滤、调用/错误来自 `MetricsSink` 的 `per_upstream` |
+| `/api/upstreams/{name}` | `upstream_detail`：上述 `UpstreamView` 字段 + 该上游当前工具表（`catalog()` 按 `server` 过滤）；非配置上游 → 404 |
 | `/api/tools?q=` | 活快照 `catalog()`，可选子串过滤（对 `qualified_name` 与 `description` 做小写 `contains`） |
+| `/api/tools/{name}` | `tool_detail`：按 qualified `{server}__{tool}` 在 `catalog().get(name)` 取（schema + 所属上游）；缺 → 404 |
 | `/api/metrics` | `MetricsSink::snapshot()`（**实时**聚合） |
 | `/api/traces?source=live` | `DiscoveryRingSink::recent(limit)`（内存 ring；未启用 discovery → 空） |
-| `/api/traces?source=history` | `replay_discovery(discovery_path, limit)`（discovery JSONL 回放；无 path → `history_unavailable`） |
+| `/api/traces?source=history` | `replay_discovery_items(discovery_path, TRACE_HISTORY_SCAN)`（discovery JSONL 回放；无 path → `history_unavailable`） |
+| `/api/traces/{id}` | `h…` → discovery 回放定位（重扫 `TRACE_HISTORY_SCAN`）；否则 `DiscoveryRingSink::get(seq)`；找不到 → 404 |
 | `/api/metrics/history` | `replay_audit_metrics(audit_path, limit, bucket_ms)`（审计 JSONL 回放；无 path → `history_unavailable`） |
 | `/api/calls?source=live` | `CallRingSink::query(filter, limit, offset)`（内存环；未启用 → 空、`history_unavailable=false`） |
 | `/api/calls?source=history` | `replay_audit_calls(audit_path, scan_limit, filter)`（审计 JSONL 回放；无 path → `history_unavailable`） |
@@ -57,6 +60,14 @@
 - 逐条调用走新增的 `CallRingSink`（内存环，`[dashboard].call_buffer` 上界，满淘汰最旧）+ 可选 audit JSONL
   历史回放（`replay_audit_calls`），与 Traces 的「实时环 + 历史回放」双源模型一致；经 `/api/calls`（列表）与
   `/api/calls/{id}`（详情）暴露。
+- **M3 下钻详情（traces 也带稳定 id）**：traces 现像 calls 一样为每条分配**稳定 id**——live = ring 内单调
+  `seq`（`record` 在锁内 `fetch_add` 分配，保证物理序恒等于 seq 序），history = `"h{ts}-{n}"`（同 `ts` 文件序内
+  第 n 条）；list 与 detail **共用 `TRACE_HISTORY_SCAN = 50_000` 扫描窗口**，故 list 分配的 history id 在 detail 同窗
+  口稳定复现（镜像 `CALL_HISTORY_SCAN`）。在此之上新增**三个详情端点** `/api/{upstreams/{name},tools/{name},
+  traces/{id}}`（各 `Json<…Detail>`/`Json<TraceItem>` 或 404）与**三个详情视图**（`UpstreamDetail`/`ToolDetail`/
+  `TraceDetail`），与现有列表 + `Overview` 可点卡片一起构成 **列表→详情→交叉跳转** 闭环：上游↔工具↔调用↔追踪
+  （`UpstreamDetail`↔`ToolDetail`、`*Detail`→近期 `/api/calls`、`CallDetail`→工具/上游、`TraceDetail`→命中工具）。
+  注：discovery JSONL writer 仍只写**原始 `DiscoveryRecord`**（不含 seq/id），id 是 API 出口侧赋予的。
 
 ## 前端与构建链（Svelte 5 + Vite，产物内嵌）
 
@@ -67,9 +78,11 @@
   `node_modules/` gitignore、`dist/**` 在 `.gitattributes` 标记 generated）。改了前端须重跑 `npm run build` 再提交 `dist/`。
 - **静态交付变化**：由原先 `include_str!` 三文件（`/`、`/app.js`、`/style.css`）改为单个 `assets::static_handler`
   挂在 router `.fallback`（`/` → 内嵌 `index.html`、`/assets/*` → 内嵌资源；未知路径回退 `index.html`）。**hash 路由**
-  让 fragment 不发往服务端，故深链刷新只请求 `/`，**无需 history 回退改写**。`/api/*` 端点数不变（仍 8 个）。
-- **视图**：Overview（指标卡）、Calls（指标卡 → 逐条列表 → 详情下钻：`/api/metrics` 可点击卡过滤 `/api/calls`，行进
-  `/api/calls/{id}`）、Upstreams / Tools / Traces（基础列表，从旧面板移植、无回归；逐条详情页属 M3）。各视图每 3s 轮询既有
+  让 fragment 不发往服务端，故深链刷新只请求 `/`，**无需 history 回退改写**；hash params 经 `decodeURIComponent` 解码。
+  `/api/*` 端点数随 M3 增至 **11 个**。
+- **视图**：Overview（指标卡，**可点直达** upstreams/tools/calls 列表）、Calls（指标卡 → 逐条列表 → 详情下钻：
+  `/api/metrics` 可点击卡过滤 `/api/calls`，行进 `/api/calls/{id}`）、Upstreams / Tools / Traces 列表，**M3 新增三个详情视图**
+  `UpstreamDetail`/`ToolDetail`/`TraceDetail`（上游/工具/追踪下钻 + 上游↔工具↔调用↔追踪交叉链接）。各视图每 3s 轮询既有
   `/api/*`。
 
 ## 隐私边界（与调用观测隔离）
@@ -98,8 +111,9 @@
 
 ## `DiscoveryRingSink`：环形缓冲 + 可选后台 writer
 
-- **ring**：`VecDeque<DiscoveryRecord>`，容量 `cap.max(1)`；`record` 满则 `pop_front` 再 `push_back`，
-  `recent(limit)` 用 `iter().rev().take(limit)` 给出 newest-first。读写都在短临界区内的 `Mutex`。
+- **ring**：`VecDeque<StoredTrace>`（每项 `{ seq, record }`），容量 `cap.max(1)`；`record` 在锁内先
+  `next_seq.fetch_add` 分配单调 seq 再满则 `pop_front`、`push_back`，`recent(limit)` 用 `iter().rev().take(limit)`
+  给出 newest-first 的 `TraceItem`（live id = seq），`get(seq)` 取单条。读写都在短临界区内的 `Mutex`。
 - **可选 writer**：`spawn(cap, Some(path))` 打开 discovery JSONL（create+append）+ 起命名 `discovery-writer`
   的 OS 线程；`record` 在写 ring 后把 `serde_json::to_string(rec)` `try_send` 进容量 `WRITER_CHANNEL_CAP = 1024`
   的有界 channel，**满则计数丢弃**（`dropped_count`），**绝不阻塞**调用热路径。
@@ -116,22 +130,25 @@
   只对外部损坏文件生效）。
 - **handler 侧再封顶**：`/api/traces`、`/api/metrics/history` 的 `limit` 在 handler 里先 `min(MAX_HISTORY_LIMIT
   = 50_000)`，避免敌意/失手的巨值让 `tail_lines` 缓冲过多行。
-- **坏行跳过**：`replay_discovery` 对每行 `serde_json::from_str` 失败即 `filter_map` 跳过；
-  `replay_audit_metrics` 只解析 `{ ts_unix_ms, outcome }` 两字段，坏行跳过。
-- **方向**：`replay_discovery` 末尾 `reverse()` 给 newest-first（与实时 ring 一致）；`replay_audit_metrics`
+- **坏行跳过**：`replay_discovery_items` 对每行 `serde_json::from_str` 失败即跳过（并按 `ts` 文件序赋稳定
+  `"h{ts}-{n}"` id）；`replay_audit_metrics` 只解析 `{ ts_unix_ms, outcome }` 两字段，坏行跳过。
+- **方向**：`replay_discovery_items` 末尾 `reverse()` 给 newest-first（与实时 ring 一致）；`replay_audit_metrics`
   按 `BTreeMap` 桶键升序，oldest-first（适合画时间序列）。桶起点 `ts - (ts % bucket_ms)`，`bucket_ms` 至少 1。
 
 ## 测试覆盖
 
 - `metrics.rs`：聚合计数/错误/延迟、分位单调且 ≤max、`Timeout` 记为 error、`per_upstream` 封顶（总量仍全计）、
   空快照清零。
-- `trace.rs`：ring 封顶 + newest-first、`recent` 限量、file writer 持久化并在 `join` 时 drain。
-- `history.rs`：缺文件不可用、`replay_discovery` 跳坏行且 newest-first、`replay_audit_metrics` 分桶计数、
-  `Timeout` 记为 error；**M1 新增** `replay_audit_calls`：newest-first、稳定 `"h{ts}-{n}"` id、`filter` 在 id
-  分配后应用（id 不随过滤漂移）、坏行跳过。
+- `trace.rs`：ring 封顶 + newest-first、`recent` 限量、file writer 持久化并在 `join` 时 drain；**M3 新增**
+  ring 分配单调 seq 作 live id（newest-first、`recent` 首项 id 最大）且 `get(seq)` 解析命中/未命中 `None`。
+- `history.rs`：缺文件不可用、`replay_audit_metrics` 分桶计数、`Timeout` 记为 error；**M1** `replay_audit_calls`：
+  newest-first、稳定 `"h{ts}-{n}"` id、`filter` 在 id 分配后应用（id 不随过滤漂移）、坏行跳过；**M3** `replay_discovery_items`：
+  跳坏行、newest-first、稳定 `"h{ts}-{n}"` id（同 `ts` 文件序内第 n 条）。
 - `api.rs`：`overview` 报策略/上游数、`upstreams` 重建前 `unknown`、`metrics` 反映已记录调用、缺 path 时
-  history 不可用、空 catalog 的 `tools` 过滤；**M1 新增** `call_filter_from_query`、`calls`（live/history、
-  分页、`history_unavailable`）、`call_detail`（live seq 与 `h…` 回放定位、未命中→`None`）、`is_history_id`。
+  history 不可用、空 catalog 的 `tools` 过滤；**M1** `call_filter_from_query`、`calls`（live/history、
+  分页、`history_unavailable`）、`call_detail`（live seq 与 `h…` 回放定位、未命中→`None`）、`is_history_id`；
+  **M3** `upstream_detail`（未知→`None`、已配置→返回 `UpstreamView` 字段 + 工具列表）、`tool_detail`（未知→`None`）、
+  `trace_detail`（live seq 解析、未知 seq / 非数字 → `None`）。
 - `calls.rs`（**M1 逐条调用层**）：`CallRingSink` 满淘汰最旧 + 单调 `seq` 作 live id、`query` 最新优先且
   `total` 计全部命中、分页 `limit`/`offset`、`get(seq)`；`CallFilter::matches` 各字段过滤与 `since`/`until`
   闭区间。
@@ -140,8 +157,12 @@
   `assets/` 下有一份 hash JS、`no_svelte_component_uses_raw_html` 扫描 `ui/src` 禁 `{@html}` 防 XSS）、`host_is_local`
   接受回环/`localhost`/IPv6 `[::1]` 且拒远端域名、非回环 IP、含 `@` 的 Host 与缺失 Host。
 - `crates/mcpgw/tests/dashboard.rs`（**默认 `#[ignore]`**，绑端口，`--ignored` 跑）：`serve` 起面板、
-  `/api/overview` 报 `strategy=bm25`、一次 `search_tools` 被 `/api/traces?source=live` 捕获到 query；**M2 新增**断言
-  `/` 交付内嵌 SPA（`text/html` 且含挂载点 `id="app"`）。
+  `/api/overview` 报 `strategy=bm25`、一次 `search_tools` 被 `/api/traces?source=live` 捕获到 query；**M2** 断言
+  `/` 交付内嵌 SPA（`text/html` 且含挂载点 `id="app"`）；**M3** 在同测里加 trace 详情 happy-path（`/api/traces/{id}`
+  返回该 query）+ 未知上游/工具/追踪 → 404；并新增第二个 `#[ignore]` e2e `dashboard_detail_endpoints_with_mock_upstream`：
+  以真实 `mock-stdio` 上游（4 工具 echo/greet/slow/fail）驱动一次 search + 一次 `call_tool`，断言 `/api/upstreams/mock`
+  （`tools_count=4`、含 `mock__echo`）、`/api/tools/mock__echo`（`server=mock` + `input_schema`）、`/api/traces/{id}` 详情
+  happy-path（mock-upstream 命中路径 e2e 默认 `#[ignore]`；mock-stdio 缺失时优雅跳过，**需先 `cargo build -p upstream --features testkit --bin mock-stdio` 再 `cargo test -p mcpgw --test dashboard -- --ignored`**，或设 `MCPGW_REQUIRE_MOCK=1` 让缺二进制时硬失败以确保真跑；仓库当前无 CI 跑 ignored 测试）。
 
 ## 相关
 
