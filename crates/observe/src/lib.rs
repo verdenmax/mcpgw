@@ -3,6 +3,10 @@
 //! Defines `CallRecord` (NO argument/result payloads — only sizes), the `CallSink` trait, and a
 //! `TracingSink`. This is the storage-free, HTTP-free seam that T1 (tracing) and T3 (audit JSONL)
 //! share: one record is built at the call boundary and fanned out to every configured sink.
+//!
+//! It also defines `CallContent` + `CallContentSink`, a SEPARATE content fan-out contract (call
+//! args/result text) kept physically distinct from the metadata-only `CallRecord`, so payload
+//! content never reaches the tracing/audit sinks.
 
 use serde::Serialize;
 
@@ -91,8 +95,9 @@ pub trait CallSink: Send + Sync {
 
 /// One call's content payload (args + result), captured ONLY into the dashboard's in-memory ring —
 /// physically separate from the metadata-only `CallRecord`, so argument/result content never reaches
-/// the tracing/audit sinks. Fields are already-serialized, already-truncated JSON text (easy to
-/// store / substring-search / render in `<pre>`); `*_truncated` flags whether the cap was hit.
+/// the tracing/audit sinks. Fields are already-serialized, already-truncated text (easy to store /
+/// substring-search / render in `<pre>`): `args` is JSON text; `result` is the serialized result OR
+/// plain upstream error text. `*_truncated` flags whether the cap was hit.
 #[derive(Debug, Clone)]
 pub struct CallContent {
     pub args: String,
@@ -266,6 +271,7 @@ mod content_tests {
         };
         cap.record(&meta, &content);
         let got = cap.0.lock().unwrap();
+        assert_eq!(got.len(), 1);
         assert_eq!(got[0], ("call_tool".to_string(), "{\"x\":1}".to_string()));
     }
 }
