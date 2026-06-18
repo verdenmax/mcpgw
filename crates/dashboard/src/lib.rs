@@ -58,6 +58,15 @@ async fn h_tools(
 ) -> Json<Vec<api::ToolView>> {
     Json(api::tools(&s, q.get("q").map(|v| v.as_str())))
 }
+async fn h_tool_detail(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> axum::response::Response {
+    match api::tool_detail(&s, &name) {
+        Some(d) => Json(d).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
 async fn h_metrics(State(s): State<Arc<AppState>>) -> Json<MetricsSnapshot> {
     Json(api::metrics(&s))
 }
@@ -191,6 +200,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         .route("/api/upstreams", get(h_upstreams))
         .route("/api/upstreams/{name}", get(h_upstream_detail))
         .route("/api/tools", get(h_tools))
+        .route("/api/tools/{name}", get(h_tool_detail))
         .route("/api/metrics", get(h_metrics))
         .route("/api/traces", get(h_traces))
         .route("/api/metrics/history", get(h_metrics_history))

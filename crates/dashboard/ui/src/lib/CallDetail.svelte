@@ -29,8 +29,8 @@
       <tr><th>id</th><td>{item.id}</td></tr>
       <tr><th>time</th><td>{when(item.ts_unix_ms)}</td></tr>
       <tr><th>meta_tool</th><td>{item.meta_tool}</td></tr>
-      <tr><th>target_tool</th><td>{#if item.target_tool}<a href="#/tools">{item.target_tool}</a>{:else}—{/if}</td></tr>
-      <tr><th>upstream</th><td>{#if item.upstream}<a href="#/upstreams">{item.upstream}</a>{:else}—{/if}</td></tr>
+      <tr><th>target_tool</th><td>{#if item.target_tool}<a href={`#/tools/${encodeURIComponent(item.target_tool)}`}>{item.target_tool}</a>{:else}—{/if}</td></tr>
+      <tr><th>upstream</th><td>{#if item.upstream}<a href={`#/upstreams/${encodeURIComponent(item.upstream)}`}>{item.upstream}</a>{:else}—{/if}</td></tr>
       <tr><th>outcome</th><td>{item.outcome}</td></tr>
       <tr><th>error_kind</th><td>{item.error_kind ?? "—"}</td></tr>
       <tr><th>latency_ms</th><td>{item.latency_ms}</td></tr>

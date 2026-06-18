@@ -70,6 +70,14 @@ pub struct ToolView {
 }
 
 #[derive(Serialize)]
+pub struct ToolDetail {
+    pub name: String,
+    pub server: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+#[derive(Serialize)]
 pub struct TracesResponse {
     pub source: String,
     pub history_unavailable: bool,
@@ -184,6 +192,18 @@ pub fn upstream_detail(state: &AppState, name: &str) -> Option<UpstreamDetail> {
         calls: um.map(|u| u.calls).unwrap_or(0),
         errors: um.map(|u| u.errors).unwrap_or(0),
         tools,
+    })
+}
+
+/// Single-tool detail from the catalog (keyed by qualified name `{server}__{tool}`). `None` if absent.
+pub fn tool_detail(state: &AppState, name: &str) -> Option<ToolDetail> {
+    let snap = state.gateway.snapshot();
+    let def = snap.catalog().get(name)?;
+    Some(ToolDetail {
+        name: def.qualified_name(),
+        server: def.server.clone(),
+        description: def.description.clone(),
+        input_schema: def.input_schema.clone(),
     })
 }
 
@@ -687,5 +707,11 @@ mod tests {
         assert_eq!(d.transport, "stdio");
         assert_eq!(d.status, "unknown");
         assert!(d.tools.is_empty(), "empty catalog -> no tools");
+    }
+
+    #[tokio::test]
+    async fn tool_detail_unknown_is_none() {
+        let st = seeded_state().await;
+        assert!(tool_detail(&st, "nope__missing").is_none());
     }
 }

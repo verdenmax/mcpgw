@@ -8,6 +8,7 @@
   import Upstreams from "./lib/Upstreams.svelte";
   import UpstreamDetail from "./lib/UpstreamDetail.svelte";
   import Tools from "./lib/Tools.svelte";
+  import ToolDetail from "./lib/ToolDetail.svelte";
   import Traces from "./lib/Traces.svelte";
   onMount(startRouter);
 </script>
@@ -25,6 +26,8 @@
       <UpstreamDetail name={route.params[0]} />
     {:else if route.view === "upstreams"}
       <Upstreams />
+    {:else if route.view === "tools" && route.params.length > 0}
+      <ToolDetail name={route.params[0]} />
     {:else if route.view === "tools"}
       <Tools />
     {:else if route.view === "traces"}

@@ -19,7 +19,7 @@
 {#if data}
   <div class="cards">
     <div class="card row-link" onclick={() => (location.hash = "#/upstreams")}><div class="label">upstreams</div><div class="v">{data.upstreams_connected}/{data.upstreams_total}</div></div>
-    <div class="card"><div class="label">tools</div><div class="v">{data.tools_total}</div></div>
+    <div class="card row-link" onclick={() => (location.hash = "#/tools")}><div class="label">tools</div><div class="v">{data.tools_total}</div></div>
     <div class="card row-link" onclick={() => (location.hash = "#/calls")}><div class="label">calls</div><div class="v">{data.total_calls}</div></div>
     <div class="card"><div class="label">strategy</div><div class="v">{data.strategy}</div></div>
     <div class="card"><div class="label">uptime</div><div class="v">{data.uptime_secs}s</div></div>
