@@ -4,8 +4,22 @@
   let { name } = $props();
   let d = $state(null);
   let calls = $state([]);
+  let cOutcome = $state("");  // recent-calls outcome filter
+  let cq = $state("");        // recent-calls content search
   let error = $state(null);
   let notFound = $state(false);
+  async function loadCalls() {
+    try {
+      const p = new URLSearchParams();
+      p.set("source", "live");
+      p.set("upstream", name);
+      if (cOutcome) p.set("outcome", cOutcome);
+      if (cq) p.set("q", cq);
+      p.set("limit", "20");
+      const c = await getJSON(`/api/calls?${p}`);
+      calls = c.items ?? [];
+    } catch (_) { /* recent-calls is secondary; detail error UI owns errors */ }
+  }
   async function load() {
     try {
       error = null; notFound = false;
@@ -13,11 +27,11 @@
       if (r.status === 404) { notFound = true; d = null; return; }
       if (!r.ok) throw new Error(`/api/upstreams/${name} -> ${r.status}`);
       d = await r.json();
-      const c = await getJSON(`/api/calls?source=live&upstream=${encodeURIComponent(name)}&limit=20`);
-      calls = c.items ?? [];
+      await loadCalls();
     } catch (e) { error = String(e); }
   }
   $effect(() => { name; load(); });          // reload when the upstream name changes
+  $effect(() => { void cOutcome; void cq; loadCalls(); });
   onMount(() => {                              // poll mutable data (calls/errors/recent calls)
     const t = setInterval(load, 3000);
     return () => clearInterval(t);
@@ -53,6 +67,12 @@
   </table>
 
   <h3>Recent calls</h3>
+  <div class="chips">
+    {#each ["ok", "error", "timeout"] as o}
+      <span class="chip" class:active={cOutcome === o} onclick={() => (cOutcome = cOutcome === o ? "" : o)}>{o}</span>
+    {/each}
+    <input class="search narrow" placeholder="search content…" bind:value={cq} />
+  </div>
   <table>
     <thead><tr><th>time</th><th>meta</th><th>target</th><th>outcome</th><th>ms</th></tr></thead>
     <tbody>

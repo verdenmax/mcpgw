@@ -141,8 +141,15 @@ live 环与 history 回放共用的 owned 项：`id`（live=十进制 seq；hist
 ### `struct CallFilter`
 `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`，均 `Option`（`None`=全匹配；`since_ms`/`until_ms` 为闭区间，含端点）；`matches(&CallItem)` 对 live 与 history 两数据源统一过滤。
 
+**内容过滤参数**（M2，**仅 `source=live`**）：
+- `q`（自由文本）：对 args + result 的（截断后）JSON 文本做**大小写不敏感子串**匹配（`content_contains`）。因扫的是原始 JSON 文本，子串可命中 JSON **键名**与标点/语法，而不限于值。
+- `arg_key` + `arg_val`（结构化）：解析 args JSON，**递归**查找任一键 `== arg_key`（精确、大小写敏感）且其**字符串化**值 `contains` `arg_val`（大小写不敏感）的项（`args_key_value_matches`）。容器值（对象/数组）会被字符串化，故值匹配可命中序列化后的容器文本。两者**必须成对**给出；只给其一（仅 key 或仅 val）被静默忽略（no-op）。截断/非法 args JSON → 不命中（best-effort）。
+- 内容过滤**仅作用于带内容的项**：`matches` 把内容检查门控在 `if let Some(args)` 之内，故 history 回放项（`args == None`）与列表轻量项永不被内容过滤排除——`source=history` 时内容过滤被静默忽略。
+
 ### `struct CallRingSink`（实现 `observe::CallContentSink`）
-有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。环内每条是 `StoredCall { seq, record: CallRecord, content: CallContent }`——**同时**存元数据与内容（一条记录富含两者，不重复元数据字段）；私有 `to_item(with_content: bool)` 转出 `CallItem`，`with_content=false` 时内容四字段留空（列表用），`true` 时带出 args/result（详情用）。`record(&self, meta: &CallRecord, content: &CallContent)` 实现 `CallContentSink`：克隆 `meta`+`content` 入环。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` newest-first（`to_item(false)`、`total` 计全部命中）；`get(seq) -> Option<CallItem>`（`to_item(true)`）。容量 = `[dashboard].call_buffer`；单条 args/result 的字节上界由下游按 `[dashboard].payload_max_bytes`（默认 16384）截断后才入环，故常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args 与 result 各自封顶 `payload_max_bytes`，重启即丢）。
+有界内存环（满淘汰最旧，镜像 `DiscoveryRingSink`），每条插入在锁内分配单调 `seq` 作 live id。环内每条是 `StoredCall { seq, record: CallRecord, content: CallContent }`——**同时**存元数据与内容（一条记录富含两者，不重复元数据字段）；私有 `to_item(with_content: bool)` 转出 `CallItem`，`with_content=false` 时内容四字段留空（列表用），`true` 时带出 args/result（详情用）。`record(&self, meta: &CallRecord, content: &CallContent)` 实现 `CallContentSink`：克隆 `meta`+`content` 入环。`query(&CallFilter, limit, offset) -> (Vec<CallItem>, total)` newest-first（`total` 计全部命中）；`get(seq) -> Option<CallItem>`（`to_item(true)`）。容量 = `[dashboard].call_buffer`；单条 args/result 的字节上界由下游按 `[dashboard].payload_max_bytes`（默认 16384）截断后才入环，故常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args 与 result 各自封顶 `payload_max_bytes`，重启即丢）。
+
+**`query` 内容过滤性能（metadata-first）**：仅当存在内容过滤（`q` 或成对的 `arg_key`+`arg_val`）时 `want_content` 为真。每条先建轻量项 `to_item(false)` 跑一遍 `matches`（此时只校验元数据，内容检查因缺 `Some(args)` 被跳过）；无内容过滤时直接返回轻量项（与 M1 同成本）；有内容过滤时**仅对通过元数据谓词的幸存者**再建带内容项 `to_item(true)` 复跑 `matches`（此时才施加内容过滤）。随后做分页，并在返回前**剥离**页内内容——列表响应**永不含内容**（仅单条详情 `/api/calls/{id}` 带 args/result）。
 
 ---
 
@@ -200,7 +207,7 @@ pub struct CallsResponse { source, history_unavailable, total, items: Vec<CallIt
 | `traces` | `(&AppState, limit, source) -> TracesResponse` | `source=="history"` → `replay_discovery_items(discovery_path, TRACE_HISTORY_SCAN)` 后 `truncate(limit)`（无 path→`history_unavailable`）；否则 `discovery.recent(limit)`（未启用→空、`history_unavailable=false`）。元素为 `TraceItem` |
 | `trace_detail` | `(&AppState, id) -> Option<TraceItem>` | `is_history_id(id)` → 重扫 `TRACE_HISTORY_SCAN` 行回放后按 id 定位；否则按十进制 live seq 取环 `get(seq)`；找不到/源不可用→`None` |
 | `metrics_history` | `(&AppState, limit, bucket_ms) -> HistoryResponse` | `replay_audit_metrics(audit_path)`（无 path→`history_unavailable`） |
-| `call_filter_from_query` | `(&HashMap<String,String>) -> CallFilter` | 从查询参数 `meta`/`upstream`/`tool`（→`target_tool`）/`outcome`/`since`/`until` 构造过滤器（`since`/`until` 解析为 `u64` ms） |
+| `call_filter_from_query` | `(&HashMap<String,String>) -> CallFilter` | 从查询参数 `meta`/`upstream`/`tool`（→`target_tool`）/`outcome`/`since`/`until`/`q`/`arg_key`/`arg_val` 构造过滤器（`since`/`until` 解析为 `u64` ms；`q`/`arg_key`/`arg_val` 原样 clone，内容过滤仅 live 生效） |
 | `calls` | `(&AppState, &CallFilter, source, scan_limit, limit, offset) -> CallsResponse` | `source=="history"` → `replay_audit_calls(audit_path, scan_limit)`（无 path→`history_unavailable`、`total`=全部命中、`skip(offset).take(limit)`）；否则 `calls.query(filter, limit, offset)`（未启用→空、`history_unavailable=false`） |
 | `call_detail` | `(&AppState, id) -> Option<CallItem>` | `is_history_id(id)` → 重扫 `CALL_HISTORY_SCAN` 行回放后按 id 定位；否则按十进制 live seq 取环 `get(seq)`；找不到/源不可用→`None` |
 | `is_history_id` | `(id: &str) -> bool` | id 以 `h` 开头即历史（`"h{ts}-{n}"`）；否则按 live ring 十进制 seq。格式判定集中于此，使 handler 的 blocking-pool 决策与 `call_detail`/`trace_detail` 源路由不漂移 |
@@ -255,7 +262,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 | GET | `/api/traces?source=live\|history&limit=` | `Json<TracesResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`source` 缺省 `"live"`） |
 | GET | `/api/traces/{id}` | `Json<TraceItem>` 或 404（`h…`→历史回放定位；否则 live seq 取环） |
 | GET | `/api/metrics/history?limit=&bucket_ms=` | `Json<HistoryResponse>`（`limit` 缺省 5000、封顶 50_000；`bucket_ms` 缺省 60_000） |
-| GET | `/api/calls?source=live\|history&meta=&upstream=&tool=&outcome=&since=&until=&limit=&offset=` | `Json<CallsResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`offset` 缺省 0；`source` 缺省 `"live"`；history 路径走 `spawn_blocking`） |
+| GET | `/api/calls?source=live\|history&meta=&upstream=&tool=&outcome=&since=&until=&q=&arg_key=&arg_val=&limit=&offset=` | `Json<CallsResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`offset` 缺省 0；`source` 缺省 `"live"`；`q`/`arg_key`+`arg_val` 内容过滤**仅 live**，history 自动忽略；列表永不含内容；history 路径走 `spawn_blocking`） |
 | GET | `/api/calls/{id}` | `Json<CallItem>` 或 404（`h…`→历史回放定位；否则按 live seq 取环） |
 | —（fallback） | 任意非 `/api/*` 路径 | `assets::static_handler`：`/`→内嵌 `index.html`、`/assets/*`→内嵌资源（带 hash），其余回退 index |
 

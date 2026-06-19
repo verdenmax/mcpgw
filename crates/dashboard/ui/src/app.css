@@ -28,6 +28,8 @@ th { color:var(--muted); font-weight:500; }
 .chip.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 .chip.disabled { opacity:0.4; pointer-events:none; }
 .search { background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; margin-bottom:10px; width:260px; }
+.search.narrow { width:120px; }
+.search:disabled { opacity:0.5; cursor:not-allowed; }
 .trace-card { display:block; width:100%; margin-bottom:8px; }
 .schema { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:10px; overflow:auto; max-height:340px; white-space:pre; }
 h3 { margin-top:20px; }

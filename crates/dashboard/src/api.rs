@@ -300,7 +300,8 @@ pub fn metrics_history(state: &AppState, limit: usize, bucket_ms: u64) -> Histor
     }
 }
 
-/// Build a `CallFilter` from the query map (`meta`/`upstream`/`tool`/`outcome`/`since`/`until`).
+/// Build a `CallFilter` from the query map (`meta`/`upstream`/`tool`/`outcome`/`since`/`until`, plus
+/// the content filters `q` — free-text over args+result — and `arg_key`/`arg_val` — structured).
 pub fn call_filter_from_query(
     q: &std::collections::HashMap<String, String>,
 ) -> crate::calls::CallFilter {
@@ -311,6 +312,9 @@ pub fn call_filter_from_query(
         outcome: q.get("outcome").cloned(),
         since_ms: q.get("since").and_then(|v| v.parse().ok()),
         until_ms: q.get("until").and_then(|v| v.parse().ok()),
+        q: q.get("q").cloned(),
+        arg_key: q.get("arg_key").cloned(),
+        arg_val: q.get("arg_val").cloned(),
     }
 }
 

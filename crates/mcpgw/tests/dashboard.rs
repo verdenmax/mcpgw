@@ -341,6 +341,49 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
     let result = cd["result"].as_str().expect("detail has result");
     assert!(result.contains("hi"), "result echoes the text: {result}");
 
+    // M2 content filters (live-only): free-text + structured arg key=value.
+    let by_q: serde_json::Value = http
+        .get(format!("{base}/api/calls?source=live&meta=call_tool&q=hi"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        by_q["total"].as_u64().unwrap() >= 1,
+        "free-text q=hi matches the echo call"
+    );
+    let by_arg: serde_json::Value = http
+        .get(format!(
+            "{base}/api/calls?source=live&meta=call_tool&arg_key=text&arg_val=hi"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        by_arg["total"].as_u64().unwrap() >= 1,
+        "arg_key=text arg_val=hi matches"
+    );
+    let none: serde_json::Value = http
+        .get(format!(
+            "{base}/api/calls?source=live&meta=call_tool&q=zzz_no_match_zzz"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        none["total"].as_u64().unwrap(),
+        0,
+        "non-matching q returns nothing"
+    );
+
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
 }
