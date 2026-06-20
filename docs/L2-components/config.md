@@ -2,14 +2,16 @@
 
 ## 职责
 
-解析并校验 mcpgw 的 TOML 配置。含 `[retrieval]`、`[[upstream]]`（M1-A，stdio + M1-C 的 http）与 `[server]`
-（M1-B，含 M1-C 的 `[server.http]`）三段。不了解检索内部，也不反向依赖 `retrieval`。
+解析并校验 mcpgw 的 TOML 配置。含 `[retrieval]`、`[[upstream]]`（M1-A，stdio + M1-C 的 http）、`[server]`
+（M1-B，含 M1-C 的 `[server.http]`）、可选的 `[audit]`（M6.T3）与 `[dashboard]`（子系统 A）各段。不了解检索内部，
+也不反向依赖 `retrieval`。
 
 ## 公开接口
 
 ### 类型 `Config`
 顶层配置。`#[serde(deny_unknown_fields)]`；字段 `retrieval: RetrievalConfig`、`upstreams: Vec<UpstreamConfig>`
-（`rename = "upstream"`）、`server: ServerConfig`、`audit: AuditConfig`（均 `#[serde(default)]`）。
+（`rename = "upstream"`）、`server: ServerConfig`、`audit: AuditConfig`、`dashboard: DashboardConfig`（均
+`#[serde(default)]`）。
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
@@ -50,8 +52,8 @@
 | `candidates` | `Option<usize>` | `None` | BM25 预筛 shortlist 大小；`None` → retrieval 默认（`DEFAULT_CANDIDATES = 20`）；`validate()` 拒绝 `Some(0)` |
 
 ### 类型 `UpstreamConfig` / `UpstreamTransport`
-`[[upstream]]` 数组。每项含 `name`（命名空间前缀，非空白、禁含 `__`）、`call_timeout_ms`（默认 `30_000`）、
-经 `#[serde(flatten)]` 摊平的内部标签枚举 `UpstreamTransport`：
+`[[upstream]]` 数组。每项含 `name`（命名空间前缀，非空白、禁含 `__`）、`call_timeout_ms`（默认 `30_000`，须
+`> 0`——`0` 会让每次连接/调用立即 `Elapsed`）、经 `#[serde(flatten)]` 摊平的内部标签枚举 `UpstreamTransport`：
 - `Stdio { command, args, env_passthrough }`（`transport = "stdio"`）。`env_passthrough` 是传给子进程的环境变量名
   **allow-list**——`upstream::connect` 先清空子进程环境再仅注入这些（且存在于 mcpgw 环境的）变量；默认子进程拿不到
   父环境，须显式列出（如 `PATH`/凭据）。
@@ -93,10 +95,27 @@
 `serve` 在 `enabled` 时经 `observe::spawn_writer(path, AUDIT_CHANNEL_CAPACITY)` 打开文件并起背景 writer 线程，
 打不开即**启动期 fail-fast**；`validate()` **不**校验 `path`。
 
+### 类型 `DashboardConfig`
+`[dashboard]` 段（子系统 A）。`#[serde(default, deny_unknown_fields)]`：可选的**只读可视化面板**——独立端口、
+localhost、无鉴权，只读展示快照/指标/调用记录/搜索追踪。**省略整个 `[dashboard]` 段 = 关闭。**
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `enabled` | `bool` | `false` | 须显式 opt-in 才启动面板 |
+| `bind` | `String` | `"127.0.0.1:8971"` | 监听地址；仅 localhost、无 auth。`validate()` 要求 `enabled` 时 `trim()` 非空 |
+| `trace_queries` | `bool` | `false` | opt-in 后才捕获**发现追踪**（query 文本 + 命中工具名/分数）；与审计/观测物理隔离 |
+| `trace_path` | `Option<String>` | `None` | 给出则把发现追踪另写一份 JSONL 供历史回放，否则仅内存 ring |
+| `trace_buffer` | `usize` | `500` | 内存发现 ring 容量；`enabled` 时须 `> 0` |
+| `call_buffer` | `usize` | `2000` | 逐条调用环（M1 内容捕获）容量；`enabled` 时须 `> 0` |
+| `payload_max_bytes` | `usize` | `16384` | 单条调用 args/result 内容文本各自的字节封顶；`enabled` 时须 `> 0` |
+
+实现见 [dashboard L3](../L3-details/dashboard.md)；逐条调用内容只活在内存环、绝不落盘（见
+[downstream L3 调用内容捕获](../L3-details/downstream.md)）。
+
 ### 错误 `ConfigError`
 `enum ConfigError { Parse(toml::de::Error), Invalid(String) }`（`thiserror`，`Parse` 带 `#[from]`）。
 - `Parse`：TOML 语法错误或未知字段（`deny_unknown_fields`）。
-- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其 `base_url`/`model`/`api_key_env` 空白；`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`；upstream `name` 空白/含 `__`/重复；http 上游 `url` 空白）。
+- `Invalid`：语义校验失败（未知 strategy；`top_k == 0`；`strategy ∈ {vector,hybrid}` 缺 `[retrieval.vector]` 段或其 `base_url`/`model`/`api_key_env` 空白；`strategy == "subagent"` 缺 `[retrieval.subagent]` 段或其 `base_url`/`model`/`api_key_env` 空白或 `candidates == Some(0)`；upstream `name` 空白/含 `__`/以 `_` 起止/重复；upstream `call_timeout_ms == 0`；http 上游 `url` 空白；`[dashboard]` 启用时 `bind` 空白或 `trace_buffer`/`call_buffer`/`payload_max_bytes` 为 `0`）。
 
 ## 依赖
 

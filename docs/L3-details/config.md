@@ -80,15 +80,19 @@
 - **字段与默认**：`enabled: bool`（默认 `false`，须显式 opt-in）、`bind: String`（默认 `"127.0.0.1:8971"`，
   仅 localhost、无 auth）、`trace_queries: bool`（默认 `false`，opt-in 后才捕获 **query 文本 + 命中工具名/分数**
   的发现追踪）、`trace_path: Option<String>`（默认 `None`，给出则把发现追踪另写一份 JSONL 供历史回放，否则仅内存
-  ring buffer）、`trace_buffer: usize`（默认 `500`，内存发现 ring buffer 容量，须 `> 0`）。
+  ring buffer）、`trace_buffer: usize`（默认 `500`，内存发现 ring buffer 容量，须 `> 0`）、`call_buffer: usize`
+  （默认 `2000`，逐条调用环容量，须 `> 0`）、`payload_max_bytes: usize`（默认 `16384`，单条调用 args/result 内容文本
+  各自的字节封顶，须 `> 0`）。
 - **省略整个 `[dashboard]` 段 → `DashboardConfig::default()`（关闭）**；只给 `enabled = true` 时其余字段取默认
   （`dashboard_defaults_and_partial_fill` 单测锁定）。无 flatten，故 `deny_unknown_fields` 生效（段内未知键如
   `bogus` → `Parse`）。
 - **隐私分层**：`trace_queries` 控的是**与审计/观测物理隔离的独立通道**——审计 JSONL（`[audit]`）与
   `observe::CallRecord` 始终**仅元数据**，绝不含 query 文本；只有 dashboard 的发现追踪（`DiscoveryRecord`）才带
-  query 与工具名，且默认关闭。
-- **`validate()`**：仅当 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`（否则 `Invalid`）；端口能否绑定
-  在 `serve` 启动期由**预绑定监听**fail-fast 暴露，而非配置解析期。
+  query 与工具名，且默认关闭。逐条调用内容（args/result）同理：只活在内存调用环、供详情页实时展示/过滤，绝不落盘
+  （见 [downstream L3 调用内容捕获](./downstream.md) 与 [dashboard L3](./dashboard.md)）。
+- **`validate()`**：仅当 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`、`call_buffer > 0`、
+  `payload_max_bytes > 0`（否则 `Invalid`）；端口能否绑定在 `serve` 启动期由**预绑定监听**fail-fast 暴露，而非配置
+  解析期。
 
 ## `env_passthrough` 的 allow-list 语义
 
@@ -105,6 +109,8 @@
   唯一（重复 → `Invalid`）。
   - **边界下划线**单独拒绝：`my_server` 这类内部下划线允许，但 `_svc`/`svc_` 会在拼接 `{server}__{tool}` 时与相邻的 `_`
     重新拼出 `__` 分隔符，破坏命名空间唯一性，故 `starts_with('_') || ends_with('_')` → `Invalid`。
+- 每个 upstream 的 `call_timeout_ms` 必须 `> 0`，否则 `Invalid`：`0` 会让连接握手与每次调用的
+  `tokio::time::timeout(Duration::from_millis(0), …)` **立即** `Elapsed`，使该上游不可用——与其他数值旋钮一致地拒绝。
 - `[server.http].path`（若有 `[server.http]` 段）：必须以 `/` 开头且长于 `/`（即 `len >= 2`），且**不得含通配/参数段**
   （不含 `{`、`}`、`*`），否则 `Invalid`。这在**启动期、axum `nest_service` 之前**校验，拒绝 `""`/`"/"`/无前导斜杠的挂载路径，
   以及 `/{id}`、`/{*rest}`、`/a*b` 这类含动态段的路径——否则 axum 会在构建路由时 panic（`/{*rest}`）或把 MCP 静默挂到

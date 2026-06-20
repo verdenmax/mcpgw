@@ -67,6 +67,12 @@ discovery ring 已按 `trace_buffer` 封顶条数，但此前存的是**逐字 c
 `trace_queries` 时）会放大内存；截断后 `DiscoveryRingSink` 的常驻内存按 `trace_buffer × 2048 字符`有界（不随
 client 输入大小膨胀）。短查询原样保留。
 
+**目标工具名限长（边界修复）**：`const MAX_TARGET_TOOL_CHARS = 256` + 私有 `clamp_tool_name(&str) -> String`
+（`name.chars().take(256).collect()`，按 `char` 截断、UTF-8 安全）。记录的 `target_tool` 是 **client 提供的名字**
+（`ToolNotFound` 路径上完全 attacker 可控）；派生完 `upstream`（用**完整名**解析，合法长名仍能命中目录）后再对
+`target_tool` 限长入记录。否则**计数有界**的调用环（`call_buffer` 条）每条体积无界、审计 JSONL 每行随 client 输入
+膨胀——与 `clamp_query` 对发现 query 同理（按 client 输入限长，而非仅限条数）。
+
 ## 调用内容截断辅助（私有）
 ```rust
 fn truncate_utf8(s: String, cap: usize) -> (String, bool)
@@ -154,7 +160,9 @@ async fn call_tool(
 4. `result_bytes = json_len(&response)`（`Err` 路径为 0，**仅 size**；同样经 `CountingWriter` + `to_writer`，无中间 `String`）；
    `upstream = target_tool` 经**工具目录解析**取真实 server：`get_tool_details(&self.state.snapshot(),
    t).map(|def| def.server.clone())`（**安全修复**：不再 `split_once("__")` 切 client 提供的名字，故未知
-   `call_tool` 名解析不到时 `upstream = None`，不会注入 attacker 可控前缀 — 见下「`upstream` 归因」）。
+   `call_tool` 名解析不到时 `upstream = None`，不会注入 attacker 可控前缀 — 见下「`upstream` 归因」）。派生完
+   `upstream` 后，`target_tool` 经私有 `clamp_tool_name`（按 `char` 截到 `MAX_TARGET_TOOL_CHARS = 256`）限长再入
+   记录，以界定调用环每条体积与审计每行大小（client 可控，尤其 `ToolNotFound` 路径 — 见下「`target_tool` 限长」）。
 5. 构造 `CallRecord { ts_unix_ms: now_unix_ms(), meta_tool, target_tool, upstream, latency_ms, outcome,
    error_kind, arg_bytes, result_bytes }`，`for sink in self.sinks.iter() { sink.record(&rec); }` 同步扇出，
    再返回 `response`。
@@ -187,6 +195,11 @@ async fn call_tool(
 **不**靠拆分 client 提供的 `call_tool` 名。否则一个未知/构造的 `call_tool` 名（`ToolNotFound`）会让
 `split_once("__")` 切出一个**无界、attacker 可控**的 `upstream` 前缀，污染指标并能灌爆 dashboard 的
 `per_upstream` 维度；修复后这类调用 `upstream = None`。
+
+**`target_tool` 限长（边界修复）**：记录的 `target_tool` 是 client 提供的名字，`ToolNotFound` 路径上完全
+attacker 可控。`upstream` 用**完整名**解析后，`target_tool` 经 `clamp_tool_name` 按 `char` 截到
+`MAX_TARGET_TOOL_CHARS = 256`（UTF-8 安全）再入 `CallRecord`，使**计数有界**的调用环每条体积、以及审计 JSONL 每行
+大小都按 client 输入封顶（与 `clamp_query` 对发现 query 同理）。合法长名仍能命中目录（解析在限长之前），仅记录侧被界定。
 
 **发现追踪（dashboard）**：与上述仅元数据扇出**相互独立**——`search_tools` 在 `self.discovery` 非空时另扇出
 一条 `observe::DiscoveryRecord`（含 query 文本 + 命中工具名/分数）。它走 `DiscoverySink`，**绝不**进 `sinks`

@@ -70,6 +70,11 @@
   其 `def.server = github`）；只有 `call_tool` 带能解析的 `target_tool` 时才有值，**解析不到则 `None`**。
   **不再** `split_once("__")` 切 client 提供的名字：否则一个未知/构造的 `call_tool` 名（`ToolNotFound`）会切出
   一个**无界、attacker 可控**的 `upstream` 前缀，既污染指标又能灌爆 dashboard `per_upstream` 维度。
+- **`target_tool` 限长（边界修复）**：记录的 `target_tool` 是 **client 提供的名字**（`ToolNotFound` 路径上
+  完全 attacker 可控）。派生完 `upstream`（用完整名解析，保证合法长名仍能命中目录）后，经私有
+  `clamp_tool_name(&t)` 按 **char** 截断到 `MAX_TARGET_TOOL_CHARS = 256`（UTF-8 安全、不切码点）再入记录。
+  否则**计数有界**的调用环（`call_buffer` 条）每条体积无界，且审计 JSONL 每行随 client 输入膨胀——与 `clamp_query`
+  对发现 query 的限长同理（按 client 输入限长，而非仅限条数）。
 - **`outcome` / `error_kind` 分类**：`call_tool` 转发失败经私有 `classify(&MetaError)` 映射，其余由分派臂
   内联给出（完整规范表以 L4 [downstream-lib](../L4-api/downstream-lib.md) 的「`error_kind` 取值表」为准）：
 
@@ -107,6 +112,29 @@
   切片、不捕获**。
 - **非阻塞**：dashboard 的 `DiscoveryRingSink` 写内存 ring + `try_send` 可选 JSONL（满则丢弃），故扇出不阻塞
   `search_tools` 热路径。详见 [dashboard L3](./dashboard.md)。
+
+## 调用内容捕获（M1，dashboard，与仅元数据/审计隔离）
+
+在仅元数据 `CallRecord` 扇出**之外**，`call_tool` 在 `self.content_sinks` **非空**时再扇出一条
+`observe::CallContent`——这是 dashboard 子系统 A 的逐条调用参数/结果文本通道，**与 `CallSink`（tracing/审计）
+物理隔离**：
+
+- **何时捕获**：元数据 `for sink in self.sinks` 循环**之后**、`if !self.content_sinks.is_empty()` 才付构造成本：
+  `cap_json(&args, payload_max_bytes)` 序列化并截断参数、`cap_response(&response, payload_max_bytes)` 截断结果
+  （`Err` 协议错误路径截断其错误字符串），组成 `CallContent { args, args_truncated, result, result_truncated }`，
+  `for s in self.content_sinks.iter() { s.record(&rec, &content) }` 扇出。内容块是**纯增量**、在元数据循环之后，
+  故对元数据通道**零影响**。
+- **UTF-8 安全截断**：私有 `truncate_utf8(s, cap)` 按字节封顶但向下退到 `is_char_boundary`，**绝不切码点**，返回
+  `(截断后串, 是否截断)`；`cap_json` = compact 序列化 + `truncate_utf8`（序列化失败 → `"<unserializable>"`），
+  `cap_response` 对 `Ok` 走 `cap_json`、对 `Err` 截断 `e.to_string()`。封顶值来自 `[dashboard].payload_max_bytes`
+  （默认 16384）。
+- **隔离与隐私**：`CallContent` **故意不实现 `Serialize`**——类型层面就进不了 JSONL 审计/tracing；它**绝不**进
+  `self.sinks`，只进独立的 `CallContentSink`。装配时 dashboard 的 `CallRingSink` 是**唯一**的 `CallContentSink`，
+  放进 `content_sinks`（绝不在元数据 `sink_vec` 里）。故内容**只活在内存调用环**，供 dashboard 详情页**实时**展示/
+  过滤，**绝不落盘、绝不进审计**。history 回放的调用项内容为 `None`。
+- **驻留内存上界**：内容常驻 ≈ `call_buffer × 2 × payload_max_bytes`（args 与 result 各自封顶）。
+- **非阻塞**：`CallRingSink` 写内存 ring + `try_send` 可选 JSONL，不阻塞热路径。内容过滤（`q`/`arg_key`+`arg_val`，
+  仅 live）与剥离细节见 [dashboard L3](./dashboard.md)。
 
 ## 为何 `get_info` 只 `enable_tools`、不 `enable_tool_list_changed`
 
