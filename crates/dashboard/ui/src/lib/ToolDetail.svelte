@@ -1,7 +1,8 @@
 <script>
-  import { onMount } from "svelte";
+  import { refresh } from "./refresh.svelte.js";
   import Icon from "./Icon.svelte";
   import RecentCalls from "./RecentCalls.svelte";
+  import CopyButton from "./CopyButton.svelte";
   let { name } = $props();
   let d = $state(null);
   let error = $state(null);
@@ -18,8 +19,7 @@
       if (reqName === name) d = next;
     } catch (e) { if (reqName === name) error = String(e); }
   }
-  $effect(() => { name; load(); });
-  onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
+  $effect(() => { name; refresh.tick; load(); });
   function schema(v) { try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); } }
 </script>
 
@@ -35,7 +35,7 @@
   {#if d.input_schema === null || d.input_schema === undefined}
     <p class="muted">(no schema)</p>
   {:else}
-    <pre class="schema">{schema(d.input_schema)}</pre>
+    <div class="codeblock"><CopyButton text={schema(d.input_schema)} /><pre class="schema">{schema(d.input_schema)}</pre></div>
   {/if}
 
   <RecentCalls param="tool" {name} />

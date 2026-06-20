@@ -36,5 +36,8 @@
     <path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.5 5h13L22 12v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5z" />
   {:else if name === "gauge"}
     <path d="M12 13l4-4" /><circle cx="12" cy="13" r="9" /><path d="M3 13a9 9 0 0 1 18 0" />
+  {:else if name === "refresh"}
+    <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+    <path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10" /><path d="M1 14l4.6 4.4A9 9 0 0 0 20.5 15" />
   {/if}
 </svg>

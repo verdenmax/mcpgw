@@ -1,7 +1,7 @@
 <script>
-  import { onMount } from "svelte";
   import { getJSON } from "./api.js";
-  import { go, when } from "./format.js";
+  import { refresh } from "./refresh.svelte.js";
+  import { go, when, ago } from "./format.js";
   import Icon from "./Icon.svelte";
 
   const LIMIT = 50;
@@ -47,14 +47,11 @@
   function setSource(s) { source = s; offset = 0; }
   function setOutcome(o) { outcome = outcome === o ? "" : o; offset = 0; }
   function pct(a, b) { return b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0; }
+  function clearFilters() { meta = ""; outcome = ""; qtext = ""; argKey = ""; argVal = ""; offset = 0; }
 
-  // Refetch the list whenever any filter changes (reading `query` tracks all of them).
-  $effect(() => { void query; loadCalls(); });
-  onMount(() => {
-    loadMetrics();
-    const t = setInterval(() => { loadMetrics(); loadCalls(); }, 3000);
-    return () => clearInterval(t);
-  });
+  // Refetch the list on any filter change (reading `query` tracks all of them) and each refresh tick.
+  $effect(() => { void query; refresh.tick; loadCalls(); });
+  $effect(() => { refresh.tick; loadMetrics(); });
 </script>
 
 <h2>Calls</h2>
@@ -86,6 +83,7 @@
     <button class="chip" class:active={outcome === o} onclick={() => setOutcome(o)}>{o}</button>
   {/each}
   {#if meta}<button class="chip active" onclick={() => pickMeta(meta)}>meta: {meta} ✕</button>{/if}
+  {#if anyFilter}<button class="chip" onclick={clearFilters}>clear filters ✕</button>{/if}
 </div>
 
 <div class="toolbar">
@@ -116,7 +114,7 @@
           {@const href = `#/calls/${c.id}`}
           <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <tr class="row-link" onclick={() => go(href)}>
-            <td class="num"><a class="rl" href={href}>{when(c.ts_unix_ms)}</a></td>
+            <td class="num"><a class="rl" href={href} title={when(c.ts_unix_ms)}>{ago(c.ts_unix_ms)}</a></td>
             <td>{c.meta_tool}</td>
             <td class="mono">{c.target_tool ?? "—"}</td>
             <td class="mono">{c.upstream ?? "—"}</td>

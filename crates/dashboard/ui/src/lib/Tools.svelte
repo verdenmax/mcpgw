@@ -1,6 +1,6 @@
 <script>
-  import { onMount } from "svelte";
   import { getJSON } from "./api.js";
+  import { refresh } from "./refresh.svelte.js";
   import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   let q = $state("");
@@ -15,10 +15,8 @@
       tools = t; error = null;
     } catch (e) { if (reqQ === q) error = String(e); }
   }
-  // Refetch on every `q` change; no debounce needed — /api/tools is a cheap in-memory filter and
-  // the 3s poll re-fetches with the current q, so any out-of-order keystroke result self-corrects.
-  $effect(() => { void q; load(); });
-  onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
+  // Refetch on every `q` change and on each global refresh tick.
+  $effect(() => { void q; refresh.tick; load(); });
 </script>
 
 <h2>Tools</h2>

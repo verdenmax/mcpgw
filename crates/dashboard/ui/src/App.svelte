@@ -1,6 +1,8 @@
 <script>
   import { onMount } from "svelte";
   import { route, startRouter } from "./lib/router.svelte.js";
+  import { refresh, startRefresh, refreshNow, togglePause } from "./lib/refresh.svelte.js";
+  import { ago } from "./lib/format.js";
   import Nav from "./lib/Nav.svelte";
   import Icon from "./lib/Icon.svelte";
   import Overview from "./lib/Overview.svelte";
@@ -12,7 +14,15 @@
   import ToolDetail from "./lib/ToolDetail.svelte";
   import Traces from "./lib/Traces.svelte";
   import TraceDetail from "./lib/TraceDetail.svelte";
-  onMount(startRouter);
+
+  let now = $state(Date.now()); // 1s clock so the "updated Ns ago" label ticks
+  const updatedAgo = $derived.by(() => { void now; return ago(refresh.at); });
+  onMount(() => {
+    const stopRouter = startRouter();
+    const stopRefresh = startRefresh();
+    const clock = setInterval(() => (now = Date.now()), 1000);
+    return () => { stopRouter?.(); stopRefresh(); clearInterval(clock); };
+  });
 </script>
 
 <div class="layout">
@@ -22,8 +32,12 @@
     <span class="name">mcpgw <span>· dashboard</span></span>
   </div>
   <header class="topbar">
-    <span class="live"><span class="dot"></span> live</span>
-    <span class="refresh-hint">auto-refresh 3s</span>
+    <span class="updated">updated {updatedAgo}</span>
+    <button class="iconbtn" onclick={refreshNow} title="refresh now" aria-label="refresh now"><Icon name="refresh" size={15} /></button>
+    <button class="live" class:paused={refresh.paused} onclick={togglePause}
+            aria-pressed={refresh.paused} title={refresh.paused ? "resume auto-refresh" : "pause auto-refresh"}>
+      <span class="dot"></span> {refresh.paused ? "paused" : "live"}
+    </button>
   </header>
   <Nav />
   <main class="content">

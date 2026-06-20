@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { refresh } from "./refresh.svelte.js";
   import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   import RecentCalls from "./RecentCalls.svelte";
@@ -19,8 +19,7 @@
       if (reqName === name) d = next;
     } catch (e) { if (reqName === name) error = String(e); }
   }
-  $effect(() => { name; load(); });          // reload when the upstream name changes
-  onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
+  $effect(() => { name; refresh.tick; load(); });          // reload on name change + each refresh tick
 </script>
 
 <a class="back" href="#/upstreams"><Icon name="back" size={14} /> Upstreams</a>

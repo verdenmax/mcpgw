@@ -1,17 +1,20 @@
 <script>
-  import { onMount } from "svelte";
   import { getJSON } from "./api.js";
+  import { refresh } from "./refresh.svelte.js";
   import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   let source = $state("live");
   let resp = $state(null);
   let error = $state(null);
   async function load() {
-    try { resp = await getJSON(`/api/traces?limit=50&source=${source}`); error = null; }
-    catch (e) { error = String(e); }
+    const reqSrc = source; // discard a superseded response if the source toggled mid-flight
+    try {
+      const r = await getJSON(`/api/traces?limit=50&source=${source}`);
+      if (reqSrc !== source) return;
+      resp = r; error = null;
+    } catch (e) { if (reqSrc === source) error = String(e); }
   }
-  $effect(() => { void source; load(); });
-  onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
+  $effect(() => { void source; refresh.tick; load(); });
 </script>
 
 <h2>Query traces</h2>

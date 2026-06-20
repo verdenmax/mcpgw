@@ -1,12 +1,12 @@
 <script>
-  import { onMount } from "svelte";
   import { getJSON } from "./api.js";
-  import { go, when } from "./format.js";
+  import { refresh } from "./refresh.svelte.js";
+  import { go, when, ago } from "./format.js";
   import Icon from "./Icon.svelte";
 
   // Shared "Recent calls" panel for the Upstream/Tool detail pages. Pinned to source=live and to
-  // one upstream/tool; owns its own outcome + content filters and its own 3s poll (so the parent's
-  // detail load() no longer needs to fetch calls — avoiding a duplicate request).
+  // one upstream/tool; owns its outcome + content filters and re-fetches on each global refresh
+  // tick (so the parent detail load() no longer needs to fetch calls — avoiding a duplicate request).
   let { param, name } = $props(); // param: "upstream" | "tool"
   let calls = $state([]);
   let cOutcome = $state(""); // recent-calls outcome filter
@@ -28,8 +28,7 @@
       if (req === token()) calls = c.items ?? [];
     } catch (_) { /* recent-calls is secondary; the detail page owns the error UI */ }
   }
-  $effect(() => { void name; void cOutcome; void cq; loadCalls(); });
-  onMount(() => { const t = setInterval(loadCalls, 3000); return () => clearInterval(t); });
+  $effect(() => { void name; void cOutcome; void cq; refresh.tick; loadCalls(); });
 </script>
 
 <h3>Recent calls</h3>
@@ -50,7 +49,7 @@
         {@const href = `#/calls/${c.id}`}
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <tr class="row-link" onclick={() => go(href)}>
-          <td class="num"><a class="rl" href={href}>{when(c.ts_unix_ms)}</a></td>
+          <td class="num"><a class="rl" href={href} title={when(c.ts_unix_ms)}>{ago(c.ts_unix_ms)}</a></td>
           <td>{c.meta_tool}</td>
           {#if param === "upstream"}<td class="mono">{c.target_tool ?? "—"}</td>{/if}
           <td><span class="badge {c.outcome}">{c.outcome}</span></td>

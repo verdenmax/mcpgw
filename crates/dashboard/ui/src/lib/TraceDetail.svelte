@@ -1,6 +1,7 @@
 <script>
   import { go, when } from "./format.js";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
   let { id } = $props();
   let t = $state(null);
   let error = $state(null);
@@ -30,7 +31,7 @@
 {:else if t}
   <div class="table-wrap"><table class="kv">
     <tbody>
-      <tr><th>id</th><td>{t.id}</td></tr>
+      <tr><th>id</th><td>{t.id} <CopyButton text={t.id} /></td></tr>
       <tr><th>time</th><td>{when(t.ts_unix_ms)}</td></tr>
       <tr><th>query</th><td>{t.query}</td></tr>
       <tr><th>top_k</th><td>{t.top_k}</td></tr>
