@@ -1,6 +1,8 @@
 <script>
   import { onMount } from "svelte";
   import { getJSON } from "./api.js";
+  import { go } from "./format.js";
+  import Icon from "./Icon.svelte";
   let source = $state("live");
   let resp = $state(null);
   let error = $state(null);
@@ -14,21 +16,28 @@
 
 <h2>Query traces</h2>
 <div class="chips">
-  <span class="chip" class:active={source === "live"} onclick={() => (source = "live")}>live</span>
-  <span class="chip" class:active={source === "history"} onclick={() => (source = "history")}>history</span>
+  <button class="chip" class:active={source === "live"} onclick={() => (source = "live")}>live</button>
+  <button class="chip" class:active={source === "history"} onclick={() => (source = "history")}>history</button>
 </div>
 {#if error}<p class="error">{error}</p>{/if}
 {#if resp}
   {#if resp.history_unavailable}
-    <p class="muted">history unavailable (enable [dashboard].trace_path)</p>
+    <div class="empty"><span class="ico"><Icon name="traces" size={28} /></span>
+      <div>History unavailable</div>
+      <div class="hint">enable <code>[dashboard].trace_path</code> to persist traces</div></div>
+  {:else if resp.traces.length === 0}
+    <div class="empty"><span class="ico"><Icon name="traces" size={28} /></span>
+      <div>No {source} traces yet</div>
+      <div class="hint">run a <code>search_tools</code> query to capture one</div></div>
   {:else}
     {#each resp.traces as t}
-      <div class="card trace-card row-link" onclick={() => (location.hash = `#/traces/${t.id}`)}>
-        <div class="label">{t.query}</div>
-        <div>{#each t.results as h}<span class="chip">{h.name} ({h.score.toFixed(2)})</span> {/each}</div>
-      </div>
+      <button class="trace-card" onclick={() => go(`#/traces/${t.id}`)}>
+        <div class="q">{t.query}</div>
+        <div>{#each t.results as h}<span class="tag">{h.name} <span class="score">{h.score.toFixed(2)}</span></span>{/each}
+          {#if t.results.length === 0}<span class="muted">no hits</span>{/if}</div>
+      </button>
     {/each}
   {/if}
 {:else if !error}
-  <p class="muted">loading…</p>
+  <div class="skeleton">{#each Array(4) as _}<div class="sk card"></div>{/each}</div>
 {/if}

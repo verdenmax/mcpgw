@@ -1,15 +1,17 @@
 <script>
   import { onMount } from "svelte";
   import { getJSON } from "./api.js";
+  import { go, rowKey, when } from "./format.js";
+  import Icon from "./Icon.svelte";
 
   const LIMIT = 50;
   let metrics = $state([]);     // per_meta_tool summary
   let source = $state("live");  // live | history
   let meta = $state("");        // "" = all meta-tools
   let outcome = $state("");     // "" = all outcomes
-  let qtext = $state("");   // free-text content search
-  let argKey = $state("");  // structured arg filter key
-  let argVal = $state("");  // structured arg filter value
+  let qtext = $state("");       // free-text content search
+  let argKey = $state("");      // structured arg filter key
+  let argVal = $state("");      // structured arg filter value
   let offset = $state(0);
   let resp = $state(null);      // CallsResponse
   let error = $state(null);
@@ -38,7 +40,7 @@
   function pickMeta(m) { meta = meta === m ? "" : m; offset = 0; }
   function setSource(s) { source = s; offset = 0; }
   function setOutcome(o) { outcome = outcome === o ? "" : o; offset = 0; }
-  function when(ms) { return new Date(ms).toLocaleString(); }
+  function pct(a, b) { return b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0; }
 
   // Refetch the list whenever any filter changes (reading `query` tracks all of them).
   $effect(() => { void query; loadCalls(); });
@@ -53,25 +55,29 @@
 
 <div class="cards">
   {#each metrics as m}
-    <div class="card row-link" class:active={meta === m.meta_tool} onclick={() => pickMeta(m.meta_tool)}>
-      <div class="label">{m.meta_tool}</div>
-      <div class="v">{m.calls}</div>
-      <div class="muted">err {m.errors} · p50 {m.p50_ms}ms · p95 {m.p95_ms}ms</div>
-    </div>
+    <button class="card" class:active={meta === m.meta_tool} onclick={() => pickMeta(m.meta_tool)}>
+      <div class="ctop"><span class="label">{m.meta_tool}</span><span class="ico-badge"><Icon name="bolt" /></span></div>
+      <div class="v num">{m.calls}</div>
+      <div class="sub">{m.errors} error{m.errors === 1 ? "" : "s"}</div>
+      <div class="bars">
+        <div class="bar"><span>p50</span><span class="track"><span class="fill" style="width:{pct(m.p50_ms, m.p95_ms)}%"></span></span><span class="num">{m.p50_ms}ms</span></div>
+        <div class="bar"><span>p95</span><span class="track"><span class="fill warn" style="width:{m.p95_ms > 0 ? 100 : 0}%"></span></span><span class="num">{m.p95_ms}ms</span></div>
+      </div>
+    </button>
   {/each}
 </div>
 
 <div class="chips">
-  <span class="chip" class:active={source === "live"} onclick={() => setSource("live")}>live</span>
-  <span class="chip" class:active={source === "history"} onclick={() => setSource("history")}>history</span>
-  <span class="muted">·</span>
+  <button class="chip" class:active={source === "live"} onclick={() => setSource("live")}>live</button>
+  <button class="chip" class:active={source === "history"} onclick={() => setSource("history")}>history</button>
+  <span class="chip-sep">·</span>
   {#each ["ok", "error", "timeout"] as o}
-    <span class="chip" class:active={outcome === o} onclick={() => setOutcome(o)}>{o}</span>
+    <button class="chip" class:active={outcome === o} onclick={() => setOutcome(o)}>{o}</button>
   {/each}
-  {#if meta}<span class="chip active" onclick={() => pickMeta(meta)}>meta: {meta} ✕</span>{/if}
+  {#if meta}<button class="chip active" onclick={() => pickMeta(meta)}>meta: {meta} ✕</button>{/if}
 </div>
 
-<div class="chips">
+<div class="toolbar">
   <input class="search" placeholder="search content (args/result)…" bind:value={qtext}
          oninput={() => (offset = 0)} disabled={source === "history"} />
   <input class="search narrow" placeholder="arg key" bind:value={argKey}
@@ -84,32 +90,37 @@
 {#if error}<p class="error">{error}</p>{/if}
 {#if resp}
   {#if resp.source === "history" && resp.history_unavailable}
-    <p class="muted">history unavailable (enable [audit])</p>
+    <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
+      <div>History unavailable</div><div class="hint">enable <code>[audit]</code> to replay past calls</div></div>
+  {:else if resp.items.length === 0}
+    <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
+      <div>No matching calls</div><div class="hint">adjust the filters above</div></div>
   {:else}
-    <p class="muted">{resp.total} total</p>
-    <table>
-      <thead><tr><th>time</th><th>meta</th><th>target</th><th>upstream</th><th>outcome</th><th>ms</th></tr></thead>
+    <p class="meta-line"><span class="count-pill">{resp.total}</span> total</p>
+    <div class="table-wrap"><div class="table-scroll"><table>
+      <thead><tr><th>time</th><th>meta</th><th>target</th><th>upstream</th><th>outcome</th><th class="num">ms</th></tr></thead>
       <tbody>
         {#each resp.items as c}
-          <tr class="row-link" onclick={() => (location.hash = `#/calls/${c.id}`)}>
-            <td>{when(c.ts_unix_ms)}</td>
+          {@const href = `#/calls/${c.id}`}
+          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
+            <td class="num">{when(c.ts_unix_ms)}</td>
             <td>{c.meta_tool}</td>
-            <td>{c.target_tool ?? "—"}</td>
-            <td>{c.upstream ?? "—"}</td>
-            <td>{c.outcome}</td>
-            <td>{c.latency_ms}</td>
+            <td class="mono">{c.target_tool ?? "—"}</td>
+            <td class="mono">{c.upstream ?? "—"}</td>
+            <td><span class="badge {c.outcome}">{c.outcome}</span></td>
+            <td class="num">{c.latency_ms}</td>
           </tr>
         {/each}
       </tbody>
-    </table>
+    </table></div></div>
     {#if resp.total > 0}
-      <div class="chips">
-        <span class="chip" class:disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - LIMIT))}>‹ prev</span>
-        <span class="muted">{Math.min(offset + 1, resp.total)}–{Math.min(offset + LIMIT, resp.total)}</span>
-        <span class="chip" class:disabled={offset + LIMIT >= resp.total} onclick={() => { if (offset + LIMIT < resp.total) offset += LIMIT; }}>next ›</span>
+      <div class="chips" style="margin-top:var(--s3)">
+        <button class="chip" disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - LIMIT))}>‹ prev</button>
+        <span class="muted num">{Math.min(offset + 1, resp.total)}–{Math.min(offset + LIMIT, resp.total)} of {resp.total}</span>
+        <button class="chip" disabled={offset + LIMIT >= resp.total} onclick={() => { if (offset + LIMIT < resp.total) offset += LIMIT; }}>next ›</button>
       </div>
     {/if}
   {/if}
 {:else if !error}
-  <p class="muted">loading…</p>
+  <div class="skeleton">{#each Array(6) as _}<div class="sk row"></div>{/each}</div>
 {/if}

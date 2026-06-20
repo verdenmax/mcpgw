@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { route, startRouter } from "./lib/router.svelte.js";
   import Nav from "./lib/Nav.svelte";
+  import Icon from "./lib/Icon.svelte";
   import Overview from "./lib/Overview.svelte";
   import Calls from "./lib/Calls.svelte";
   import CallDetail from "./lib/CallDetail.svelte";
@@ -15,6 +16,14 @@
 </script>
 
 <div class="layout">
+  <div class="brandbar">
+    <span class="logo"><Icon name="layers" size={17} /></span>
+    <span class="name">mcpgw <span>· dashboard</span></span>
+  </div>
+  <header class="topbar">
+    <span class="live"><span class="dot"></span> live</span>
+    <span class="refresh-hint">auto-refresh 3s</span>
+  </header>
   <Nav />
   <main class="content">
     {#if route.view === "overview"}
