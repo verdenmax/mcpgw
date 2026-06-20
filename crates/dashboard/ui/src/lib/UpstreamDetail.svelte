@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { go, rowKey } from "./format.js";
+  import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   import RecentCalls from "./RecentCalls.svelte";
   let { name } = $props();
@@ -34,21 +34,22 @@
     <div class="card"><div class="ctop"><span class="label">status</span></div><div class="v sm"><span class="badge {d.status}">{d.status}</span></div></div>
     <div class="card"><div class="ctop"><span class="label">tools</span><span class="ico-badge"><Icon name="tools" /></span></div><div class="v num">{d.tools_count}</div></div>
     <div class="card"><div class="ctop"><span class="label">calls</span><span class="ico-badge"><Icon name="calls" /></span></div><div class="v num">{d.calls}</div></div>
-    <div class="card"><div class="ctop"><span class="label">errors</span></div><div class="v num">{d.errors}</div></div>
+    <div class="card"><div class="ctop"><span class="label">errors</span></div><div class="v num" class:bad={d.errors > 0}>{d.errors}</div></div>
   </div>
   {#if d.reason}<p class="meta-line">reason: {d.reason}</p>{/if}
 
   <h3>Tools</h3>
   {#if d.tools.length === 0}
-    <div class="empty"><div>No tools exposed</div></div>
+    <div class="empty"><span class="ico"><Icon name="tools" size={24} /></span><div>No tools exposed</div></div>
   {:else}
     <div class="table-wrap"><div class="table-scroll"><table>
       <thead><tr><th>name</th><th>description</th></tr></thead>
       <tbody>
         {#each d.tools as t}
           {@const href = `#/tools/${encodeURIComponent(t.name)}`}
-          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-            <td class="mono">{t.name}</td><td>{t.description}</td>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <tr class="row-link" onclick={() => go(href)}>
+            <td class="mono"><a class="rl" href={href}>{t.name}</a></td><td>{t.description}</td>
           </tr>
         {/each}
       </tbody>

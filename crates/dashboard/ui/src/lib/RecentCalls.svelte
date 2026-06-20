@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { getJSON } from "./api.js";
-  import { go, rowKey, when } from "./format.js";
+  import { go, when } from "./format.js";
   import Icon from "./Icon.svelte";
 
   // Shared "Recent calls" panel for the Upstream/Tool detail pages. Pinned to source=live and to
@@ -40,15 +40,17 @@
   <input class="search narrow" placeholder="search content…" bind:value={cq} />
 </div>
 {#if calls.length === 0}
-  <div class="empty"><span class="ico"><Icon name="calls" size={24} /></span><div>No recent calls</div></div>
+  <div class="empty"><span class="ico"><Icon name="calls" size={24} /></span>
+    {#if cOutcome || cq}<div>No calls match these filters</div>{:else}<div>No recent calls</div>{/if}</div>
 {:else}
   <div class="table-wrap"><div class="table-scroll"><table>
     <thead><tr><th>time</th><th>meta</th>{#if param === "upstream"}<th>target</th>{/if}<th>outcome</th><th class="num">ms</th></tr></thead>
     <tbody>
       {#each calls as c}
         {@const href = `#/calls/${c.id}`}
-        <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-          <td class="num">{when(c.ts_unix_ms)}</td>
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <tr class="row-link" onclick={() => go(href)}>
+          <td class="num"><a class="rl" href={href}>{when(c.ts_unix_ms)}</a></td>
           <td>{c.meta_tool}</td>
           {#if param === "upstream"}<td class="mono">{c.target_tool ?? "—"}</td>{/if}
           <td><span class="badge {c.outcome}">{c.outcome}</span></td>

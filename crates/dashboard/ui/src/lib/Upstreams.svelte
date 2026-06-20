@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { getJSON } from "./api.js";
-  import { go, rowKey } from "./format.js";
+  import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   let ups = $state(null);
   let error = $state(null);
@@ -26,13 +26,14 @@
       <tbody>
         {#each ups as u}
           {@const href = `#/upstreams/${encodeURIComponent(u.name)}`}
-          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-            <td class="mono">{u.name}</td>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <tr class="row-link" onclick={() => go(href)}>
+            <td class="mono"><a class="rl" href={href}>{u.name}</a></td>
             <td>{u.transport}</td>
             <td><span class="badge {u.status}">{u.status}</span>{#if u.reason} <span class="muted">{u.reason}</span>{/if}</td>
             <td class="num">{u.tools}</td>
             <td class="num">{u.calls}</td>
-            <td class="num">{u.errors}</td>
+            <td class="num" class:bad={u.errors > 0}>{u.errors}</td>
           </tr>
         {/each}
       </tbody>

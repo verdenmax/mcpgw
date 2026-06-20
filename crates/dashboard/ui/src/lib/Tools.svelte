@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { getJSON } from "./api.js";
-  import { go, rowKey } from "./format.js";
+  import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   let q = $state("");
   let tools = $state(null);
@@ -38,8 +38,9 @@
       <tbody>
         {#each tools as t}
           {@const href = `#/tools/${encodeURIComponent(t.name)}`}
-          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-            <td class="mono">{t.name}</td><td>{t.description}</td>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <tr class="row-link" onclick={() => go(href)}>
+            <td class="mono"><a class="rl" href={href}>{t.name}</a></td><td>{t.description}</td>
           </tr>
         {/each}
       </tbody>

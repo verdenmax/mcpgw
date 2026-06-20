@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { getJSON } from "./api.js";
-  import { go, rowKey, when } from "./format.js";
+  import { go, when } from "./format.js";
   import Icon from "./Icon.svelte";
 
   const LIMIT = 50;
@@ -27,6 +27,8 @@
     q.set("offset", String(offset));
     return q.toString();
   });
+
+  const anyFilter = $derived(!!(meta || outcome || qtext || (argKey && argVal)));
 
   async function loadMetrics() {
     // Metric cards are a secondary summary; on a /api/metrics blip we keep the last cards rather
@@ -62,11 +64,16 @@
     <button class="card" class:active={meta === m.meta_tool} onclick={() => pickMeta(m.meta_tool)}>
       <div class="ctop"><span class="label">{m.meta_tool}</span><span class="ico-badge"><Icon name="bolt" /></span></div>
       <div class="v num">{m.calls}</div>
-      <div class="sub">{m.errors} error{m.errors === 1 ? "" : "s"}</div>
-      <div class="bars">
-        <div class="bar"><span>p50</span><span class="track"><span class="fill" style="width:{pct(m.p50_ms, m.p95_ms)}%"></span></span><span class="num">{m.p50_ms}ms</span></div>
-        <div class="bar"><span>p95</span><span class="track"><span class="fill warn" style="width:{m.p95_ms > 0 ? 100 : 0}%"></span></span><span class="num">{m.p95_ms}ms</span></div>
-      </div>
+      <div class="sub" class:bad={m.errors > 0}>{m.errors} error{m.errors === 1 ? "" : "s"}</div>
+      {#if m.max_ms > 0}
+        <div class="bars">
+          <div class="bar"><span>p50</span><span class="track"><span class="fill" style="width:{pct(m.p50_ms, m.max_ms)}%"></span></span><span class="num">{m.p50_ms}ms</span></div>
+          <div class="bar"><span>p95</span><span class="track"><span class="fill warn" style="width:{pct(m.p95_ms, m.max_ms)}%"></span></span><span class="num">{m.p95_ms}ms</span></div>
+        </div>
+        <div class="sub">max {m.max_ms}ms</div>
+      {:else}
+        <div class="sub subtle">no latency yet</div>
+      {/if}
     </button>
   {/each}
 </div>
@@ -98,7 +105,8 @@
       <div>History unavailable</div><div class="hint">enable <code>[audit]</code> to replay past calls</div></div>
   {:else if resp.items.length === 0}
     <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
-      <div>No matching calls</div><div class="hint">adjust the filters above</div></div>
+      {#if anyFilter}<div>No calls match these filters</div><div class="hint">adjust or clear the filters above</div>
+      {:else}<div>No calls yet</div><div class="hint">invoke a meta-tool to see it here</div>{/if}</div>
   {:else}
     <p class="meta-line"><span class="count-pill">{resp.total}</span> total</p>
     <div class="table-wrap"><div class="table-scroll"><table>
@@ -106,8 +114,9 @@
       <tbody>
         {#each resp.items as c}
           {@const href = `#/calls/${c.id}`}
-          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-            <td class="num">{when(c.ts_unix_ms)}</td>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <tr class="row-link" onclick={() => go(href)}>
+            <td class="num"><a class="rl" href={href}>{when(c.ts_unix_ms)}</a></td>
             <td>{c.meta_tool}</td>
             <td class="mono">{c.target_tool ?? "—"}</td>
             <td class="mono">{c.upstream ?? "—"}</td>

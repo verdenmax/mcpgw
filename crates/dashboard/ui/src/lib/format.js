@@ -18,13 +18,3 @@ export function pretty(s) {
 export function go(hash) {
   location.hash = hash;
 }
-
-/** Keyboard activation handler for role="button" rows: Enter/Space navigates to `hash`. */
-export function rowKey(hash) {
-  return (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      location.hash = hash;
-    }
-  };
-}

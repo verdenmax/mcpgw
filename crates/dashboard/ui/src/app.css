@@ -213,6 +213,12 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numer
 .row-link { cursor: pointer; transition: background .12s; }
 .row-link:hover { background: var(--hover); }
 .row-link:focus-within { background: var(--hover); }
+/* in-cell primary link: looks like row text, is a real <a> (keyboard, open-in-new-tab, copy link) */
+.rl { color: var(--fg); font: inherit; text-decoration: none; }
+.rl:hover, .row-link:hover .rl { color: var(--link-hover); }
+/* emphasize nonzero error counts */
+.bad, td.num.bad { color: var(--danger); }
+.sub.bad { color: var(--danger); }
 /* key/value detail table */
 table.kv th { position: static; background: transparent; text-transform: none; letter-spacing: 0;
               color: var(--muted); font-weight: 500; width: 150px; white-space: nowrap; }

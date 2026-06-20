@@ -1,5 +1,5 @@
 <script>
-  import { go, rowKey, when } from "./format.js";
+  import { go, when } from "./format.js";
   import Icon from "./Icon.svelte";
   let { id } = $props();
   let t = $state(null);
@@ -39,15 +39,16 @@
   </table></div>
   <h3>Hits ({t.results.length})</h3>
   {#if t.results.length === 0}
-    <div class="empty"><div>No hits for this query</div></div>
+    <div class="empty"><span class="ico"><Icon name="traces" size={24} /></span><div>No hits for this query</div></div>
   {:else}
     <div class="table-wrap"><div class="table-scroll"><table>
       <thead><tr><th>tool</th><th class="num">score</th></tr></thead>
       <tbody>
         {#each t.results as h}
           {@const href = `#/tools/${encodeURIComponent(h.name)}`}
-          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-            <td class="mono">{h.name}</td><td class="num">{h.score.toFixed(3)}</td>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <tr class="row-link" onclick={() => go(href)}>
+            <td class="mono"><a class="rl" href={href}>{h.name}</a></td><td class="num">{h.score.toFixed(3)}</td>
           </tr>
         {/each}
       </tbody>
