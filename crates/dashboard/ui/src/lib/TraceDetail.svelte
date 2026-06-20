@@ -1,28 +1,34 @@
 <script>
+  import { go, rowKey, when } from "./format.js";
+  import Icon from "./Icon.svelte";
   let { id } = $props();
   let t = $state(null);
   let error = $state(null);
   let notFound = $state(false);
   async function load() {
+    const reqId = id; // capture: ignore this response if `id` changes before it resolves
     try {
       error = null; notFound = false;
       const r = await fetch(`/api/traces/${encodeURIComponent(id)}`);
+      if (reqId !== id) return; // a newer id superseded this request
       if (r.status === 404) { notFound = true; t = null; return; }
       if (!r.ok) throw new Error(`/api/traces/${id} -> ${r.status}`);
-      t = await r.json();
-    } catch (e) { error = String(e); }
+      const next = await r.json();
+      if (reqId !== id) return;
+      t = next;
+    } catch (e) { if (reqId === id) error = String(e); }
   }
   $effect(() => { id; load(); });
-  function when(ms) { return new Date(ms).toLocaleString(); }
 </script>
 
-<p><a href="#/traces">‹ back to Traces</a></p>
+<a class="back" href="#/traces"><Icon name="back" size={14} /> Traces</a>
 <h2>Trace detail</h2>
 {#if error}<p class="error">{error}</p>{/if}
 {#if notFound}
-  <p class="muted">trace not found (it may have aged out of the live ring)</p>
+  <div class="empty"><span class="ico"><Icon name="traces" size={28} /></span>
+    <div>Trace not found</div><div class="hint">it may have aged out of the live ring</div></div>
 {:else if t}
-  <table>
+  <div class="table-wrap"><table class="kv">
     <tbody>
       <tr><th>id</th><td>{t.id}</td></tr>
       <tr><th>time</th><td>{when(t.ts_unix_ms)}</td></tr>
@@ -30,18 +36,23 @@
       <tr><th>top_k</th><td>{t.top_k}</td></tr>
       <tr><th>latency_ms</th><td>{t.latency_ms}</td></tr>
     </tbody>
-  </table>
+  </table></div>
   <h3>Hits ({t.results.length})</h3>
-  <table>
-    <thead><tr><th>tool</th><th>score</th></tr></thead>
-    <tbody>
-      {#each t.results as h}
-        <tr class="row-link" onclick={() => (location.hash = `#/tools/${encodeURIComponent(h.name)}`)}>
-          <td>{h.name}</td><td>{h.score.toFixed(3)}</td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
+  {#if t.results.length === 0}
+    <div class="empty"><div>No hits for this query</div></div>
+  {:else}
+    <div class="table-wrap"><div class="table-scroll"><table>
+      <thead><tr><th>tool</th><th class="num">score</th></tr></thead>
+      <tbody>
+        {#each t.results as h}
+          {@const href = `#/tools/${encodeURIComponent(h.name)}`}
+          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
+            <td class="mono">{h.name}</td><td class="num">{h.score.toFixed(3)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table></div></div>
+  {/if}
 {:else}
-  <p class="muted">loading…</p>
+  <div class="skeleton">{#each Array(3) as _}<div class="sk row"></div>{/each}</div>
 {/if}

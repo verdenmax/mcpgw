@@ -1,88 +1,61 @@
 <script>
   import { onMount } from "svelte";
-  import { getJSON } from "./api.js";
+  import { go, rowKey } from "./format.js";
+  import Icon from "./Icon.svelte";
+  import RecentCalls from "./RecentCalls.svelte";
   let { name } = $props();
   let d = $state(null);
-  let calls = $state([]);
-  let cOutcome = $state("");  // recent-calls outcome filter
-  let cq = $state("");        // recent-calls content search
   let error = $state(null);
   let notFound = $state(false);
-  async function loadCalls() {
-    try {
-      const p = new URLSearchParams();
-      p.set("source", "live");
-      p.set("upstream", name);
-      if (cOutcome) p.set("outcome", cOutcome);
-      if (cq) p.set("q", cq);
-      p.set("limit", "20");
-      const c = await getJSON(`/api/calls?${p}`);
-      calls = c.items ?? [];
-    } catch (_) { /* recent-calls is secondary; detail error UI owns errors */ }
-  }
   async function load() {
+    const reqName = name; // ignore a stale response if `name` changed before it resolved
     try {
       error = null; notFound = false;
       const r = await fetch(`/api/upstreams/${encodeURIComponent(name)}`);
+      if (reqName !== name) return;
       if (r.status === 404) { notFound = true; d = null; return; }
       if (!r.ok) throw new Error(`/api/upstreams/${name} -> ${r.status}`);
-      d = await r.json();
-      await loadCalls();
-    } catch (e) { error = String(e); }
+      const next = await r.json();
+      if (reqName === name) d = next;
+    } catch (e) { if (reqName === name) error = String(e); }
   }
   $effect(() => { name; load(); });          // reload when the upstream name changes
-  $effect(() => { void cOutcome; void cq; loadCalls(); });
-  onMount(() => {                              // poll mutable data (calls/errors/recent calls)
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  });
-  function when(ms) { return new Date(ms).toLocaleString(); }
+  onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
 </script>
 
-<p><a href="#/upstreams">‹ back to Upstreams</a></p>
+<a class="back" href="#/upstreams"><Icon name="back" size={14} /> Upstreams</a>
 {#if error}<p class="error">{error}</p>{/if}
 {#if notFound}
-  <p class="muted">upstream not found</p>
+  <div class="empty"><span class="ico"><Icon name="server" size={28} /></span><div>Upstream not found</div></div>
 {:else if d}
   <h2>{d.name}</h2>
   <div class="cards">
-    <div class="card"><div class="label">transport</div><div class="v">{d.transport}</div></div>
-    <div class="card"><div class="label">status</div><div class="v"><span class="badge {d.status}">{d.status}</span></div></div>
-    <div class="card"><div class="label">tools</div><div class="v">{d.tools_count}</div></div>
-    <div class="card"><div class="label">calls</div><div class="v">{d.calls}</div></div>
-    <div class="card"><div class="label">errors</div><div class="v">{d.errors}</div></div>
+    <div class="card"><div class="ctop"><span class="label">transport</span></div><div class="v sm">{d.transport}</div></div>
+    <div class="card"><div class="ctop"><span class="label">status</span></div><div class="v sm"><span class="badge {d.status}">{d.status}</span></div></div>
+    <div class="card"><div class="ctop"><span class="label">tools</span><span class="ico-badge"><Icon name="tools" /></span></div><div class="v num">{d.tools_count}</div></div>
+    <div class="card"><div class="ctop"><span class="label">calls</span><span class="ico-badge"><Icon name="calls" /></span></div><div class="v num">{d.calls}</div></div>
+    <div class="card"><div class="ctop"><span class="label">errors</span></div><div class="v num">{d.errors}</div></div>
   </div>
-  {#if d.reason}<p class="muted">reason: {d.reason}</p>{/if}
+  {#if d.reason}<p class="meta-line">reason: {d.reason}</p>{/if}
 
   <h3>Tools</h3>
-  <table>
-    <thead><tr><th>name</th><th>description</th></tr></thead>
-    <tbody>
-      {#each d.tools as t}
-        <tr class="row-link" onclick={() => (location.hash = `#/tools/${encodeURIComponent(t.name)}`)}>
-          <td>{t.name}</td><td>{t.description}</td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
+  {#if d.tools.length === 0}
+    <div class="empty"><div>No tools exposed</div></div>
+  {:else}
+    <div class="table-wrap"><div class="table-scroll"><table>
+      <thead><tr><th>name</th><th>description</th></tr></thead>
+      <tbody>
+        {#each d.tools as t}
+          {@const href = `#/tools/${encodeURIComponent(t.name)}`}
+          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
+            <td class="mono">{t.name}</td><td>{t.description}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table></div></div>
+  {/if}
 
-  <h3>Recent calls</h3>
-  <div class="chips">
-    {#each ["ok", "error", "timeout"] as o}
-      <span class="chip" class:active={cOutcome === o} onclick={() => (cOutcome = cOutcome === o ? "" : o)}>{o}</span>
-    {/each}
-    <input class="search narrow" placeholder="search content…" bind:value={cq} />
-  </div>
-  <table>
-    <thead><tr><th>time</th><th>meta</th><th>target</th><th>outcome</th><th>ms</th></tr></thead>
-    <tbody>
-      {#each calls as c}
-        <tr class="row-link" onclick={() => (location.hash = `#/calls/${c.id}`)}>
-          <td>{when(c.ts_unix_ms)}</td><td>{c.meta_tool}</td><td>{c.target_tool ?? "—"}</td><td>{c.outcome}</td><td>{c.latency_ms}</td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
+  <RecentCalls param="upstream" {name} />
 {:else}
-  <p class="muted">loading…</p>
+  <div class="skeleton">{#each Array(5) as _}<div class="sk row"></div>{/each}</div>
 {/if}

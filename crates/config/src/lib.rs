@@ -343,6 +343,13 @@ impl Config {
                     u.name
                 )));
             }
+            if u.call_timeout_ms == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "upstream {:?}: call_timeout_ms must be > 0 \
+                     (0 makes every connect/call time out immediately)",
+                    u.name
+                )));
+            }
             if let UpstreamTransport::Http { url, .. } = &u.transport {
                 if url.trim().is_empty() {
                     return Err(ConfigError::Invalid(format!(
@@ -526,6 +533,17 @@ mod tests {
             }
             UpstreamTransport::Http { .. } => unreachable!("stdio fixture"),
         }
+    }
+
+    #[test]
+    fn rejects_zero_call_timeout_ms() {
+        // 0 would make tokio::time::timeout fire Elapsed immediately on every connect/call,
+        // rendering the upstream unusable — reject it like every other numeric knob.
+        let err = Config::from_toml_str(
+            "[[upstream]]\nname=\"s\"\ncall_timeout_ms=0\ntransport=\"stdio\"\ncommand=\"x\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(m) if m.contains("call_timeout_ms")));
     }
 
     #[test]

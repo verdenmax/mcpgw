@@ -53,10 +53,10 @@
 |----|------|------|
 | `CallRingSink` | impl `observe::CallContentSink` | 逐条 `StoredCall{seq, record: CallRecord, content: CallContent}` 的有界环（满淘汰最旧），每条插入在锁内分配单调 `seq` 作 live id；`record(&self, meta, content)` 存元数据+内容；容量 `[dashboard].call_buffer` |
 | `CallRingSink::new` | `(cap: usize) -> Self`（`cap.max(1)`） | 空环 |
-| `CallRingSink::query` | `(&CallFilter, limit, offset) -> (Vec<CallItem>, usize)` | newest-first 一页（`to_item(false)`，**省略内容**）+ `total`（计全部命中，独立于分页） |
+| `CallRingSink::query` | `(&CallFilter, limit, offset) -> (Vec<CallItem>, usize)` | newest-first 一页 + `total`（计全部命中，独立于分页）。无内容过滤时走轻量 `to_item(false)`；存在内容过滤（`q` 或 `arg_key`+`arg_val`）时仅对**通过元数据谓词的幸存者**构造内容做过滤，随后从返回页**剥离**内容——故响应**始终省略 args/result** |
 | `CallRingSink::get` | `(&self, seq: u64) -> Option<CallItem>` | 按 live seq 取单条（`to_item(true)`，**带 args/result 内容**） |
 | `CallItem` | `Serialize` | live 环与 history 回放共用的 owned 项：`id` / `ts_unix_ms` / `meta_tool` / `target_tool?` / `upstream?` / `latency_ms` / `outcome` / `error_kind?` / `arg_bytes` / `result_bytes`，外加可选内容 `args?` / `args_truncated` / `result?` / `result_truncated`（仅详情填充，列表与 history 回放省略） |
-| `CallFilter` | `Default` | `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`（均 `Option`，`None`=全匹配；时间为闭区间）；`matches(&CallItem)` 统一过滤 live 与 history |
+| `CallFilter` | `Default` | 元数据 `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`，外加内容过滤 `q`（自由文本，args+result 子串，大小写不敏感）、`arg_key`+`arg_val`（结构化，递归找 args 里 key=value，二者须同时给）（均 `Option`，`None`=全匹配；时间为闭区间）。内容过滤**仅对 live**（history 项无内容，`matches` 的 `Some(args)` 门控自然忽略）；`matches(&CallItem)` 统一过滤 live 与 history |
 
 ### 历史回放 `replay_audit_metrics` / `replay_discovery_items` / `replay_audit_calls` / `MetricBucket`（`history.rs`）
 
@@ -78,7 +78,7 @@
 `/api/*` 端点（逐符号见 L4）：`/api/overview`、`/api/upstreams`、`/api/upstreams/{name}`、`/api/tools?q=`、
 `/api/tools/{name}`、`/api/metrics`、`/api/traces?source=live|history&limit=`、`/api/traces/{id}`、
 `/api/metrics/history?limit=&bucket_ms=`、
-`/api/calls?source=live|history&meta=&upstream=&tool=&outcome=&since=&until=&limit=&offset=`、`/api/calls/{id}`
+`/api/calls?source=live|history&meta=&upstream=&tool=&outcome=&since=&until=&q=&arg_key=&arg_val=&limit=&offset=`（`q`/`arg_key`/`arg_val` 为内容过滤，仅 live）、`/api/calls/{id}`
 （M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404）。
 
 ## 依赖

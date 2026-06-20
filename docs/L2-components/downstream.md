@@ -65,8 +65,8 @@
 ## 被谁使用
 
 - `mcpgw`（bin）的 `serve` 子命令：装配默认观测 sinks `[observe::TracingSink]`，经
-  `GatewayServer::new(state, top_k, sinks).serve(stdio())` 起下游服务，连同 `connect_all` 与
-  `run_rebuild_worker` 一起组成活网关。
+  `GatewayServer::new(state, top_k, sinks, discovery_sinks, content_sinks, payload_max_bytes).serve(stdio())`
+  起下游服务，连同 `connect_all` 与 `run_rebuild_worker` 一起组成活网关。
 
 ## 关键不变量
 

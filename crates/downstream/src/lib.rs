@@ -68,6 +68,18 @@ fn clamp_query(query: &str) -> String {
     query.chars().take(MAX_TRACE_QUERY_CHARS).collect()
 }
 
+/// Max characters of a (possibly client-supplied) `call_tool` target name retained in a
+/// `CallRecord`. Bounds the call ring's per-entry memory and each audit-log line by client input
+/// size — mirroring `clamp_query` for discovery traces — since on the `ToolNotFound` path the name
+/// is fully attacker-chosen and would otherwise make the count-bounded ring grow without limit.
+const MAX_TARGET_TOOL_CHARS: usize = 256;
+
+/// Truncate a target-tool name to at most `MAX_TARGET_TOOL_CHARS` characters (char-wise, so UTF-8
+/// safe). Applied only to the recorded metadata; `upstream` is still resolved from the full name.
+fn clamp_tool_name(name: &str) -> String {
+    name.chars().take(MAX_TARGET_TOOL_CHARS).collect()
+}
+
 /// Build a discovery trace from a completed `search_tools` call (pure; used when discovery sinks
 /// are attached).
 fn discovery_record_for_search(
@@ -362,6 +374,9 @@ impl ServerHandler for GatewayServer {
         let upstream = target_tool.as_deref().and_then(|t| {
             metatools::get_tool_details(&self.state.snapshot(), t).map(|def| def.server.clone())
         });
+        // Clamp the (possibly client-supplied) target name AFTER resolving `upstream` from the full
+        // name, so a legitimate long name still resolves while the recorded metadata stays bounded.
+        let target_tool = target_tool.map(|t| clamp_tool_name(&t));
         let rec = CallRecord {
             ts_unix_ms: CallRecord::now_unix_ms(),
             meta_tool,
@@ -451,6 +466,30 @@ mod tests {
         let rec = discovery_record_for_search(&q, 1, &[], 0);
         assert_eq!(rec.query.chars().count(), MAX_TRACE_QUERY_CHARS);
         assert!(rec.query.chars().all(|c| c == 'é'), "no split code point");
+    }
+
+    #[test]
+    fn target_tool_name_is_clamped_to_the_cap() {
+        let long = "x".repeat(MAX_TARGET_TOOL_CHARS + 100);
+        assert_eq!(
+            clamp_tool_name(&long).chars().count(),
+            MAX_TARGET_TOOL_CHARS,
+            "an over-long (possibly attacker-chosen) name is bounded"
+        );
+        assert_eq!(
+            clamp_tool_name("mock__echo"),
+            "mock__echo",
+            "a normal tool name is unchanged"
+        );
+    }
+
+    #[test]
+    fn target_tool_name_clamp_is_utf8_safe() {
+        // Multi-byte chars near the boundary must not split a code point.
+        let name: String = "é".repeat(MAX_TARGET_TOOL_CHARS + 10);
+        let clamped = clamp_tool_name(&name);
+        assert_eq!(clamped.chars().count(), MAX_TARGET_TOOL_CHARS);
+        assert!(clamped.chars().all(|c| c == 'é'), "no split code point");
     }
 
     #[test]

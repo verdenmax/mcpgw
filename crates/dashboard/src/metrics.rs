@@ -86,10 +86,10 @@ pub struct MetricsSnapshot {
     pub per_upstream: Vec<UpstreamMetrics>,
 }
 
-/// Cap on distinct per-upstream keys tracked. The `upstream` of a `CallRecord` is derived from a
-/// client-supplied `call_tool` name (the `{prefix}__name` before resolution), so a client flooding
-/// bogus names would otherwise grow `per_upstream` without bound. Real deployments have far fewer
-/// upstreams than this, so the cap only ever bites under abuse.
+/// Cap on distinct per-upstream keys tracked. `CallRecord.upstream` is the *resolved* server name
+/// (`def.server` from the catalog, or `None` for an unresolved name), so it is already bounded by
+/// the number of configured upstreams and a flood of bogus `call_tool` names cannot grow this map.
+/// The cap is therefore defense-in-depth — a hard ceiling that real deployments never approach.
 const MAX_UPSTREAM_KEYS: usize = 1024;
 
 /// In-memory aggregator of `CallRecord`s. Implements `observe::CallSink`; bounded — `per_meta` is
