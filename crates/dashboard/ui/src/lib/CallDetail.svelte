@@ -4,12 +4,17 @@
   let error = $state(null);
   let notFound = $state(false);
   async function load() {
+    const reqId = id; // capture: ignore this response if `id` changes before it resolves
     try {
+      error = null; notFound = false;
       const r = await fetch(`/api/calls/${encodeURIComponent(id)}`);
+      if (reqId !== id) return; // a newer id superseded this request
       if (r.status === 404) { notFound = true; item = null; return; }
       if (!r.ok) throw new Error(`/api/calls/${id} -> ${r.status}`);
-      item = await r.json(); error = null; notFound = false;
-    } catch (e) { error = String(e); }
+      const next = await r.json();
+      if (reqId !== id) return;
+      item = next; error = null; notFound = false;
+    } catch (e) { if (reqId === id) error = String(e); }
   }
   $effect(() => {
     id; // re-run load() whenever the id prop changes

@@ -4,13 +4,17 @@
   let error = $state(null);
   let notFound = $state(false);
   async function load() {
+    const reqId = id; // capture: ignore this response if `id` changes before it resolves
     try {
       error = null; notFound = false;
       const r = await fetch(`/api/traces/${encodeURIComponent(id)}`);
+      if (reqId !== id) return; // a newer id superseded this request
       if (r.status === 404) { notFound = true; t = null; return; }
       if (!r.ok) throw new Error(`/api/traces/${id} -> ${r.status}`);
-      t = await r.json();
-    } catch (e) { error = String(e); }
+      const next = await r.json();
+      if (reqId !== id) return;
+      t = next;
+    } catch (e) { if (reqId === id) error = String(e); }
   }
   $effect(() => { id; load(); });
   function when(ms) { return new Date(ms).toLocaleString(); }
