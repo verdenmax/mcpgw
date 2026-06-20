@@ -24,7 +24,7 @@
 </script>
 
 <a class="back" href="#/tools"><Icon name="back" size={14} /> Tools</a>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="tools" size={28} /></span><div>Tool not found</div></div>
 {:else if d}

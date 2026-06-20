@@ -7,10 +7,13 @@
   let tools = $state(null);
   let error = $state(null);
   async function load() {
+    const reqQ = q; // discard a superseded response if the filter changed mid-flight
     try {
       const qs = q ? `?q=${encodeURIComponent(q)}` : "";
-      tools = await getJSON(`/api/tools${qs}`); error = null;
-    } catch (e) { error = String(e); }
+      const t = await getJSON(`/api/tools${qs}`);
+      if (reqQ !== q) return;
+      tools = t; error = null;
+    } catch (e) { if (reqQ === q) error = String(e); }
   }
   // Refetch on every `q` change; no debounce needed — /api/tools is a cheap in-memory filter and
   // the 3s poll re-fetches with the current q, so any out-of-order keystroke result self-corrects.
@@ -23,7 +26,7 @@
   <input class="search" placeholder="filter tools…" bind:value={q} />
   {#if tools}<span class="meta-line" style="margin:0"><span class="count-pill">{tools.length}</span> match{tools.length === 1 ? "" : "es"}</span>{/if}
 </div>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if tools}
   {#if tools.length === 0}
     <div class="empty"><span class="ico"><Icon name="tools" size={28} /></span>

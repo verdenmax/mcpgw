@@ -12,8 +12,11 @@
   let cOutcome = $state(""); // recent-calls outcome filter
   let cq = $state("");       // recent-calls content search
 
+  // Composite request token: a response is applied only if name + both filters still match, so a
+  // slow earlier fetch can't overwrite the list after the user changed the name/outcome/search.
+  function token() { return `${name}\u0000${cOutcome}\u0000${cq}`; }
   async function loadCalls() {
-    const reqName = name; // ignore a stale response if `name` changed before it resolved
+    const req = token();
     try {
       const p = new URLSearchParams();
       p.set("source", "live");
@@ -22,7 +25,7 @@
       if (cq) p.set("q", cq);
       p.set("limit", "20");
       const c = await getJSON(`/api/calls?${p}`);
-      if (reqName === name) calls = c.items ?? [];
+      if (req === token()) calls = c.items ?? [];
     } catch (_) { /* recent-calls is secondary; the detail page owns the error UI */ }
   }
   $effect(() => { void name; void cOutcome; void cq; loadCalls(); });

@@ -23,7 +23,7 @@
 
 <a class="back" href="#/traces"><Icon name="back" size={14} /> Traces</a>
 <h2>Trace detail</h2>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="traces" size={28} /></span>
     <div>Trace not found</div><div class="hint">it may have aged out of the live ring</div></div>

@@ -16,7 +16,7 @@
 </script>
 
 <h2>Overview</h2>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if data}
   <div class="cards">
     <a class="card" href="#/upstreams">

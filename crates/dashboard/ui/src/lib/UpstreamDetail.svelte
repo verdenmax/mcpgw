@@ -24,7 +24,7 @@
 </script>
 
 <a class="back" href="#/upstreams"><Icon name="back" size={14} /> Upstreams</a>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="server" size={28} /></span><div>Upstream not found</div></div>
 {:else if d}

@@ -16,6 +16,7 @@
 </script>
 
 <div class="layout">
+  <h1 class="sr-only">mcpgw dashboard</h1>
   <div class="brandbar">
     <span class="logo"><Icon name="layers" size={17} /></span>
     <span class="name">mcpgw <span>· dashboard</span></span>

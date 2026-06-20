@@ -13,7 +13,7 @@
 </script>
 
 <h2>Upstreams</h2>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if ups}
   <p class="meta-line"><span class="count-pill">{ups.length}</span> upstream{ups.length === 1 ? "" : "s"}</p>
   {#if ups.length === 0}

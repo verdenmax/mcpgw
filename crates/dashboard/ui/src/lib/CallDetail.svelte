@@ -26,7 +26,7 @@
 
 <a class="back" href="#/calls"><Icon name="back" size={14} /> Calls</a>
 <h2>Call detail</h2>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
     <div>Call not found</div><div class="hint">it may have aged out of the live ring</div></div>

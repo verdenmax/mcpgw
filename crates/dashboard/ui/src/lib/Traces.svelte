@@ -19,7 +19,7 @@
   <button class="chip" class:active={source === "live"} onclick={() => (source = "live")}>live</button>
   <button class="chip" class:active={source === "history"} onclick={() => (source = "history")}>history</button>
 </div>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if resp}
   {#if resp.history_unavailable}
     <div class="empty"><span class="ico"><Icon name="traces" size={28} /></span>

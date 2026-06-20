@@ -34,8 +34,12 @@
     try { const m = await getJSON("/api/metrics"); metrics = m.per_meta_tool ?? []; } catch (_) {}
   }
   async function loadCalls() {
-    try { resp = await getJSON(`/api/calls?${query}`); error = null; }
-    catch (e) { error = String(e); }
+    const reqQ = query; // discard a superseded response if the query changed mid-flight
+    try {
+      const r = await getJSON(`/api/calls?${query}`);
+      if (reqQ !== query) return;
+      resp = r; error = null;
+    } catch (e) { if (reqQ === query) error = String(e); }
   }
   function pickMeta(m) { meta = meta === m ? "" : m; offset = 0; }
   function setSource(s) { source = s; offset = 0; }
@@ -87,7 +91,7 @@
   {#if source === "history"}<span class="muted">content filters apply to live only</span>{/if}
 </div>
 
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if resp}
   {#if resp.source === "history" && resp.history_unavailable}
     <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
