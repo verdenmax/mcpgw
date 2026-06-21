@@ -1,6 +1,7 @@
 <script>
-  import { go, rowKey, when } from "./format.js";
+  import { go, when } from "./format.js";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
   let { id } = $props();
   let t = $state(null);
   let error = $state(null);
@@ -23,14 +24,14 @@
 
 <a class="back" href="#/traces"><Icon name="back" size={14} /> Traces</a>
 <h2>Trace detail</h2>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="traces" size={28} /></span>
     <div>Trace not found</div><div class="hint">it may have aged out of the live ring</div></div>
 {:else if t}
   <div class="table-wrap"><table class="kv">
     <tbody>
-      <tr><th>id</th><td>{t.id}</td></tr>
+      <tr><th>id</th><td>{t.id} <CopyButton text={t.id} /></td></tr>
       <tr><th>time</th><td>{when(t.ts_unix_ms)}</td></tr>
       <tr><th>query</th><td>{t.query}</td></tr>
       <tr><th>top_k</th><td>{t.top_k}</td></tr>
@@ -39,15 +40,16 @@
   </table></div>
   <h3>Hits ({t.results.length})</h3>
   {#if t.results.length === 0}
-    <div class="empty"><div>No hits for this query</div></div>
+    <div class="empty"><span class="ico"><Icon name="traces" size={24} /></span><div>No hits for this query</div></div>
   {:else}
     <div class="table-wrap"><div class="table-scroll"><table>
       <thead><tr><th>tool</th><th class="num">score</th></tr></thead>
       <tbody>
         {#each t.results as h}
           {@const href = `#/tools/${encodeURIComponent(h.name)}`}
-          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-            <td class="mono">{h.name}</td><td class="num">{h.score.toFixed(3)}</td>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <tr class="row-link" onclick={() => go(href)}>
+            <td class="mono"><a class="rl" href={href}>{h.name}</a></td><td class="num">{h.score.toFixed(3)}</td>
           </tr>
         {/each}
       </tbody>

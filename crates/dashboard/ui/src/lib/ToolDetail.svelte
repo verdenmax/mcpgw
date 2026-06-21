@@ -1,7 +1,8 @@
 <script>
-  import { onMount } from "svelte";
+  import { refresh } from "./refresh.svelte.js";
   import Icon from "./Icon.svelte";
   import RecentCalls from "./RecentCalls.svelte";
+  import CopyButton from "./CopyButton.svelte";
   let { name } = $props();
   let d = $state(null);
   let error = $state(null);
@@ -18,13 +19,12 @@
       if (reqName === name) d = next;
     } catch (e) { if (reqName === name) error = String(e); }
   }
-  $effect(() => { name; load(); });
-  onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
+  $effect(() => { name; refresh.tick; load(); });
   function schema(v) { try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); } }
 </script>
 
 <a class="back" href="#/tools"><Icon name="back" size={14} /> Tools</a>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="tools" size={28} /></span><div>Tool not found</div></div>
 {:else if d}
@@ -35,7 +35,7 @@
   {#if d.input_schema === null || d.input_schema === undefined}
     <p class="muted">(no schema)</p>
   {:else}
-    <pre class="schema">{schema(d.input_schema)}</pre>
+    <div class="codeblock"><CopyButton text={schema(d.input_schema)} /><pre class="schema">{schema(d.input_schema)}</pre></div>
   {/if}
 
   <RecentCalls param="tool" {name} />

@@ -1,6 +1,6 @@
 <script>
-  import { onMount } from "svelte";
   import { getJSON } from "./api.js";
+  import { refresh } from "./refresh.svelte.js";
   import Icon from "./Icon.svelte";
   let data = $state(null);
   let error = $state(null);
@@ -8,15 +8,11 @@
     try { data = await getJSON("/api/overview"); error = null; }
     catch (e) { error = String(e); }
   }
-  onMount(() => {
-    load();
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  });
+  $effect(() => { refresh.tick; load(); });
 </script>
 
 <h2>Overview</h2>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if data}
   <div class="cards">
     <a class="card" href="#/upstreams">

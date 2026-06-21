@@ -1,6 +1,7 @@
 <script>
   import { when, pretty } from "./format.js";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
   let { id } = $props();
   let item = $state(null);
   let error = $state(null);
@@ -26,14 +27,14 @@
 
 <a class="back" href="#/calls"><Icon name="back" size={14} /> Calls</a>
 <h2>Call detail</h2>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
     <div>Call not found</div><div class="hint">it may have aged out of the live ring</div></div>
 {:else if item}
   <div class="table-wrap"><table class="kv">
     <tbody>
-      <tr><th>id</th><td>{item.id}</td></tr>
+      <tr><th>id</th><td>{item.id} <CopyButton text={item.id} /></td></tr>
       <tr><th>time</th><td>{when(item.ts_unix_ms)}</td></tr>
       <tr><th>meta_tool</th><td>{item.meta_tool}</td></tr>
       <tr><th>target_tool</th><td>{#if item.target_tool}<a href={`#/tools/${encodeURIComponent(item.target_tool)}`}>{item.target_tool}</a>{:else}—{/if}</td></tr>
@@ -48,14 +49,14 @@
 
   <h3>Arguments{#if item.args_truncated} <span class="muted">(truncated)</span>{/if}</h3>
   {#if item.args != null}
-    <pre class="schema">{pretty(item.args)}</pre>
+    <div class="codeblock"><CopyButton text={pretty(item.args)} /><pre class="schema">{pretty(item.args)}</pre></div>
   {:else}
     <p class="muted">(content not retained)</p>
   {/if}
 
   <h3>Result{#if item.result_truncated} <span class="muted">(truncated)</span>{/if}</h3>
   {#if item.result != null}
-    <pre class="schema">{pretty(item.result)}</pre>
+    <div class="codeblock"><CopyButton text={pretty(item.result)} /><pre class="schema">{pretty(item.result)}</pre></div>
   {:else}
     <p class="muted">(content not retained)</p>
   {/if}

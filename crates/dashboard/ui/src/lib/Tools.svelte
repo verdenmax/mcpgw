@@ -1,21 +1,22 @@
 <script>
-  import { onMount } from "svelte";
   import { getJSON } from "./api.js";
-  import { go, rowKey } from "./format.js";
+  import { refresh } from "./refresh.svelte.js";
+  import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   let q = $state("");
   let tools = $state(null);
   let error = $state(null);
   async function load() {
+    const reqQ = q; // discard a superseded response if the filter changed mid-flight
     try {
       const qs = q ? `?q=${encodeURIComponent(q)}` : "";
-      tools = await getJSON(`/api/tools${qs}`); error = null;
-    } catch (e) { error = String(e); }
+      const t = await getJSON(`/api/tools${qs}`);
+      if (reqQ !== q) return;
+      tools = t; error = null;
+    } catch (e) { if (reqQ === q) error = String(e); }
   }
-  // Refetch on every `q` change; no debounce needed — /api/tools is a cheap in-memory filter and
-  // the 3s poll re-fetches with the current q, so any out-of-order keystroke result self-corrects.
-  $effect(() => { void q; load(); });
-  onMount(() => { const t = setInterval(load, 3000); return () => clearInterval(t); });
+  // Refetch on every `q` change and on each global refresh tick.
+  $effect(() => { void q; refresh.tick; load(); });
 </script>
 
 <h2>Tools</h2>
@@ -23,7 +24,7 @@
   <input class="search" placeholder="filter tools…" bind:value={q} />
   {#if tools}<span class="meta-line" style="margin:0"><span class="count-pill">{tools.length}</span> match{tools.length === 1 ? "" : "es"}</span>{/if}
 </div>
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if tools}
   {#if tools.length === 0}
     <div class="empty"><span class="ico"><Icon name="tools" size={28} /></span>
@@ -35,8 +36,9 @@
       <tbody>
         {#each tools as t}
           {@const href = `#/tools/${encodeURIComponent(t.name)}`}
-          <tr class="row-link" role="button" tabindex="0" onclick={() => go(href)} onkeydown={rowKey(href)}>
-            <td class="mono">{t.name}</td><td>{t.description}</td>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <tr class="row-link" onclick={() => go(href)}>
+            <td class="mono"><a class="rl" href={href}>{t.name}</a></td><td>{t.description}</td>
           </tr>
         {/each}
       </tbody>
