@@ -79,7 +79,7 @@
 - **静态交付变化**：由原先 `include_str!` 三文件（`/`、`/app.js`、`/style.css`）改为单个 `assets::static_handler`
   挂在 router `.fallback`（`/` → 内嵌 `index.html`、`/assets/*` → 内嵌资源；未知路径回退 `index.html`）。**hash 路由**
   让 fragment 不发往服务端，故深链刷新只请求 `/`，**无需 history 回退改写**；hash params 经 `decodeURIComponent` 解码。
-  `/api/*` 端点数随 M3 增至 **11 个**。
+  `/api/*` 端点数现为 **13 个**（M3 详情下钻 + M1 `/api/calls`、`/api/activity`、`/api/about`）。
 - **视图**：Overview（指标卡，**可点直达** upstreams/tools/calls 列表）、Calls（指标卡 → 逐条列表 → 详情下钻：
   `/api/metrics` 可点击卡过滤 `/api/calls`，行进 `/api/calls/{id}`）、Upstreams / Tools / Traces 列表，**M3 新增三个详情视图**
   `UpstreamDetail`/`ToolDetail`/`TraceDetail`（上游/工具/追踪下钻 + 上游↔工具↔调用↔追踪交叉链接）。各视图每 3s 轮询既有

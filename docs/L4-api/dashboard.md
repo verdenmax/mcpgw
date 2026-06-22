@@ -2,7 +2,7 @@
 
 源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api,assets}.rs` + `ui/`（Svelte 5 + Vite
 前端工程，产物内嵌）。只读可视化面板（子系统 A）：把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL
-聚合成 11 个 `/api/*` JSON 端点 + 一个由 `rust-embed` 内嵌的 Svelte SPA，跑在独立 localhost 端口上。所有对外
+聚合成 13 个 `/api/*` JSON 端点 + 一个由 `rust-embed` 内嵌的 Svelte SPA，跑在独立 localhost 端口上。所有对外
 类型经 `lib.rs` re-export。
 
 ---
