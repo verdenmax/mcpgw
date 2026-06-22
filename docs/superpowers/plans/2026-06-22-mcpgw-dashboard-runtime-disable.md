@@ -341,7 +341,7 @@ pub use disable::{DisableSet, DisabledSnapshot};
 cargo test -p gateway disable:: -- --nocapture
 cargo fmt --all --check && cargo clippy -p gateway --all-targets --all-features -- -D warnings
 ```
-Expected: 6 个 disable 测试全过；fmt/clippy 净。
+Expected: 9 个 disable 测试全过；fmt/clippy 净。
 
 - [ ] **Step 5: Commit**
 
@@ -463,6 +463,12 @@ Expected: 编译错误 `no method named with_disabled` / `no method named disabl
     /// The runtime disable set (read by rebuild; mutated by the dashboard admin API).
     pub fn disabled(&self) -> &disable::DisableSet {
         self.disabled.as_ref()
+    }
+
+    /// An owned `Arc` clone of the disable set — for callers that move it across an `.await`
+    /// (e.g. the dashboard admin handler runs the synchronous, fsync-ing mutation in `spawn_blocking`).
+    pub fn disabled_arc(&self) -> Arc<disable::DisableSet> {
+        self.disabled.clone()
     }
 ```
 
@@ -703,6 +709,7 @@ use axum::http::{header::AUTHORIZATION, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use gateway::DisableSet;
 use subtle::ConstantTimeEq;
 
 use crate::api::AppState;
@@ -746,6 +753,19 @@ pub async fn require_admin_token(State(s): State<Arc<AppState>>, req: Request, n
     }
 }
 
+/// Run a disable-set mutation OFF the async worker — `DisableSet` persists synchronously (an
+/// `fsync` under a lock), so doing it inline would block an axum executor thread. Then rebuild the
+/// snapshot and return the updated set. (`DisableSet: Send + Sync` behind the `Arc`.)
+async fn mutate_and_rebuild(
+    s: &Arc<AppState>,
+    mutate: impl FnOnce(&DisableSet) -> bool + Send + 'static,
+) -> Response {
+    let d = s.gateway.disabled_arc();
+    let _ = tokio::task::spawn_blocking(move || mutate(&d)).await;
+    let _ = s.gateway.rebuild_snapshot().await;
+    Json(s.gateway.disabled().snapshot()).into_response()
+}
+
 pub async fn disable_upstream(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     let dis = s.gateway.disabled();
     if dis.is_upstream_disabled(&name) {
@@ -754,42 +774,31 @@ pub async fn disable_upstream(State(s): State<Arc<AppState>>, Path(name): Path<S
     if !s.upstreams.iter().any(|u| u.name == name) {
         return StatusCode::NOT_FOUND.into_response(); // unknown upstream
     }
-    dis.disable_upstream(&name);
-    let _ = s.gateway.rebuild_snapshot().await;
-    Json(s.gateway.disabled().snapshot()).into_response()
+    mutate_and_rebuild(&s, move |ds| ds.disable_upstream(&name)).await
 }
 
 pub async fn enable_upstream(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
-    let dis = s.gateway.disabled();
-    if !dis.is_upstream_disabled(&name) {
-        return Json(dis.snapshot()).into_response();
+    if !s.gateway.disabled().is_upstream_disabled(&name) {
+        return Json(s.gateway.disabled().snapshot()).into_response();
     }
-    dis.enable_upstream(&name);
-    let _ = s.gateway.rebuild_snapshot().await;
-    Json(s.gateway.disabled().snapshot()).into_response()
+    mutate_and_rebuild(&s, move |ds| ds.enable_upstream(&name)).await
 }
 
 pub async fn disable_tool(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
-    let dis = s.gateway.disabled();
-    if dis.is_tool_disabled(&name) {
-        return Json(dis.snapshot()).into_response();
+    if s.gateway.disabled().is_tool_disabled(&name) {
+        return Json(s.gateway.disabled().snapshot()).into_response();
     }
     if s.gateway.snapshot().catalog().get(&name).is_none() {
         return StatusCode::NOT_FOUND.into_response(); // tool not currently visible
     }
-    dis.disable_tool(&name);
-    let _ = s.gateway.rebuild_snapshot().await;
-    Json(s.gateway.disabled().snapshot()).into_response()
+    mutate_and_rebuild(&s, move |ds| ds.disable_tool(&name)).await
 }
 
 pub async fn enable_tool(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
-    let dis = s.gateway.disabled();
-    if !dis.is_tool_disabled(&name) {
-        return Json(dis.snapshot()).into_response();
+    if !s.gateway.disabled().is_tool_disabled(&name) {
+        return Json(s.gateway.disabled().snapshot()).into_response();
     }
-    dis.enable_tool(&name);
-    let _ = s.gateway.rebuild_snapshot().await;
-    Json(s.gateway.disabled().snapshot()).into_response()
+    mutate_and_rebuild(&s, move |ds| ds.enable_tool(&name)).await
 }
 
 #[cfg(test)]
