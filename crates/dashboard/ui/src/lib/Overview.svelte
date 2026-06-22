@@ -2,11 +2,18 @@
   import { getJSON } from "./api.js";
   import { refresh } from "./refresh.svelte.js";
   import Icon from "./Icon.svelte";
+  import Activity from "./Activity.svelte";
+  import { pendingBucket } from "./bucketSel.svelte.js";
   let data = $state(null);
   let error = $state(null);
   async function load() {
     try { data = await getJSON("/api/overview"); error = null; }
     catch (e) { error = String(e); }
+  }
+  function pickBucket(since, until) {
+    pendingBucket.since = since;
+    pendingBucket.until = until;
+    location.hash = "#/calls";
   }
   $effect(() => { refresh.tick; load(); });
 </script>
@@ -46,6 +53,7 @@
       <div class="sub">last snapshot rebuild</div>
     </div>
   </div>
+  <Activity window={900000} sections="spark,leaders" onpick={pickBucket} />
 {:else if !error}
   <div class="cards">
     {#each Array(6) as _}<div class="sk card"></div>{/each}

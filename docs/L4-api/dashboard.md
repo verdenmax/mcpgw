@@ -151,6 +151,37 @@ live 环与 history 回放共用的 owned 项：`id`（live=十进制 seq；hist
 
 **`query` 内容过滤性能（metadata-first）**：仅当存在内容过滤（`q` 或成对的 `arg_key`+`arg_val`）时 `want_content` 为真。每条先建轻量项 `to_item(false)` 跑一遍 `matches`（此时只校验元数据，内容检查因缺 `Some(args)` 被跳过）；无内容过滤时直接返回轻量项（与 M1 同成本）；有内容过滤时**仅对通过元数据谓词的幸存者**再建带内容项 `to_item(true)` 复跑 `matches`（此时才施加内容过滤）。随后做分页，并在返回前**剥离**页内内容——列表响应**永不含内容**（仅单条详情 `/api/calls/{id}` 带 args/result）。
 
+**`activity(&self, window_ms) -> activity::ActivityResponse`**（M3 活动聚合）：在锁内把环内每条 `StoredCall` 的**元数据**（`seq`→`id`、`ts_unix_ms`、`meta_tool`、`target_tool?`、`latency_ms`、`outcome`、`error_kind?`）投影为 `activity::AggInput`（**绝不读 `content`**），释放锁后交给纯函数 `activity::aggregate(&inputs, window_ms, now)`（`now = CallRecord::now_unix_ms()`）。投影是 owned 拷贝，使聚合与环内部解耦、`aggregate` 可独立单测；窗内/窗外统一由 `aggregate` 按窗过滤。
+
+---
+
+## `activity.rs`：活动聚合（只读、仅元数据）
+
+把 live 调用环窗内记录聚合为 dashboard 的趋势 sparkline + error_kind 分布 + 最慢/最忙 Top-N。**纯函数**不依赖环内部结构，便于单测；**隐私**：`ActivityResponse` 类型不含任何 `args`/`result` 字段（单测 `response_has_no_payload_content_fields` / `activity_aggregates_live_ring_window` 断言序列化无 `"args"`/`"result"`）。
+
+- `const BUCKETS: usize = 24`（sparkline 固定桶数，柱数恒定渲染稳定）；`const TOP_N: usize = 5`（排行榜/分布 Top-N）。
+
+### `struct AggInput`
+从一条 ring 记录投影出的 owned 聚合输入：`id`、`ts_unix_ms`、`meta_tool`、`target_tool: Option<String>`、`latency_ms`、`outcome`（`"ok"|"error"|"timeout"`）、`error_kind: Option<String>`。**仅元数据**，无内容字段。
+
+### 响应类型（均 `Serialize`；仅 `ActivityResponse` 经 `lib.rs` `pub use` 暴露到 crate 根）
+```rust
+pub struct ActivityResponse { window_ms, bucket_ms, buckets: Vec<ActivityBucket>, total, errors, by_error_kind: Vec<KindCount>, slowest: Vec<SlowCall>, busiest_tools: Vec<ToolCount> }
+pub struct ActivityBucket { t, total, errors }            // 桶起点 ts + 桶内总数/错误数
+pub struct KindCount { kind, count }                      // error_kind 分布项
+pub struct SlowCall { id, label, meta_tool, latency_ms, outcome }  // label = target_tool 否则回退 meta_tool
+pub struct ToolCount { name, count }                      // busiest_tools 项（name = target_tool）
+```
+
+### `aggregate(inputs: &[AggInput], window_ms: u64, now: u64) -> ActivityResponse`
+- **固定 24 桶**：`bucket_ms = (window_ms / BUCKETS).max(1)`、`span = bucket_ms * 24`、`start = now.saturating_sub(span)`；桶 `i` 起点 `t = start + i*bucket_ms`，`now` 落**末桶**。
+- **窗外不计**：`ts_unix_ms < start` 跳过；桶索引 `((ts - start) / bucket_ms).min(BUCKETS-1)`（先在 u64 内 clamp 再转 usize，防远未来 ts 越界）。
+- `errors`：`outcome != "ok"`（`error`/`timeout` 均计错；同时累加到该桶 `errors`）。
+- `by_error_kind`：仅 `error_kind` 为 `Some` 的计数；按 count 降序、并列 kind 名升序。
+- `busiest_tools`：**仅 `target_tool`** 计数（`search_tools` 无 target 不计）；count 降序、并列名升序，取前 `TOP_N`。
+- `slowest`：按 `latency_ms` 降序、并列按 `ts` 降序（更晚在前），取前 `TOP_N`；`label` 取 `target_tool`，无则回退 `meta_tool`。
+- 空输入 → 24 个全 0 桶、`total=0`。
+
 ---
 
 ## `api.rs`：状态、视图类型与纯函数
@@ -211,6 +242,8 @@ pub struct CallsResponse { source, history_unavailable, total, items: Vec<CallIt
 | `calls` | `(&AppState, &CallFilter, source, scan_limit, limit, offset) -> CallsResponse` | `source=="history"` → `replay_audit_calls(audit_path, scan_limit)`（无 path→`history_unavailable`、`total`=全部命中、`skip(offset).take(limit)`）；否则 `calls.query(filter, limit, offset)`（未启用→空、`history_unavailable=false`） |
 | `call_detail` | `(&AppState, id) -> Option<CallItem>` | `is_history_id(id)` → 重扫 `CALL_HISTORY_SCAN` 行回放后按 id 定位；否则按十进制 live seq 取环 `get(seq)`；找不到/源不可用→`None` |
 | `is_history_id` | `(id: &str) -> bool` | id 以 `h` 开头即历史（`"h{ts}-{n}"`）；否则按 live ring 十进制 seq。格式判定集中于此，使 handler 的 blocking-pool 决策与 `call_detail`/`trace_detail` 源路由不漂移 |
+| `parse_window` | `(&HashMap<String,String>) -> u64` | 解析查询参数 `window`（ms）：缺省 `900_000`（15min），`clamp(60_000, 86_400_000)`（[1min, 24h]）；解析失败回退缺省 |
+| `activity` | `(&AppState, window_ms) -> activity::ActivityResponse` | dashboard 启用且 `calls` 为 `Some` → `ring.activity(window_ms)`（聚合 live 环）；否则 `activity::aggregate(&[], window_ms, now)`（空：24 个全 0 桶）。**仅元数据** |
 
 > `const CALL_HISTORY_SCAN = 50_000`：list-history（`calls` 的 `source=history`）与单条 `call_detail` **共用同一扫描窗口**，故 list 分配的 `"h{ts}-{n}"` id 在 detail 里用同一窗口稳定复现、不漂移。`const TRACE_HISTORY_SCAN = 50_000` 对 `traces`/`trace_detail` 同理（镜像 `CALL_HISTORY_SCAN`）。
 
@@ -264,6 +297,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 | GET | `/api/metrics/history?limit=&bucket_ms=` | `Json<HistoryResponse>`（`limit` 缺省 5000、封顶 50_000；`bucket_ms` 缺省 60_000） |
 | GET | `/api/calls?source=live\|history&meta=&upstream=&tool=&outcome=&since=&until=&q=&arg_key=&arg_val=&limit=&offset=` | `Json<CallsResponse>`（`limit` 缺省 100、`min(MAX_HISTORY_LIMIT=50_000)`；`offset` 缺省 0；`source` 缺省 `"live"`；`q`/`arg_key`+`arg_val` 内容过滤**仅 live**，history 自动忽略；列表永不含内容；history 路径走 `spawn_blocking`） |
 | GET | `/api/calls/{id}` | `Json<CallItem>` 或 404（`h…`→历史回放定位；否则按 live seq 取环） |
+| GET | `/api/activity?window=<ms>` | `Json<ActivityResponse>`（`window` 缺省 900_000=15min、`clamp(60_000, 86_400_000)`=[1min,24h]；聚合 live 环、**仅元数据**、固定 24 桶、各 Top-5；live 内存读，无 `spawn_blocking`） |
 | —（fallback） | 任意非 `/api/*` 路径 | `assets::static_handler`：`/`→内嵌 `index.html`、`/assets/*`→内嵌资源（带 hash），其余回退 index |
 
 私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
@@ -297,6 +331,14 @@ async fn require_local_host(req: Request, next: Next) -> axum::response::Respons
 - **交叉链接**形成 列表→详情→跳转 闭环：上游↔工具（`UpstreamDetail`↔`ToolDetail`）、工具/上游↔调用
   （`*Detail`→`/api/calls?tool=/upstream=` 近期调用、`CallDetail`→工具/上游）、追踪→命中工具（`TraceDetail`→
   `ToolDetail`）；href 一律 `encodeURIComponent` 编码名/ id。
+- **Activity sparkline 交互**（纯前端、后端无新增）：`Sparkline.svelte` 渲染 24 根 flex 柱，props
+  `buckets`/`bucketMs`/`onpick(since, until)`——非零柱是 `<button>`，点击回调绝对窗 `onpick(b.t, b.t + bucketMs - 1)`
+  （闭区间），零柱是非交互细基线。`Activity.svelte` 新增 `onpick` prop 并透传给 `Sparkline`。`bucketSel.svelte.js`
+  导出 `pendingBucket`（`$state`）作 Overview 点柱跳 `#/calls` 的跨页暂存窗，Calls 组件初始化时消费一次后清空。Calls
+  的 `bucketSel`（`{since, until}`）与滚动时间范围 `rangeMs` **互斥**：`query` derived **无条件读** `bucketSel`（避免
+  null→设的条件依赖陷阱）并在有桶选时附 `since`/`until`，`loadCalls` 的滚动 `since` 仅在**无 `bucketSel`** 时附加；
+  `setRange`/时间范围 chip 清桶选，selected-bucket chip 也清桶选。**后端无新增**——复用既有 `/api/calls` 的
+  `since`/`until`（闭区间 `[since, until]`），`/api/activity` 不变。
 - **XSS 防线**：Svelte 的 `{expr}` 插值**自动转义**，全前端**不用** `{@html}`（`assets.rs` 的
   `no_svelte_component_uses_raw_html` 单测扫描 `ui/src` 锁死这一点），故 query 文本/工具名/上游名/错误原因等不可信
   字段绝不以原始 HTML 注入。

@@ -3,6 +3,8 @@
   import { refresh } from "./refresh.svelte.js";
   import { go, when, ago } from "./format.js";
   import Icon from "./Icon.svelte";
+  import Activity from "./Activity.svelte";
+  import { pendingBucket } from "./bucketSel.svelte.js";
 
   const LIMIT = 50;
   let metrics = $state([]);     // per_meta_tool summary
@@ -15,6 +17,14 @@
   let offset = $state(0);
   let resp = $state(null);      // CallsResponse
   let error = $state(null);
+  let rangeMs = $state(900000); // 时间范围(ms)；0 = all。默认 15min
+  let bucketSel = $state(null); // {since, until} 绝对窗（点柱所选）；与 rangeMs 互斥
+  // 从 Overview 点柱跳转过来时，组件初始化消费一次暂存窗。
+  if (pendingBucket.since != null) {
+    bucketSel = { since: pendingBucket.since, until: pendingBucket.until };
+    pendingBucket.since = null;
+    pendingBucket.until = null;
+  }
 
   const query = $derived.by(() => {
     const q = new URLSearchParams();
@@ -23,6 +33,8 @@
     if (outcome) q.set("outcome", outcome);
     if (qtext) q.set("q", qtext);
     if (argKey && argVal) { q.set("arg_key", argKey); q.set("arg_val", argVal); }
+    const bs = bucketSel; // 无条件读 -> query 始终把 bucketSel 当依赖
+    if (bs) { q.set("since", String(bs.since)); q.set("until", String(bs.until)); }
     q.set("limit", String(LIMIT));
     q.set("offset", String(offset));
     return q.toString();
@@ -37,20 +49,25 @@
   }
   async function loadCalls() {
     const reqQ = query; // discard a superseded response if the query changed mid-flight
+    const reqRange = rangeMs; // `since` lives outside `query`, so guard the window separately
+    // `since` is computed at request time (not in the memoized `query` derived) so the time window
+    // slides with each refresh tick instead of freezing at the value from the last filter change.
+    const since = !bucketSel && rangeMs > 0 ? `&since=${Date.now() - rangeMs}` : "";
     try {
-      const r = await getJSON(`/api/calls?${query}`);
-      if (reqQ !== query) return;
+      const r = await getJSON(`/api/calls?${query}${since}`);
+      if (reqQ !== query || reqRange !== rangeMs) return;
       resp = r; error = null;
-    } catch (e) { if (reqQ === query) error = String(e); }
+    } catch (e) { if (reqQ === query && reqRange === rangeMs) error = String(e); }
   }
   function pickMeta(m) { meta = meta === m ? "" : m; offset = 0; }
   function setSource(s) { source = s; offset = 0; }
   function setOutcome(o) { outcome = outcome === o ? "" : o; offset = 0; }
   function pct(a, b) { return b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0; }
   function clearFilters() { meta = ""; outcome = ""; qtext = ""; argKey = ""; argVal = ""; offset = 0; }
+  function setRange(ms) { rangeMs = ms; bucketSel = null; offset = 0; }
 
   // Refetch the list on any filter change (reading `query` tracks all of them) and each refresh tick.
-  $effect(() => { void query; refresh.tick; loadCalls(); });
+  $effect(() => { void query; void rangeMs; void bucketSel; refresh.tick; loadCalls(); });
   $effect(() => { refresh.tick; loadMetrics(); });
 </script>
 
@@ -74,6 +91,15 @@
     </button>
   {/each}
 </div>
+
+<div class="chips">
+  {#each [["5m", 300000], ["15m", 900000], ["1h", 3600000], ["24h", 86400000], ["all", 0]] as [lbl, ms]}
+    <button class="chip" class:active={!bucketSel && rangeMs === ms} onclick={() => setRange(ms)}>{lbl}</button>
+  {/each}
+  {#if bucketSel}<button class="chip active" onclick={() => { bucketSel = null; offset = 0; }}>bucket: {new Date(bucketSel.since).toLocaleTimeString()}–{new Date(bucketSel.until).toLocaleTimeString()} ✕</button>{/if}
+</div>
+<Activity window={rangeMs > 0 ? rangeMs : 3600000} sections="spark,breakdown"
+          onpick={(since, until) => { bucketSel = { since, until }; offset = 0; }} />
 
 <div class="chips">
   <button class="chip" class:active={source === "live"} onclick={() => setSource("live")}>live</button>
@@ -103,12 +129,12 @@
       <div>History unavailable</div><div class="hint">enable <code>[audit]</code> to replay past calls</div></div>
   {:else if resp.items.length === 0}
     <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
-      {#if anyFilter}<div>No calls match these filters</div><div class="hint">adjust or clear the filters above</div>
+      {#if anyFilter || rangeMs > 0 || bucketSel}<div>No calls match these filters</div><div class="hint">adjust or clear the filters above</div>
       {:else}<div>No calls yet</div><div class="hint">invoke a meta-tool to see it here</div>{/if}</div>
   {:else}
     <p class="meta-line"><span class="count-pill">{resp.total}</span> total</p>
     <div class="table-wrap"><div class="table-scroll"><table>
-      <thead><tr><th>time</th><th>meta</th><th>target</th><th>upstream</th><th>outcome</th><th class="num">ms</th></tr></thead>
+      <thead><tr><th>time</th><th>meta</th><th>target</th><th>upstream</th><th>outcome</th><th>error</th><th class="num">ms</th></tr></thead>
       <tbody>
         {#each resp.items as c}
           {@const href = `#/calls/${c.id}`}
@@ -119,6 +145,7 @@
             <td class="mono">{c.target_tool ?? "—"}</td>
             <td class="mono">{c.upstream ?? "—"}</td>
             <td><span class="badge {c.outcome}">{c.outcome}</span></td>
+            <td><span class:bad={c.error_kind}>{c.error_kind ?? "—"}</span></td>
             <td class="num">{c.latency_ms}</td>
           </tr>
         {/each}

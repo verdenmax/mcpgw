@@ -393,6 +393,22 @@ pub fn call_detail(state: &AppState, id: &str) -> Option<crate::calls::CallItem>
     }
 }
 
+/// 解析并 clamp `window`（毫秒）：缺省 15min，范围 [1min, 24h]。解析失败 -> 缺省。
+pub fn parse_window(q: &std::collections::HashMap<String, String>) -> u64 {
+    q.get("window")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(900_000)
+        .clamp(60_000, 86_400_000)
+}
+
+/// 活动聚合：dashboard 启用且有 live 环时聚合该环，否则返回空（24 个全 0 桶）。仅元数据。
+pub fn activity(state: &AppState, window_ms: u64) -> crate::activity::ActivityResponse {
+    match &state.calls {
+        Some(ring) => ring.activity(window_ms),
+        None => crate::activity::aggregate(&[], window_ms, observe::CallRecord::now_unix_ms()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,5 +801,20 @@ mod tests {
     async fn tool_detail_unknown_is_none() {
         let st = seeded_state().await;
         assert!(tool_detail(&st, "nope__missing").is_none());
+    }
+
+    #[test]
+    fn parse_window_defaults_and_clamps() {
+        use std::collections::HashMap;
+        let mut q = HashMap::new();
+        assert_eq!(super::parse_window(&q), 900_000, "default 15min");
+        q.insert("window".into(), "0".into());
+        assert_eq!(super::parse_window(&q), 60_000, "clamp low to 1min");
+        q.insert("window".into(), "999999999999".into());
+        assert_eq!(super::parse_window(&q), 86_400_000, "clamp high to 24h");
+        q.insert("window".into(), "120000".into());
+        assert_eq!(super::parse_window(&q), 120_000, "in-range passes through");
+        q.insert("window".into(), "abc".into());
+        assert_eq!(super::parse_window(&q), 900_000, "unparseable -> default");
     }
 }

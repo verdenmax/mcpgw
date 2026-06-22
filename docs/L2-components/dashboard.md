@@ -3,7 +3,7 @@
 ## 职责
 
 网关的**只读可视化面板**（子系统 A）：把 `gateway` 的活快照、`observe` 的调用观测与可选的历史 JSONL
-回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 11 个 `/api/*` JSON 端点 + 一个
+回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 12 个 `/api/*` JSON 端点 + 一个
 **Svelte 5 + Vite 构建、经 `rust-embed` 内嵌**的 SPA（`assets::static_handler` fallback 交付）。它**只读、不改动
 任何网关状态**，默认关闭、须显式 opt-in。
 
@@ -55,8 +55,17 @@
 | `CallRingSink::new` | `(cap: usize) -> Self`（`cap.max(1)`） | 空环 |
 | `CallRingSink::query` | `(&CallFilter, limit, offset) -> (Vec<CallItem>, usize)` | newest-first 一页 + `total`（计全部命中，独立于分页）。无内容过滤时走轻量 `to_item(false)`；存在内容过滤（`q` 或 `arg_key`+`arg_val`）时仅对**通过元数据谓词的幸存者**构造内容做过滤，随后从返回页**剥离**内容——故响应**始终省略 args/result** |
 | `CallRingSink::get` | `(&self, seq: u64) -> Option<CallItem>` | 按 live seq 取单条（`to_item(true)`，**带 args/result 内容**） |
+| `CallRingSink::activity` | `(&self, window_ms: u64) -> crate::activity::ActivityResponse` | 把 live 环聚合为活动洞察（**仅元数据**）：在锁内把每条 `record` 投影为 `AggInput{id=seq,ts_unix_ms,meta_tool,target_tool?,latency_ms,outcome,error_kind?}`，交纯函数 `crate::activity::aggregate(inputs, window_ms, now)` 统一按窗过滤+分桶——**绝不**触碰 args/result |
 | `CallItem` | `Serialize` | live 环与 history 回放共用的 owned 项：`id` / `ts_unix_ms` / `meta_tool` / `target_tool?` / `upstream?` / `latency_ms` / `outcome` / `error_kind?` / `arg_bytes` / `result_bytes`，外加可选内容 `args?` / `args_truncated` / `result?` / `result_truncated`（仅详情填充，列表与 history 回放省略） |
 | `CallFilter` | `Default` | 元数据 `meta_tool`/`upstream`/`target_tool`/`outcome`/`since_ms`/`until_ms`，外加内容过滤 `q`（自由文本，args+result 子串，大小写不敏感）、`arg_key`+`arg_val`（结构化，递归找 args 里 key=value，二者须同时给）（均 `Option`，`None`=全匹配；时间为闭区间）。内容过滤**仅对 live**（history 项无内容，`matches` 的 `Some(args)` 门控自然忽略）；`matches(&CallItem)` 统一过滤 live 与 history |
+
+### 活动聚合 `aggregate` / `ActivityResponse`（`activity.rs`）
+
+| 项 | 签名 | 说明 |
+|----|------|------|
+| `aggregate` | `(inputs: &[AggInput], window_ms: u64, now: u64) -> ActivityResponse` | 纯函数：桶宽 `bucket_ms = (window_ms / 24).max(1)`，窗起点对齐到整 `BUCKETS=24` 桶；仅计 `ts_unix_ms` 落在 `[now - bucket_ms*24, now]` 窗内的 `AggInput`。统计趋势桶、错误数、`error_kind` 分布、最慢/最忙 `TOP_N=5` 双榜——**只读元数据** |
+| `AggInput` | — | 聚合输入：`id` / `ts_unix_ms` / `meta_tool` / `target_tool?` / `latency_ms` / `outcome`(`"ok"\|"error"\|"timeout"`) / `error_kind?`（**无** args/result） |
+| `ActivityResponse` | `Serialize` | 活动洞察响应体：`window_ms` / `bucket_ms` / `buckets[24]`（每桶 `ActivityBucket{t, total, errors}`，oldest-first，桶起点 `t` 为 unix ms）/ `total` / `errors` / `by_error_kind[KindCount{kind, count}]` / `slowest[SlowCall{id, label, meta_tool, latency_ms, outcome}]`（latency 降序 Top5）/ `busiest_tools[ToolCount{name, count}]`（计数降序 Top5）——**仅元数据** |
 
 ### 历史回放 `replay_audit_metrics` / `replay_discovery_items` / `replay_audit_calls` / `MetricBucket`（`history.rs`）
 
@@ -73,12 +82,13 @@
 |----|------|------|
 | `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` |
 | `UpstreamInfo` | `Serialize` | 一个配置上游的静态身份：`name` / `transport`（装配期由 `Config` 给出） |
-| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 11 个 `/api/*` 路由 + `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
+| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 12 个 `/api/*` 路由 + `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
 
 `/api/*` 端点（逐符号见 L4）：`/api/overview`、`/api/upstreams`、`/api/upstreams/{name}`、`/api/tools?q=`、
 `/api/tools/{name}`、`/api/metrics`、`/api/traces?source=live|history&limit=`、`/api/traces/{id}`、
 `/api/metrics/history?limit=&bucket_ms=`、
-`/api/calls?source=live|history&meta=&upstream=&tool=&outcome=&since=&until=&q=&arg_key=&arg_val=&limit=&offset=`（`q`/`arg_key`/`arg_val` 为内容过滤，仅 live）、`/api/calls/{id}`
+`/api/calls?source=live|history&meta=&upstream=&tool=&outcome=&since=&until=&q=&arg_key=&arg_val=&limit=&offset=`（`q`/`arg_key`/`arg_val` 为内容过滤，仅 live）、`/api/calls/{id}`、
+`/api/activity?window=<ms>`（活动聚合，`window` 缺省 15min、clamp 1min–24h，返回 `ActivityResponse`）
 （M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404）。
 
 ## 依赖
