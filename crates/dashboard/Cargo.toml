@@ -19,3 +19,5 @@ subtle = "2"
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
+upstream = { path = "../upstream", features = ["testkit"] }
+rmcp = { workspace = true, features = ["client", "server", "macros", "transport-io"] }

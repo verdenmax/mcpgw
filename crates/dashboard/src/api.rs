@@ -425,15 +425,10 @@ mod tests {
     use axum::http::StatusCode;
     use observe::{CallContentSink, CallSink};
 
-    async fn seeded_state() -> AppState {
-        // A gateway with two tools under one server, rebuilt so the snapshot is populated.
-        let gw = Arc::new(GatewayState::new("bm25").unwrap());
-        // Seed the snapshot directly via a rebuild over a registry is heavy; instead assert on the
-        // metrics/upstreams plumbing using an empty gateway + configured upstream list.
-        let metrics = Arc::new(MetricsSink::new());
+    fn make_state(gw: Arc<GatewayState>) -> AppState {
         AppState {
             gateway: gw,
-            metrics,
+            metrics: Arc::new(MetricsSink::new()),
             discovery: None,
             calls: None,
             upstreams: vec![UpstreamInfo {
@@ -454,6 +449,31 @@ mod tests {
             ),
             admin_token: None,
         }
+    }
+
+    async fn seeded_state() -> AppState {
+        make_state(Arc::new(GatewayState::new("bm25").unwrap()))
+    }
+
+    /// A gateway with the testkit MockUpstream connected and rebuilt (catalog populated with
+    /// `mock__echo`/`mock__greet`/...). Returns the server task to abort at test end.
+    async fn gateway_with_mock(name: &str) -> (Arc<GatewayState>, tokio::task::JoinHandle<()>) {
+        use rmcp::ServiceExt;
+        let (server_io, client_io) = tokio::io::duplex(4096);
+        let join = tokio::spawn(async move {
+            let svc = upstream::testkit::MockUpstream::new()
+                .serve(server_io)
+                .await
+                .unwrap();
+            svc.waiting().await.unwrap();
+        });
+        let handle = upstream::connection::UpstreamHandle::connect(name, client_io)
+            .await
+            .unwrap();
+        let gw = Arc::new(GatewayState::new("bm25").unwrap());
+        gw.registry().insert(Arc::new(handle));
+        gw.rebuild_snapshot().await.unwrap();
+        (gw, join)
     }
 
     #[tokio::test]
@@ -511,6 +531,27 @@ mod tests {
         let st = Arc::new(seeded_state().await); // empty catalog (no upstreams ingested)
         let r = crate::admin::disable_tool(State(st.clone()), Path("github__x".into())).await;
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn admin_disable_tool_success_hides_it_and_reflects_in_disabled() {
+        let (gw, join) = gateway_with_mock("mock").await;
+        let st = Arc::new(make_state(gw));
+        assert!(st.gateway.snapshot().catalog().get("mock__echo").is_some());
+
+        let r = crate::admin::disable_tool(State(st.clone()), Path("mock__echo".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        // After the handler's rebuild: gone from the catalog, listed in /api/disabled.
+        assert!(st.gateway.snapshot().catalog().get("mock__echo").is_none());
+        assert_eq!(disabled(&st).tools, vec!["mock__echo"]);
+        // Sibling tool is unaffected.
+        assert!(st.gateway.snapshot().catalog().get("mock__greet").is_some());
+
+        let r = crate::admin::enable_tool(State(st.clone()), Path("mock__echo".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(st.gateway.snapshot().catalog().get("mock__echo").is_some());
+
+        join.abort();
     }
 
     #[tokio::test]
