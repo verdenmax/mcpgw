@@ -79,7 +79,7 @@
 - **静态交付变化**：由原先 `include_str!` 三文件（`/`、`/app.js`、`/style.css`）改为单个 `assets::static_handler`
   挂在 router `.fallback`（`/` → 内嵌 `index.html`、`/assets/*` → 内嵌资源；未知路径回退 `index.html`）。**hash 路由**
   让 fragment 不发往服务端，故深链刷新只请求 `/`，**无需 history 回退改写**；hash params 经 `decodeURIComponent` 解码。
-  `/api/*` 端点数随 M3 增至 **11 个**。
+  `/api/*` 端点数现为 **13 个**（M3 详情下钻 + M1 `/api/calls`、`/api/activity`、`/api/about`）。
 - **视图**：Overview（指标卡，**可点直达** upstreams/tools/calls 列表）、Calls（指标卡 → 逐条列表 → 详情下钻：
   `/api/metrics` 可点击卡过滤 `/api/calls`，行进 `/api/calls/{id}`）、Upstreams / Tools / Traces 列表，**M3 新增三个详情视图**
   `UpstreamDetail`/`ToolDetail`/`TraceDetail`（上游/工具/追踪下钻 + 上游↔工具↔调用↔追踪交叉链接）。各视图每 3s 轮询既有
@@ -136,6 +136,15 @@
   点柱经 `pendingBucket`（`bucketSel.svelte.js`）跨页带窗跳 `#/calls`（Calls 组件初始化时消费一次）。桶筛（绝对
   `since`+`until`）与滚动时间范围**互斥**（选范围 chip 清桶选、反之亦然），并有「selected bucket」chip 可一键清除。
   复用既有 `/api/calls` 的 `since`/`until` 闭区间，`/api/activity` 不变。
+
+## About/Settings（`/api/about`，启动时组装、运行期不变、仅非敏感）
+
+`/api/about` 回 dashboard 的 About/Settings 视图：**启动时**由 `AboutInfo::from_config(&cfg, version)` 从生效配置 + 版本组装**一次**、存进 `AppState.about`，`h_about` 直接 `clone` 序列化（**运行期不变、零计算**、无 `spawn_blocking`、无锁）。展示生效的非敏感配置/限额（retrieval 策略/top_k、dashboard 缓冲/截断、audit 开关/路径、server 监听形态、各上游 transport/超时）+ 版本/构建信息。
+
+- **隐私边界（仅非敏感、绝不含密钥/env）**：`AboutInfo` 及其嵌套类型（`VersionInfo`/`RetrievalInfo`/`DashboardInfo`/`AuditInfo`/`ServerInfo`/`UpstreamConfigInfo`）**字段集里根本不含**任何密钥/token/env 名/env 值/上游认证引用。`server.http_auth` **仅 bool**（`!api_keys.is_empty()`，有无鉴权），**绝不**带键名或 env 名；上游只暴露 `name`/`transport`/`call_timeout_ms`，**不含** url/bearer_env。单测 `http_auth_true_and_no_secrets_leak` 用含 `api_key`(env `SECRET_KEY`) + http 上游(`bearer_env=REMOTE_TOKEN`) 的配置组装后断言序列化 JSON **不含** `SECRET_KEY`/`REMOTE_TOKEN`/`bearer_env`/`api_key`/`admin`/`example.com`。
+- **版本/构建信息**：`VersionInfo` 由 `main.rs` 注入——`version=CARGO_PKG_VERSION`、`git_sha=MCPGW_GIT_SHA`、`build_time=MCPGW_BUILD_TIME`（后两者由 `crates/mcpgw/build.rs` 在编译期写入，git/构建时间失败时优雅降级为 `"unknown"`/`0`，详见 [`mcpgw-main`](../L4-api/mcpgw-main.md)）。
+- **`transport_label` 自包含**：`about.rs` 私有的 `transport_label`（`Stdio→"stdio"`/`Http→"http"`）**不复用** `mcpgw` 的 `transport_str`，使 dashboard crate **不反向依赖 mcpgw**。
+- **mock-上游 e2e**（`dashboard_detail_endpoints_with_mock_upstream`）断言 `version.version` 非空、`server.http_auth=false`（测试配置无 api_key）、`upstreams` 含 `{name:"mock", transport:"stdio"}`。
 
 ## `MetricsSink`：固定桶直方图 + 近似分位
 

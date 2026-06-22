@@ -440,6 +440,14 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
             audit_path: cfg.audit.enabled.then(|| PathBuf::from(&cfg.audit.path)),
             discovery_path: cfg.dashboard.trace_path.as_ref().map(PathBuf::from),
             started_at: std::time::Instant::now(),
+            about: dashboard::AboutInfo::from_config(
+                &cfg,
+                dashboard::VersionInfo {
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    git_sha: env!("MCPGW_GIT_SHA").to_string(),
+                    build_time: env!("MCPGW_BUILD_TIME").to_string(),
+                },
+            ),
         });
         // Enforce a local Host header only when bound to loopback (non-loopback is an explicit,
         // already-warned operator exposure that they front themselves).

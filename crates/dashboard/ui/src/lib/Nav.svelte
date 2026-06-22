@@ -7,6 +7,7 @@
     ["tools", "Tools", "tools"],
     ["calls", "Calls", "calls"],
     ["traces", "Traces", "traces"],
+    ["about", "About", "info"],
   ];
 </script>
 

@@ -39,5 +39,7 @@
   {:else if name === "refresh"}
     <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
     <path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10" /><path d="M1 14l4.6 4.4A9 9 0 0 0 20.5 15" />
+  {:else if name === "info"}
+    <circle cx="12" cy="12" r="9" /><line x1="12" y1="11" x2="12" y2="16" /><line x1="12" y1="8" x2="12.01" y2="8" />
   {/if}
 </svg>

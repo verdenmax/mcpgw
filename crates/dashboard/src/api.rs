@@ -29,6 +29,8 @@ pub struct AppState {
     pub audit_path: Option<PathBuf>,
     pub discovery_path: Option<PathBuf>,
     pub started_at: Instant,
+    /// 启动时组装的只读 About/Settings 信息（非敏感）。
+    pub about: crate::about::AboutInfo,
 }
 
 #[derive(Serialize)]
@@ -433,6 +435,14 @@ mod tests {
             audit_path: None,
             discovery_path: None,
             started_at: Instant::now(),
+            about: crate::about::AboutInfo::from_config(
+                &config::Config::default_from_empty(),
+                crate::about::VersionInfo {
+                    version: "0.0.0-test".into(),
+                    git_sha: "test".into(),
+                    build_time: "0".into(),
+                },
+            ),
         }
     }
 

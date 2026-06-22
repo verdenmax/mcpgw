@@ -14,6 +14,7 @@
   import ToolDetail from "./lib/ToolDetail.svelte";
   import Traces from "./lib/Traces.svelte";
   import TraceDetail from "./lib/TraceDetail.svelte";
+  import About from "./lib/About.svelte";
 
   let now = $state(Date.now()); // 1s clock so the "updated Ns ago" label ticks
   const updatedAgo = $derived.by(() => { void now; return ago(refresh.at); });
@@ -59,6 +60,8 @@
       <TraceDetail id={route.params[0]} />
     {:else if route.view === "traces"}
       <Traces />
+    {:else if route.view === "about"}
+      <About />
     {:else}
       <p class="muted">coming soon</p>
     {/if}

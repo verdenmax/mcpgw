@@ -408,6 +408,27 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         "mock__echo is among busiest tools: {busy:?}"
     );
 
+    // About/Settings: version present, no auth (test config has no api_key), mock upstream listed.
+    let about: serde_json::Value = http
+        .get(format!("{base}/api/about"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !about["version"]["version"].as_str().unwrap().is_empty(),
+        "about.version.version is non-empty"
+    );
+    assert_eq!(about["server"]["http_auth"], serde_json::json!(false));
+    let ups = about["upstreams"].as_array().unwrap();
+    assert!(
+        ups.iter()
+            .any(|u| u["name"] == "mock" && u["transport"] == "stdio"),
+        "mock upstream listed: {ups:?}"
+    );
+
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
 }

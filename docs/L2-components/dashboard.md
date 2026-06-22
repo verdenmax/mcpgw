@@ -3,7 +3,7 @@
 ## 职责
 
 网关的**只读可视化面板**（子系统 A）：把 `gateway` 的活快照、`observe` 的调用观测与可选的历史 JSONL
-回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 12 个 `/api/*` JSON 端点 + 一个
+回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 13 个 `/api/*` JSON 端点 + 一个
 **Svelte 5 + Vite 构建、经 `rust-embed` 内嵌**的 SPA（`assets::static_handler` fallback 交付）。它**只读、不改动
 任何网关状态**，默认关闭、须显式 opt-in。
 
@@ -76,19 +76,29 @@
 | `replay_audit_calls` | `(path: &Path, scan_limit: usize, filter: &CallFilter) -> (Vec<CallItem>, bool)` | 回放审计 JSONL 为逐条 `CallItem`，newest-first，稳定 id `"h{ts}-{n}"`，`filter` 在 id 分配后应用；`bool` = 文件可读 |
 | `MetricBucket` | `Serialize` | `bucket_start_ms` / `calls` / `errors` |
 
+### About/Settings 视图 `AboutInfo` / `AboutInfo::from_config`（`about.rs`）
+
+| 项 | 签名 | 说明 |
+|----|------|------|
+| `AboutInfo` | `Serialize` + `Clone` | 启动时从 `config::Config` + 版本组装的**非敏感**生效配置只读快照（运行期不可变）：`version`（`VersionInfo`）/ `retrieval`（`strategy`/`top_k`）/ `dashboard`（`call_buffer`/`payload_max_bytes`/`trace_queries`/`trace_buffer`/`trace_path`）/ `audit`（`enabled`/`path`，仅 `enabled` 时给 `path`）/ `server`（`stdio`/`http_enabled`/`http_bind`/`http_path`/`http_auth`——`http_auth` 是**裸 bool**=是否配了 ≥1 个 API-Key）/ `upstreams`（`Vec<UpstreamConfigInfo>`）。**字段集里根本不含**任何密钥/token/env 名/env 值 |
+| `AboutInfo::from_config` | `(cfg: &Config, version: VersionInfo) -> AboutInfo` | 纯映射：从生效配置摘出上述非敏感字段（HTTP 段缺省/未启用时 `http_bind`/`http_path` 为 `None`、`http_auth=false`；`http_auth = !api_keys.is_empty()`——只判存在性，**绝不**读 env 名/值）；`version` 由 `main.rs` 经 `build.rs` 注入的 `MCPGW_GIT_SHA`/`MCPGW_BUILD_TIME` 构造后传入 |
+| `VersionInfo` | `Serialize` + `Clone` | `version` / `git_sha` / `build_time` |
+| `UpstreamConfigInfo` | `Serialize` + `Clone` | 一个配置上游的非敏感设置：`name` / `transport`（`stdio`/`http` 短标签）/ `call_timeout_ms`（**无** url/bearer/任何认证引用） |
+
 ### API 状态与路由 `AppState` / `UpstreamInfo` / `build_dashboard_router`（`api.rs` / `lib.rs`）
 
 | 项 | 签名 | 说明 |
 |----|------|------|
-| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` |
+| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` / 启动时组装、运行期不可变的 `about: AboutInfo` |
 | `UpstreamInfo` | `Serialize` | 一个配置上游的静态身份：`name` / `transport`（装配期由 `Config` 给出） |
-| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 12 个 `/api/*` 路由 + `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
+| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 13 个 `/api/*` 路由 + `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
 
 `/api/*` 端点（逐符号见 L4）：`/api/overview`、`/api/upstreams`、`/api/upstreams/{name}`、`/api/tools?q=`、
 `/api/tools/{name}`、`/api/metrics`、`/api/traces?source=live|history&limit=`、`/api/traces/{id}`、
 `/api/metrics/history?limit=&bucket_ms=`、
 `/api/calls?source=live|history&meta=&upstream=&tool=&outcome=&since=&until=&q=&arg_key=&arg_val=&limit=&offset=`（`q`/`arg_key`/`arg_val` 为内容过滤，仅 live）、`/api/calls/{id}`、
-`/api/activity?window=<ms>`（活动聚合，`window` 缺省 15min、clamp 1min–24h，返回 `ActivityResponse`）
+`/api/activity?window=<ms>`（活动聚合，`window` 缺省 15min、clamp 1min–24h，返回 `ActivityResponse`）、
+`/api/about`（启动时组装的**非敏感**生效配置/限额 + 版本/git SHA/构建时间，运行期不可变，返回 `Json<AboutInfo>`——**绝不**含密钥/token/env 名/值）
 （M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404）。
 
 ## 依赖
