@@ -252,6 +252,30 @@ impl CallRingSink {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         ring.iter().find(|s| s.seq == seq).map(|s| s.to_item(true))
     }
+
+    /// 把 live 环聚合为 `ActivityResponse`（最近 `window_ms`，仅元数据，绝不含 args/result）。
+    /// 投影窗内（及窗外，由 `aggregate` 统一按窗过滤）记录的元数据，交给纯函数 `crate::activity::aggregate`。
+    pub fn activity(&self, window_ms: u64) -> crate::activity::ActivityResponse {
+        let now = CallRecord::now_unix_ms();
+        let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let inputs: Vec<crate::activity::AggInput> = ring
+            .iter()
+            .map(|s| {
+                let r = &s.record;
+                crate::activity::AggInput {
+                    id: s.seq.to_string(),
+                    ts_unix_ms: r.ts_unix_ms,
+                    meta_tool: r.meta_tool.as_str().to_string(),
+                    target_tool: r.target_tool.clone(),
+                    latency_ms: r.latency_ms,
+                    outcome: r.outcome.as_str().to_string(),
+                    error_kind: r.error_kind.map(|s| s.to_string()),
+                }
+            })
+            .collect();
+        drop(ring);
+        crate::activity::aggregate(&inputs, window_ms, now)
+    }
 }
 
 impl CallContentSink for CallRingSink {
@@ -716,6 +740,43 @@ mod tests {
             ring.query(&f, 10, 0).1,
             1,
             "numeric value stringified and matched"
+        );
+    }
+
+    #[test]
+    fn activity_aggregates_live_ring_window() {
+        let ring = CallRingSink::new(10);
+        let now = CallRecord::now_unix_ms();
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Ok,
+                now,
+            ),
+            &content(),
+        );
+        ring.record(
+            &rec(
+                MetaTool::CallTool,
+                Some("gh"),
+                Some("gh__a"),
+                CallOutcome::Error,
+                now,
+            ),
+            &content(),
+        );
+        let r = ring.activity(60_000);
+        assert_eq!(r.buckets.len(), 24, "fixed 24 buckets");
+        assert_eq!(r.total, 2);
+        assert_eq!(r.errors, 1, "one Error among two");
+        assert_eq!(r.busiest_tools[0].name, "gh__a");
+        assert_eq!(r.busiest_tools[0].count, 2);
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("\"args\""),
+            "ring path must not leak content"
         );
     }
 }

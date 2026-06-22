@@ -119,6 +119,19 @@
 - **内容过滤（M2，仅 live）**：`/api/calls` 支持 `q`（自由文本：对 args+result 的截断 JSON 文本做大小写不敏感子串，故可命中 JSON 键名与标点）与 `arg_key`+`arg_val`（结构化：解析 args JSON 后**递归**找任一键 `== arg_key`（精确、大小写敏感）且字符串化值 `contains` `arg_val`（大小写不敏感）；容器值会被字符串化，截断/非法 JSON → 不命中）。两参数**必须成对**给出，缺其一静默忽略。内容过滤**只对带内容的 live 项**生效：`CallFilter::matches` 把内容检查门控在 `Some(args)` 之内，history 回放无内容（`args==None`）故 `source=history` 时内容过滤被自然忽略。**性能（metadata-first）**：`query` 仅当存在内容过滤时 `want_content=true`；先用轻量 `to_item(false)` 跑元数据谓词，无内容过滤时直接走轻量路径（与 M1 同成本），**仅对元数据幸存者**才付 `to_item(true)` 构建内容并复跑过滤，最后剥离页内内容——**列表始终不含内容**。前端在主 Calls 页与 `UpstreamDetail`/`ToolDetail` 详情页的 Recent-calls 列表均提供内容搜索 UI（history 下禁用）。
 - **测试覆盖**：`calls.rs` 内容过滤单测（`query_free_text_filters_over_args_and_result`、`query_arg_key_value_recurses_nested_args`、`query_free_text_matches_result_only` 等，含截断/非法 JSON 不命中的边界）+ mock-上游 e2e（`q=hi`/`arg_key=text&arg_val=hi` 命中、非匹配 `q` 返回 `total=0`）。
 
+## 活动聚合（M3，`/api/activity`，只读、仅元数据）
+
+`/api/activity?window=<ms>` 把 live 调用环窗内记录聚合为面板的趋势 sparkline + error_kind 分布 + 最慢/最忙 Top-5。`CallRingSink::activity(window_ms)` 在锁内把每条环记录投影为 `activity::AggInput`（**仅元数据**：`seq`/`ts`/`meta_tool`/`target_tool?`/`latency_ms`/`outcome`/`error_kind?`，**绝不读 `content` 的 args/result**），释放锁后交给纯函数 `activity::aggregate`。dashboard 未启用（`calls` 为 `None`）时 `api::activity` 退化为 `aggregate(&[], …)`，回 24 个全 0 桶。
+
+- **窗口解析（`parse_window`）**：查询参数 `window`（ms）缺省 `900_000`（15min），`clamp(60_000, 86_400_000)` 即 [1min, 24h]；解析失败回退缺省。
+- **固定 24 桶**：`bucket_ms = (window/24).max(1)`、`span = bucket_ms*24`、`start = now - span`；桶 `i` 起点 `start + i*bucket_ms`，`now` 落**末桶**（柱数恒为 24，渲染稳定）。
+- **窗外不计**：`ts < start` 的记录跳过；桶索引在 u64 内 `.min(23)` clamp 后才转 usize（防远未来 ts 越界）。
+- **错误口径**：`errors` = `outcome != "ok"`（`error`/`timeout` 均计错，同时累加到所在桶的 `errors`）。
+- **`by_error_kind`**：仅统计带 `error_kind` 的记录（即非 ok 调用），count 降序、并列 kind 名升序。
+- **`busiest_tools`**：**仅按 `target_tool`** 计数（`search_tools` 无 target，不计入），count 降序取 Top-5。
+- **`slowest`**：按 `latency_ms` 降序（并列按 ts 降序）取 Top-5；`label` 取 `target_tool`，无则回退 `meta_tool`。
+- **隐私边界**：`ActivityResponse`（及其 `ActivityBucket`/`KindCount`/`SlowCall`/`ToolCount`）**类型层面**就不含任何内容字段；单测 `response_has_no_payload_content_fields` 与环级 `activity_aggregates_live_ring_window` 断言序列化 JSON **不含** `"args"`/`"result"`。该端点走 live 内存读，无 `spawn_blocking`。
+
 ## `MetricsSink`：固定桶直方图 + 近似分位
 
 - **固定桶上界（ms）**：`BUCKETS_MS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, u64::MAX]`（最后一桶无界）。
@@ -178,6 +191,8 @@
   `query_free_text_matches_result_only`（`q` 子串扫 args+result）、`query_arg_key_value_recurses_nested_args`/
   `arg_filter_matches_numeric_value`（`arg_key`+`arg_val` 递归命中含数值）、`content_filters_skip_items_without_content`
   （无内容项不被内容过滤排除）、`arg_filter_invalid_json_does_not_match_or_panic`（非法/截断 JSON 不命中、不 panic）。
+  **M3 活动聚合** `activity_aggregates_live_ring_window`：环投影为 `AggInput` 后 `aggregate`，固定 24 桶、`total`/`errors` 计数、`busiest_tools` 首项命中，且序列化**不含** `"args"`（环路径不漏内容）。
+- `activity.rs`（**M3 活动聚合**）：`aggregate` 纯函数单测——固定 24 桶宽/数、`now` 落末桶且窗外不计、`errors=outcome!=ok` 计桶与总、`by_error_kind` 仅非 ok 且 count 降序、`busiest_tools` 仅 `target_tool` 且 Top-5 截断、`slowest` 按 latency 降序 Top-5、`slow` label 回退 `meta_tool`、`ActivityResponse` 序列化无 `args`/`result`（隐私）。`api.rs` `parse_window_defaults_and_clamps`：缺省 15min、低/高 clamp 到 [1min,24h]、区间内透传、不可解析回退缺省。
 - `config`（**M1**）：`[dashboard].call_buffer` 默认 `2000`、`call_buffer = 0` 被 `validate` 拒绝；
   `[dashboard].payload_max_bytes` 默认 `16384`、`payload_max_bytes = 0` 被 `validate` 拒绝。
 - `lib.rs` / `assets.rs`：内嵌 UI 就位且接线（`assets.rs` 测内嵌 `index.html` 含 Svelte 挂载点 `id="app"`、
