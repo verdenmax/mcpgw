@@ -1143,6 +1143,13 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
         )
         .unwrap();
         assert!(resolve_admin_token(&cfg).is_err());
+
+        std::env::set_var("MCPGW_T8_EMPTY", "");
+        let cfg = config::Config::from_toml_str(
+            "[dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_T8_EMPTY\"\n",
+        )
+        .unwrap();
+        assert!(resolve_admin_token(&cfg).is_err(), "empty env -> fail-fast");
     }
 ```
 
