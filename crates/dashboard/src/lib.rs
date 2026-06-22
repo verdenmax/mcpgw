@@ -24,13 +24,15 @@ pub use api::{AppState, UpstreamInfo};
 
 mod assets;
 
+mod admin;
+
 use axum::extract::Request;
 use axum::extract::{Path, Query, State};
 use axum::http::header::HOST;
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -237,6 +239,21 @@ async fn require_local_host(req: Request, next: Next) -> axum::response::Respons
 /// Build the dashboard's router. When `enforce_loopback_host` is true (dashboard bound to
 /// loopback), a layer rejects requests whose `Host` isn't local, closing the DNS-rebinding vector.
 pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router {
+    let admin = axum::Router::new()
+        .route(
+            "/api/admin/upstreams/{name}/disable",
+            post(admin::disable_upstream),
+        )
+        .route(
+            "/api/admin/upstreams/{name}/enable",
+            post(admin::enable_upstream),
+        )
+        .route("/api/admin/tools/{name}/disable", post(admin::disable_tool))
+        .route("/api/admin/tools/{name}/enable", post(admin::enable_tool))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin::require_admin_token,
+        ));
     let router = axum::Router::new()
         .route("/api/overview", get(h_overview))
         .route("/api/upstreams", get(h_upstreams))
@@ -252,6 +269,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         .route("/api/activity", get(h_activity))
         .route("/api/about", get(h_about))
         .route("/api/disabled", get(h_disabled))
+        .merge(admin)
         .fallback(assets::static_handler)
         .with_state(state);
     if enforce_loopback_host {

@@ -31,6 +31,8 @@ pub struct AppState {
     pub started_at: Instant,
     /// 启动时组装的只读 About/Settings 信息（非敏感）。
     pub about: crate::about::AboutInfo,
+    /// Admin Bearer token (env-resolved at startup). None -> /api/admin/* returns 404.
+    pub admin_token: Option<std::sync::Arc<str>>,
 }
 
 #[derive(Serialize)]
@@ -419,6 +421,8 @@ pub fn activity(state: &AppState, window_ms: u64) -> crate::activity::ActivityRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
     use observe::{CallContentSink, CallSink};
 
     async fn seeded_state() -> AppState {
@@ -448,6 +452,7 @@ mod tests {
                     build_time: "0".into(),
                 },
             ),
+            admin_token: None,
         }
     }
 
@@ -481,6 +486,105 @@ mod tests {
         let snap = disabled(&st);
         assert_eq!(snap.upstreams, vec!["github"]);
         assert_eq!(snap.tools, vec!["github__create_issue"]);
+    }
+
+    #[tokio::test]
+    async fn admin_disable_enable_upstream_roundtrip() {
+        let st = Arc::new(seeded_state().await); // upstreams = ["github"]
+        let r = crate::admin::disable_upstream(State(st.clone()), Path("github".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(disabled(&st).upstreams, vec!["github"]);
+        let r = crate::admin::enable_upstream(State(st.clone()), Path("github".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(disabled(&st).upstreams.is_empty());
+    }
+
+    #[tokio::test]
+    async fn admin_disable_unknown_upstream_is_404() {
+        let st = Arc::new(seeded_state().await);
+        let r = crate::admin::disable_upstream(State(st.clone()), Path("nope".into())).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn admin_disable_absent_tool_is_404() {
+        let st = Arc::new(seeded_state().await); // empty catalog (no upstreams ingested)
+        let r = crate::admin::disable_tool(State(st.clone()), Path("github__x".into())).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn admin_disable_upstream_is_idempotent() {
+        let st = Arc::new(seeded_state().await);
+        let _ = crate::admin::disable_upstream(State(st.clone()), Path("github".into())).await;
+        let r = crate::admin::disable_upstream(State(st.clone()), Path("github".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(disabled(&st).upstreams, vec!["github"]); // still single entry
+    }
+
+    #[tokio::test]
+    async fn admin_routes_gated_and_open_read_stays_open() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt; // for `oneshot`
+
+        // Unconfigured admin token -> /api/admin/* is 404 (existence not leaked).
+        let st = Arc::new(seeded_state().await); // admin_token: None
+        let resp = crate::build_dashboard_router(st, false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/upstreams/x/disable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // Configure a token.
+        let mut state = seeded_state().await;
+        state.admin_token = Some(std::sync::Arc::from("sekret"));
+        let st = Arc::new(state);
+
+        // Missing/wrong Bearer -> 401.
+        let resp = crate::build_dashboard_router(st.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/upstreams/github/disable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Open read stays 200 even with a token configured and no Bearer.
+        let resp = crate::build_dashboard_router(st.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/disabled")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Correct Bearer -> 200 (github is a configured upstream; empty-gateway rebuild succeeds).
+        let resp = crate::build_dashboard_router(st.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/upstreams/github/disable")
+                    .header("authorization", "Bearer sekret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -448,6 +448,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
                     build_time: env!("MCPGW_BUILD_TIME").to_string(),
                 },
             ),
+            admin_token: None,
         });
         // Enforce a local Host header only when bound to loopback (non-loopback is an explicit,
         // already-warned operator exposure that they front themselves).
