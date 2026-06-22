@@ -346,6 +346,19 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 .spark { width: 100%; height: 46px; display: block; }
 .spark-legend { display: flex; gap: var(--s3); font-size: var(--fs-xs); color: var(--muted);
                 margin-top: var(--s2); font-variant-numeric: tabular-nums; }
+.sparkbars { display: flex; align-items: flex-end; gap: 2px; height: 56px; }
+.barcol { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column;
+          justify-content: flex-end; align-items: stretch; }
+.barbtn { background: none; border: 0; padding: 0; cursor: pointer; }
+.barnum { font-size: 9px; line-height: 1; text-align: center; color: var(--muted);
+          font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.bar { width: 100%; max-height: calc(100% - 13px); border-radius: 2px 2px 0 0;
+       background: linear-gradient(180deg, var(--accent), var(--accent-2));
+       display: flex; align-items: flex-end; }
+.barbtn:hover .bar { filter: brightness(1.18); }
+.barbtn:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
+.barerr { width: 100%; background: var(--danger); border-radius: 2px 2px 0 0; }
+.bar0 { height: 2px; width: 100%; background: var(--border); border-radius: 1px; }
 .kindbar { display: flex; gap: var(--s2); flex-wrap: wrap; margin: 0 0 var(--s4); }
 .leadrow { display: flex; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s4); }
 .lead { flex: 1; min-width: 220px; background: linear-gradient(180deg, var(--panel-2), var(--panel));
