@@ -87,7 +87,8 @@ pub fn aggregate(inputs: &[AggInput], window_ms: u64, now: u64) -> ActivityRespo
         if c.ts_unix_ms < start {
             continue; // 窗外
         }
-        let idx = (((c.ts_unix_ms - start) / bucket_ms) as usize).min(BUCKETS - 1);
+        // Clamp in u64 *before* the cast so a far-future ts can't wrap past 24 on a 32-bit usize.
+        let idx = ((c.ts_unix_ms - start) / bucket_ms).min(BUCKETS as u64 - 1) as usize;
         let is_err = c.outcome != "ok";
         buckets[idx].total += 1;
         total += 1;
