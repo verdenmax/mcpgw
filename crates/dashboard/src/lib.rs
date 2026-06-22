@@ -149,6 +149,10 @@ async fn h_about(State(s): State<Arc<AppState>>) -> Json<AboutInfo> {
     Json(s.about.clone())
 }
 
+async fn h_disabled(State(s): State<Arc<AppState>>) -> Json<gateway::DisabledSnapshot> {
+    Json(api::disabled(&s))
+}
+
 async fn h_call_detail(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -247,6 +251,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         .route("/api/calls/{id}", get(h_call_detail))
         .route("/api/activity", get(h_activity))
         .route("/api/about", get(h_about))
+        .route("/api/disabled", get(h_disabled))
         .fallback(assets::static_handler)
         .with_state(state);
     if enforce_loopback_host {

@@ -169,6 +169,11 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
         .collect()
 }
 
+/// `/api/disabled` body: the current runtime disable set (open/read-only).
+pub fn disabled(s: &AppState) -> gateway::DisabledSnapshot {
+    s.gateway.disabled().snapshot()
+}
+
 /// Single-upstream detail: its `UpstreamView` fields + the list of tools it currently exposes.
 /// `None` if `name` isn't a configured upstream.
 pub fn upstream_detail(state: &AppState, name: &str) -> Option<UpstreamDetail> {
@@ -463,6 +468,19 @@ mod tests {
         assert_eq!(ups[0].name, "github");
         assert_eq!(ups[0].transport, "stdio");
         assert_eq!(ups[0].status, "unknown"); // no rebuild summary yet
+    }
+
+    #[tokio::test]
+    async fn disabled_endpoint_reflects_gateway_disable_set() {
+        let st = seeded_state().await;
+        // Empty by default.
+        assert_eq!(disabled(&st), gateway::DisabledSnapshot::default());
+        // Mutating the shared gateway disable set is reflected through the endpoint.
+        st.gateway.disabled().disable_upstream("github");
+        st.gateway.disabled().disable_tool("github__create_issue");
+        let snap = disabled(&st);
+        assert_eq!(snap.upstreams, vec!["github"]);
+        assert_eq!(snap.tools, vec!["github__create_issue"]);
     }
 
     #[tokio::test]
