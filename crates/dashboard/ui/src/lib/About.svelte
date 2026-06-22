@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { getJSON } from "./api.js";
+  import { admin } from "./admin.svelte.js";
   let info = $state(null);
   let error = $state(null);
   onMount(async () => {
@@ -52,6 +53,15 @@
     <tr><th>http_path</th><td class="mono">{info.server.http_path ?? "—"}</td></tr>
     <tr><th>http_auth</th><td><span class="badge {info.server.http_auth ? 'ok' : 'unknown'}">{info.server.http_auth ? "enabled" : "disabled"}</span></td></tr>
   </tbody></table></div>
+
+  <h3>Admin (write access)</h3>
+  <div class="table-wrap"><table class="kv"><tbody>
+    <tr><th>status</th><td><span class="badge {info.dashboard.admin_enabled ? 'ok' : 'unknown'}">{info.dashboard.admin_enabled ? "enabled" : "disabled"}</span></td></tr>
+  </tbody></table></div>
+  {#if info.dashboard.admin_enabled}
+    <p class="hint">Paste the admin token to unlock disable/enable controls. Held in memory only (cleared on refresh).</p>
+    <input class="search" type="password" placeholder="admin token…" autocomplete="off" bind:value={admin.token} />
+  {/if}
 
   <h3>Upstreams ({info.upstreams.length})</h3>
   {#if info.upstreams.length === 0}
