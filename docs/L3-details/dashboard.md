@@ -131,6 +131,11 @@
 - **`busiest_tools`**：**仅按 `target_tool`** 计数（`search_tools` 无 target，不计入），count 降序取 Top-5。
 - **`slowest`**：按 `latency_ms` 降序（并列按 ts 降序）取 Top-5；`label` 取 `target_tool`，无则回退 `meta_tool`。
 - **隐私边界**：`ActivityResponse`（及其 `ActivityBucket`/`KindCount`/`SlowCall`/`ToolCount`）**类型层面**就不含任何内容字段；单测 `response_has_no_payload_content_fields` 断言序列化 JSON **不含** `"args"`/`"result"`，环级 `activity_aggregates_live_ring_window` 另断言**不含** `"args"`。该端点走 live 内存读，无 `spawn_blocking`。
+- **前端交互（点柱筛 Calls，纯前端、后端零改动）**：sparkline 现为**可交互 flex 柱**——非零柱顶部显示该桶调用数、
+  点击以 `since`/`until` **闭区间** `[t, t+bucket_ms-1]` 把 Calls 列表筛到该桶窗。Calls 内点柱直接本页筛、Overview
+  点柱经 `pendingBucket`（`bucketSel.svelte.js`）跨页带窗跳 `#/calls`（Calls 组件初始化时消费一次）。桶筛（绝对
+  `since`+`until`）与滚动时间范围**互斥**（选范围 chip 清桶选、反之亦然），并有「selected bucket」chip 可一键清除。
+  复用既有 `/api/calls` 的 `since`/`until` 闭区间，`/api/activity` 不变。
 
 ## `MetricsSink`：固定桶直方图 + 近似分位
 

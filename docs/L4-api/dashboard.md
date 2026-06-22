@@ -331,6 +331,14 @@ async fn require_local_host(req: Request, next: Next) -> axum::response::Respons
 - **交叉链接**形成 列表→详情→跳转 闭环：上游↔工具（`UpstreamDetail`↔`ToolDetail`）、工具/上游↔调用
   （`*Detail`→`/api/calls?tool=/upstream=` 近期调用、`CallDetail`→工具/上游）、追踪→命中工具（`TraceDetail`→
   `ToolDetail`）；href 一律 `encodeURIComponent` 编码名/ id。
+- **Activity sparkline 交互**（纯前端、后端无新增）：`Sparkline.svelte` 渲染 24 根 flex 柱，props
+  `buckets`/`bucketMs`/`onpick(since, until)`——非零柱是 `<button>`，点击回调绝对窗 `onpick(b.t, b.t + bucketMs - 1)`
+  （闭区间），零柱是非交互细基线。`Activity.svelte` 新增 `onpick` prop 并透传给 `Sparkline`。`bucketSel.svelte.js`
+  导出 `pendingBucket`（`$state`）作 Overview 点柱跳 `#/calls` 的跨页暂存窗，Calls 组件初始化时消费一次后清空。Calls
+  的 `bucketSel`（`{since, until}`）与滚动时间范围 `rangeMs` **互斥**：`query` derived **无条件读** `bucketSel`（避免
+  null→设的条件依赖陷阱）并在有桶选时附 `since`/`until`，`loadCalls` 的滚动 `since` 仅在**无 `bucketSel`** 时附加；
+  `setRange`/时间范围 chip 清桶选，selected-bucket chip 也清桶选。**后端无新增**——复用既有 `/api/calls` 的
+  `since`/`until`（闭区间 `[since, until]`），`/api/activity` 不变。
 - **XSS 防线**：Svelte 的 `{expr}` 插值**自动转义**，全前端**不用** `{@html}`（`assets.rs` 的
   `no_svelte_component_uses_raw_html` 单测扫描 `ui/src` 锁死这一点），故 query 文本/工具名/上游名/错误原因等不可信
   字段绝不以原始 HTML 注入。
