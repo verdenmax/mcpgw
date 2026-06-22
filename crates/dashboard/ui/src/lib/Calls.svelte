@@ -39,14 +39,15 @@
   }
   async function loadCalls() {
     const reqQ = query; // discard a superseded response if the query changed mid-flight
+    const reqRange = rangeMs; // `since` lives outside `query`, so guard the window separately
     // `since` is computed at request time (not in the memoized `query` derived) so the time window
     // slides with each refresh tick instead of freezing at the value from the last filter change.
     const since = rangeMs > 0 ? `&since=${Date.now() - rangeMs}` : "";
     try {
       const r = await getJSON(`/api/calls?${query}${since}`);
-      if (reqQ !== query) return;
+      if (reqQ !== query || reqRange !== rangeMs) return;
       resp = r; error = null;
-    } catch (e) { if (reqQ === query) error = String(e); }
+    } catch (e) { if (reqQ === query && reqRange === rangeMs) error = String(e); }
   }
   function pickMeta(m) { meta = meta === m ? "" : m; offset = 0; }
   function setSource(s) { source = s; offset = 0; }
