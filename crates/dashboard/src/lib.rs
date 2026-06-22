@@ -10,6 +10,11 @@ pub use trace::{DiscoveryRingSink, DiscoveryWriter, TraceItem};
 mod calls;
 pub use calls::{CallFilter, CallItem, CallRingSink};
 
+// `pub use` is added in Task 2; until then the module is private, so allow the
+// items to be unreachable from the crate root without tripping `-D warnings`.
+#[allow(dead_code)]
+mod activity;
+
 mod history;
 pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket};
 
