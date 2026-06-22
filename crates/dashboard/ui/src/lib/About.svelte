@@ -60,7 +60,7 @@
   </tbody></table></div>
   {#if info.dashboard.admin_enabled}
     <p class="hint">Paste the admin token to unlock disable/enable controls. Held in memory only (cleared on refresh).</p>
-    <input class="search" type="password" placeholder="admin token…" autocomplete="off" bind:value={admin.token} />
+    <input class="search" type="password" placeholder="admin token…" autocomplete="off" aria-label="admin token" bind:value={admin.token} />
   {/if}
 
   <h3>Upstreams ({info.upstreams.length})</h3>

@@ -302,6 +302,7 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
          border: 1px dashed var(--border); border-radius: var(--r-lg); background: rgba(255,255,255,.01); }
 .empty .ico { color: var(--faint); }
 .empty .hint { font-size: var(--fs-xs); color: var(--muted); }
+.hint { color: var(--muted); font-size: 12px; }
 
 /* ---- back link ------------------------------------------------------------- */
 .back { display: inline-flex; align-items: center; gap: 6px; color: var(--muted);
@@ -369,3 +370,18 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
            padding: 5px 6px; border-radius: var(--r-sm); color: var(--fg); transition: background .12s; }
 .lead-li:hover { background: var(--hover); color: var(--fg); }
 .lead-li .num { font-size: var(--fs-xs); }
+
+/* ---- admin disable/enable toggle ------------------------------------------- */
+.admbtn {
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.admbtn:hover { color: var(--fg); border-color: var(--muted); }
+.admbtn:disabled { opacity: 0.5; cursor: default; }
+.admbtn.err { color: var(--danger); border-color: var(--danger); }
