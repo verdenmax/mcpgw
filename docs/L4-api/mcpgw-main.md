@@ -24,6 +24,20 @@
 | `const DASHBOARD_SHUTDOWN_TIMEOUT` | `Duration = Duration::from_secs(3)` | 关停时等待 dashboard server 优雅 drain 的上限；超时只 `warn!`。先于 `drop(sinks)`/发现 writer drain，以便其 `AppState` 内 `DiscoveryRingSink` clone 提前释放 |
 | `fn main` | `() -> ExitCode` | 解析 CLI、调 `run`，映射退出码（成功 0 / 失败 1，错误打 stderr） |
 
+## 构建脚本（`crates/mcpgw/build.rs`）
+
+Cargo 自动检测 crate 根的 `build.rs`（无需改 `Cargo.toml`），在**编译期**把版本/构建信息写进 env 供 `main.rs` 的
+`env!()` 解析：
+
+| env 变量 | 来源 | 降级 |
+|----------|------|------|
+| `MCPGW_GIT_SHA` | `git rev-parse --short HEAD` 的 stdout（trim） | 非 git 仓库 / 无 `git` / 命令失败 / 空输出 → `"unknown"` |
+| `MCPGW_BUILD_TIME` | `SystemTime::now()` 距 UNIX_EPOCH 的 epoch **秒**（字符串） | 取时失败 → `0` |
+
+两个 `cargo:rustc-env=…` **总是**输出（带降级回退），故 `env!("MCPGW_GIT_SHA")`/`env!("MCPGW_BUILD_TIME")` 在
+`main.rs` 恒可解析、不会编译失败。脚本**未**声明 `cargo:rerun-if-*`，故不强制每次重建——`MCPGW_BUILD_TIME` 是
+「最近一次让 build.rs 重跑的构建」的近似时间而非每次编译的精确时刻（无密钥/敏感值，仅 SHA + 时间戳）。
+
 ## 命令行接口（对外契约）
 
 ### `mcpgw search <query> [--top-k N]`
@@ -66,7 +80,10 @@ fire-and-forget 取消，共享 handle 不再被静默跳过）。**日志走 st
 **先于** spawn 任何 serve task **预绑定**（fail-fast，对称于 HTTP）。`serve` 据绑定地址算
 `enforce_loopback_host = !unauthenticated_public_bind(&cfg.dashboard.bind, false)`（绑 loopback → `true`）并传给
 `build_dashboard_router`：绑 loopback 时挂 `require_local_host` 中间件，把 `Host` 非本地的请求 `403`（**抗 DNS
-重绑定、非鉴权**）；绑非 loopback（已 `warn` 的显式暴露）则跳过。关停时按固定顺序：HTTP drain →
+重绑定、非鉴权**）；绑非 loopback（已 `warn` 的显式暴露）则跳过。构造 `AppState` 时另把
+`dashboard::AboutInfo::from_config(&cfg, dashboard::VersionInfo { version: CARGO_PKG_VERSION, git_sha: MCPGW_GIT_SHA,
+build_time: MCPGW_BUILD_TIME })` 填进 `AppState.about`（启动时组装一次、只读、仅非敏感配置/限额 + 版本，喂
+`/api/about`；`git_sha`/`build_time` 来自上面的 `build.rs`）。关停时按固定顺序：HTTP drain →
 **dashboard drain（`DASHBOARD_SHUTDOWN_TIMEOUT = 3s`，先释放其 `AppState` 内 `DiscoveryRingSink` clone）** →
 `drop(sinks)` + 审计 drain → `drop(discovery_sinks/ring)` + 发现 writer drain → 上游拆卸。详见
 [dashboard L3](../L3-details/dashboard.md) / [L4](./dashboard.md)。

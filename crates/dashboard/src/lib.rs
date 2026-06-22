@@ -13,9 +13,8 @@ pub use calls::{CallFilter, CallItem, CallRingSink};
 mod activity;
 pub use activity::ActivityResponse;
 
-// Task 2 removes it after pub use.
-#[allow(dead_code)]
 mod about;
+pub use about::{AboutInfo, VersionInfo};
 
 mod history;
 pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket};
@@ -146,6 +145,10 @@ async fn h_activity(
     Json(api::activity(&s, window))
 }
 
+async fn h_about(State(s): State<Arc<AppState>>) -> Json<AboutInfo> {
+    Json(s.about.clone())
+}
+
 async fn h_call_detail(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -243,6 +246,7 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         .route("/api/calls", get(h_calls))
         .route("/api/calls/{id}", get(h_call_detail))
         .route("/api/activity", get(h_activity))
+        .route("/api/about", get(h_about))
         .fallback(assets::static_handler)
         .with_state(state);
     if enforce_loopback_host {
