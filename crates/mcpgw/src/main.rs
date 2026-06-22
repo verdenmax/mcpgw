@@ -134,6 +134,27 @@ fn resolve_api_keys(cfg: &config::Config) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
+/// Resolve the optional dashboard admin Bearer token from `[dashboard].admin_token_env`. Returns
+/// `Ok(None)` when the dashboard is disabled or the env ref is unset; fails fast if the referenced
+/// env var is missing or blank (so a misconfigured admin token surfaces at startup). Mirrors
+/// `resolve_api_keys`: a secret for a switched-off subsystem isn't validated.
+fn resolve_admin_token(cfg: &config::Config) -> Result<Option<Arc<str>>, String> {
+    if !cfg.dashboard.enabled {
+        return Ok(None);
+    }
+    let Some(env_name) = cfg.dashboard.admin_token_env.as_deref() else {
+        return Ok(None);
+    };
+    let token = std::env::var(env_name)
+        .map_err(|_| format!("[dashboard].admin_token_env: env {env_name:?} is not set"))?;
+    if token.trim().is_empty() {
+        return Err(format!(
+            "[dashboard].admin_token_env: env {env_name:?} is set but empty"
+        ));
+    }
+    Ok(Some(Arc::from(token)))
+}
+
 /// True when an HTTP server with NO api keys is bound to a non-loopback address (reachable off
 /// this host) — an unauthenticated exposure worth a loud warning. A bind that doesn't parse as a
 /// `SocketAddr` (a `host:port` form; DNS is not resolved here) warns conservatively, except the
@@ -249,9 +270,16 @@ async fn prepare_state(
     String,
 > {
     let backends = build_backends(cfg)?;
+    let disabled = Arc::new(gateway::DisableSet::load_or_new(
+        cfg.dashboard
+            .disabled_state_path
+            .as_ref()
+            .map(std::path::PathBuf::from),
+    ));
     let state = Arc::new(
         gateway::GatewayState::with_backends(&cfg.retrieval.strategy, backends)
-            .map_err(|e| e.to_string())?,
+            .map_err(|e| e.to_string())?
+            .with_disabled(disabled),
     );
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     let csum = upstream::connect::connect_all(state.registry(), &cfg.upstreams, tx).await;
@@ -282,6 +310,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
 
     // Fail-fast: resolve/verify every env-referenced secret before connecting anything.
     let api_keys = resolve_api_keys(&cfg)?;
+    let admin_token = resolve_admin_token(&cfg)?;
     validate_upstream_http_env(&cfg)?;
 
     let (state, rx) = prepare_state(&cfg).await?;
@@ -448,7 +477,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
                     build_time: env!("MCPGW_BUILD_TIME").to_string(),
                 },
             ),
-            admin_token: None,
+            admin_token: admin_token.clone(),
         });
         // Enforce a local Host header only when bound to loopback (non-loopback is an explicit,
         // already-warned operator exposure that they front themselves).
@@ -737,6 +766,58 @@ mod tests {
         assert!(
             !err.contains("MCPGW_AUDIT_EMPTY_KEY="),
             "error must not leak the value"
+        );
+    }
+
+    #[test]
+    fn resolve_admin_token_none_when_unconfigured() {
+        let cfg = config::Config::from_toml_str("").unwrap();
+        assert!(resolve_admin_token(&cfg).unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_admin_token_none_when_dashboard_disabled() {
+        std::env::set_var("MCPGW_T8_OFF", "tok");
+        // `enabled` omitted => dashboard disabled; the admin token must not be validated/required.
+        let cfg =
+            config::Config::from_toml_str("[dashboard]\nadmin_token_env = \"MCPGW_T8_OFF\"\n")
+                .unwrap();
+        assert!(resolve_admin_token(&cfg).unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_admin_token_reads_env_and_fails_fast() {
+        std::env::set_var("MCPGW_T8_ADMIN", "s3cr3t");
+        let cfg = config::Config::from_toml_str(
+            "[dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_T8_ADMIN\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_admin_token(&cfg).unwrap().as_deref(),
+            Some("s3cr3t")
+        );
+
+        let cfg = config::Config::from_toml_str(
+            "[dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_T8_MISSING\"\n",
+        )
+        .unwrap();
+        assert!(resolve_admin_token(&cfg).is_err());
+
+        std::env::set_var("MCPGW_T8_EMPTY", "");
+        let cfg = config::Config::from_toml_str(
+            "[dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_T8_EMPTY\"\n",
+        )
+        .unwrap();
+        assert!(resolve_admin_token(&cfg).is_err(), "empty env -> fail-fast");
+
+        std::env::set_var("MCPGW_T8_WS", "   ");
+        let cfg = config::Config::from_toml_str(
+            "[dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_T8_WS\"\n",
+        )
+        .unwrap();
+        assert!(
+            resolve_admin_token(&cfg).is_err(),
+            "whitespace-only env -> fail-fast"
         );
     }
 
