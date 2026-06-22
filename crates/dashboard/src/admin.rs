@@ -70,7 +70,9 @@ async fn mutate_and_rebuild(
     mutate: impl FnOnce(&DisableSet) -> bool + Send + 'static,
 ) -> Response {
     let d = s.gateway.disabled_arc();
-    let _ = tokio::task::spawn_blocking(move || mutate(&d)).await;
+    if let Err(e) = tokio::task::spawn_blocking(move || mutate(&d)).await {
+        tracing::warn!(action, name = %name, error = %e, "admin disable-set mutation task failed");
+    }
     if let Err(e) = s.gateway.rebuild_snapshot().await {
         tracing::warn!(action, name = %name, error = %e, "rebuild after admin disable-set change failed");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();

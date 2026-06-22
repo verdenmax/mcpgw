@@ -569,39 +569,59 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt; // for `oneshot`
 
-        // Unconfigured admin token -> /api/admin/* is 404 (existence not leaked).
-        let st = Arc::new(seeded_state().await); // admin_token: None
-        let resp = crate::build_dashboard_router(st, false)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/admin/upstreams/x/disable")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let admin_uris = [
+            "/api/admin/upstreams/x/disable",
+            "/api/admin/upstreams/x/enable",
+            "/api/admin/tools/x__y/disable",
+            "/api/admin/tools/x__y/enable",
+        ];
 
-        // Configure a token.
+        // Unconfigured admin token -> every /api/admin/* is 404 (existence not leaked).
+        for uri in admin_uris {
+            let st = Arc::new(seeded_state().await); // admin_token: None
+            let resp = crate::build_dashboard_router(st, false)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "unconfigured {uri} must be 404"
+            );
+        }
+
+        // Configure a token: every /api/admin/* with a missing/wrong Bearer is 401.
+        for uri in admin_uris {
+            let mut state = seeded_state().await;
+            state.admin_token = Some(std::sync::Arc::from("sekret"));
+            let st = Arc::new(state);
+            let resp = crate::build_dashboard_router(st, false)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "no-bearer {uri} must be 401"
+            );
+        }
+
+        // The open read endpoint stays 200 even with a token configured and no Bearer.
         let mut state = seeded_state().await;
         state.admin_token = Some(std::sync::Arc::from("sekret"));
         let st = Arc::new(state);
-
-        // Missing/wrong Bearer -> 401.
-        let resp = crate::build_dashboard_router(st.clone(), false)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/admin/upstreams/github/disable")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-
-        // Open read stays 200 even with a token configured and no Bearer.
         let resp = crate::build_dashboard_router(st.clone(), false)
             .oneshot(
                 Request::builder()
@@ -614,7 +634,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         // Correct Bearer -> 200 (github is a configured upstream; empty-gateway rebuild succeeds).
-        let resp = crate::build_dashboard_router(st.clone(), false)
+        let resp = crate::build_dashboard_router(st, false)
             .oneshot(
                 Request::builder()
                     .method("POST")
