@@ -12,6 +12,9 @@ use retrieval::{build_strategy, Backends, Embedder};
 use tokio::sync::Mutex;
 use upstream::registry::UpstreamRegistry;
 
+mod disable;
+pub use disable::{DisableSet, DisabledSnapshot};
+
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
     #[error("unknown retrieval strategy: {0}")]
