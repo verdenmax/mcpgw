@@ -3,6 +3,7 @@
   import { refresh } from "./refresh.svelte.js";
   import { go, when, ago } from "./format.js";
   import Icon from "./Icon.svelte";
+  import Activity from "./Activity.svelte";
 
   const LIMIT = 50;
   let metrics = $state([]);     // per_meta_tool summary
@@ -15,6 +16,7 @@
   let offset = $state(0);
   let resp = $state(null);      // CallsResponse
   let error = $state(null);
+  let rangeMs = $state(900000); // 时间范围(ms)；0 = all。默认 15min
 
   const query = $derived.by(() => {
     const q = new URLSearchParams();
@@ -23,6 +25,7 @@
     if (outcome) q.set("outcome", outcome);
     if (qtext) q.set("q", qtext);
     if (argKey && argVal) { q.set("arg_key", argKey); q.set("arg_val", argVal); }
+    if (rangeMs > 0) q.set("since", String(Date.now() - rangeMs));
     q.set("limit", String(LIMIT));
     q.set("offset", String(offset));
     return q.toString();
@@ -48,6 +51,7 @@
   function setOutcome(o) { outcome = outcome === o ? "" : o; offset = 0; }
   function pct(a, b) { return b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0; }
   function clearFilters() { meta = ""; outcome = ""; qtext = ""; argKey = ""; argVal = ""; offset = 0; }
+  function setRange(ms) { rangeMs = ms; offset = 0; }
 
   // Refetch the list on any filter change (reading `query` tracks all of them) and each refresh tick.
   $effect(() => { void query; refresh.tick; loadCalls(); });
@@ -74,6 +78,13 @@
     </button>
   {/each}
 </div>
+
+<div class="chips">
+  {#each [["5m", 300000], ["15m", 900000], ["1h", 3600000], ["24h", 86400000], ["all", 0]] as [lbl, ms]}
+    <button class="chip" class:active={rangeMs === ms} onclick={() => setRange(ms)}>{lbl}</button>
+  {/each}
+</div>
+<Activity window={rangeMs > 0 ? rangeMs : 3600000} sections="spark,breakdown" />
 
 <div class="chips">
   <button class="chip" class:active={source === "live"} onclick={() => setSource("live")}>live</button>
@@ -108,7 +119,7 @@
   {:else}
     <p class="meta-line"><span class="count-pill">{resp.total}</span> total</p>
     <div class="table-wrap"><div class="table-scroll"><table>
-      <thead><tr><th>time</th><th>meta</th><th>target</th><th>upstream</th><th>outcome</th><th class="num">ms</th></tr></thead>
+      <thead><tr><th>time</th><th>meta</th><th>target</th><th>upstream</th><th>outcome</th><th>error</th><th class="num">ms</th></tr></thead>
       <tbody>
         {#each resp.items as c}
           {@const href = `#/calls/${c.id}`}
@@ -119,6 +130,7 @@
             <td class="mono">{c.target_tool ?? "—"}</td>
             <td class="mono">{c.upstream ?? "—"}</td>
             <td><span class="badge {c.outcome}">{c.outcome}</span></td>
+            <td><span class:bad={c.error_kind}>{c.error_kind ?? "—"}</span></td>
             <td class="num">{c.latency_ms}</td>
           </tr>
         {/each}

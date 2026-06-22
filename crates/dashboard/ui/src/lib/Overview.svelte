@@ -2,6 +2,7 @@
   import { getJSON } from "./api.js";
   import { refresh } from "./refresh.svelte.js";
   import Icon from "./Icon.svelte";
+  import Activity from "./Activity.svelte";
   let data = $state(null);
   let error = $state(null);
   async function load() {
@@ -46,6 +47,7 @@
       <div class="sub">last snapshot rebuild</div>
     </div>
   </div>
+  <Activity window={900000} sections="spark,leaders" />
 {:else if !error}
   <div class="cards">
     {#each Array(6) as _}<div class="sk card"></div>{/each}
