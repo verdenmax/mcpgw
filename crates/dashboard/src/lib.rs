@@ -13,6 +13,10 @@ pub use calls::{CallFilter, CallItem, CallRingSink};
 mod activity;
 pub use activity::ActivityResponse;
 
+// Task 2 removes it after pub use.
+#[allow(dead_code)]
+mod about;
+
 mod history;
 pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket};
 
