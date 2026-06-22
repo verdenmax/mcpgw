@@ -384,6 +384,30 @@ async fn dashboard_detail_endpoints_with_mock_upstream() {
         "non-matching q returns nothing"
     );
 
+    // Activity aggregation over the live ring: fixed 24 buckets + busiest tool.
+    let act: serde_json::Value = http
+        .get(format!("{base}/api/activity?window=900000"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        act["buckets"].as_array().unwrap().len(),
+        24,
+        "activity returns a fixed 24 buckets"
+    );
+    assert!(
+        act["total"].as_u64().unwrap() >= 1,
+        "at least the echo call_tool"
+    );
+    let busy = act["busiest_tools"].as_array().unwrap();
+    assert!(
+        busy.iter().any(|t| t["name"] == "mock__echo"),
+        "mock__echo is among busiest tools: {busy:?}"
+    );
+
     client.cancel().await.unwrap();
     let _ = std::fs::remove_file(&cfg_path);
 }
