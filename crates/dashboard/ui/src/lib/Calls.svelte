@@ -25,7 +25,6 @@
     if (outcome) q.set("outcome", outcome);
     if (qtext) q.set("q", qtext);
     if (argKey && argVal) { q.set("arg_key", argKey); q.set("arg_val", argVal); }
-    if (rangeMs > 0) q.set("since", String(Date.now() - rangeMs));
     q.set("limit", String(LIMIT));
     q.set("offset", String(offset));
     return q.toString();
@@ -40,8 +39,11 @@
   }
   async function loadCalls() {
     const reqQ = query; // discard a superseded response if the query changed mid-flight
+    // `since` is computed at request time (not in the memoized `query` derived) so the time window
+    // slides with each refresh tick instead of freezing at the value from the last filter change.
+    const since = rangeMs > 0 ? `&since=${Date.now() - rangeMs}` : "";
     try {
-      const r = await getJSON(`/api/calls?${query}`);
+      const r = await getJSON(`/api/calls?${query}${since}`);
       if (reqQ !== query) return;
       resp = r; error = null;
     } catch (e) { if (reqQ === query) error = String(e); }
@@ -54,7 +56,7 @@
   function setRange(ms) { rangeMs = ms; offset = 0; }
 
   // Refetch the list on any filter change (reading `query` tracks all of them) and each refresh tick.
-  $effect(() => { void query; refresh.tick; loadCalls(); });
+  $effect(() => { void query; void rangeMs; refresh.tick; loadCalls(); });
   $effect(() => { refresh.tick; loadMetrics(); });
 </script>
 
