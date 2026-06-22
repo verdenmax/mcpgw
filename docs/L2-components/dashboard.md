@@ -2,10 +2,12 @@
 
 ## 职责
 
-网关的**只读可视化面板**（子系统 A）：把 `gateway` 的活快照、`observe` 的调用观测与可选的历史 JSONL
-回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 13 个 `/api/*` JSON 端点 + 一个
-**Svelte 5 + Vite 构建、经 `rust-embed` 内嵌**的 SPA（`assets::static_handler` fallback 交付）。它**只读、不改动
-任何网关状态**，默认关闭、须显式 opt-in。
+网关的**默认只读可视化面板**（子系统 A）：把 `gateway` 的活快照、`observe` 的调用观测与可选的历史 JSONL
+回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 18 个 `/api/*` JSON 端点 + 一个
+**Svelte 5 + Vite 构建、经 `rust-embed` 内嵌**的 SPA（`assets::static_handler` fallback 交付）。它**默认只读**，
+默认关闭、须显式 opt-in；配置 `[dashboard].admin_token_env` 后额外提供**运行时禁用写子系统 B**（仅 disable/enable
+上游/工具、经 Bearer 鉴权；`GET /api/disabled` 开放只读），仍**不**做改配/重启/撤 key——**不配 token 时与今天完全
+一致的纯只读面板**。
 
 本 crate 提供三个接入 `observe` 接缝的 sink：
 - `MetricsSink` 实现 `observe::CallSink`，**实时聚合**每个元工具的调用数/错误数/延迟分位（p50/p95/max）
@@ -80,7 +82,7 @@
 
 | 项 | 签名 | 说明 |
 |----|------|------|
-| `AboutInfo` | `Serialize` + `Clone` | 启动时从 `config::Config` + 版本组装的**非敏感**生效配置只读快照（运行期不可变）：`version`（`VersionInfo`）/ `retrieval`（`strategy`/`top_k`）/ `dashboard`（`call_buffer`/`payload_max_bytes`/`trace_queries`/`trace_buffer`/`trace_path`）/ `audit`（`enabled`/`path`，仅 `enabled` 时给 `path`）/ `server`（`stdio`/`http_enabled`/`http_bind`/`http_path`/`http_auth`——`http_auth` 是**裸 bool**=是否配了 ≥1 个 API-Key）/ `upstreams`（`Vec<UpstreamConfigInfo>`）。**字段集里根本不含**任何密钥/token/env 名/env 值 |
+| `AboutInfo` | `Serialize` + `Clone` | 启动时从 `config::Config` + 版本组装的**非敏感**生效配置只读快照（运行期不可变）：`version`（`VersionInfo`）/ `retrieval`（`strategy`/`top_k`）/ `dashboard`（`call_buffer`/`payload_max_bytes`/`trace_queries`/`trace_buffer`/`trace_path`/`admin_enabled`）/ `audit`（`enabled`/`path`，仅 `enabled` 时给 `path`）/ `server`（`stdio`/`http_enabled`/`http_bind`/`http_path`/`http_auth`——`http_auth` 是**裸 bool**=是否配了 ≥1 个 API-Key）/ `upstreams`（`Vec<UpstreamConfigInfo>`）。**字段集里根本不含**任何密钥/token/env 名/env 值（`admin_enabled` 同 `http_auth`，仅存在性 bool） |
 | `AboutInfo::from_config` | `(cfg: &Config, version: VersionInfo) -> AboutInfo` | 纯映射：从生效配置摘出上述非敏感字段（HTTP 段缺省/未启用时 `http_bind`/`http_path` 为 `None`、`http_auth=false`；`http_auth = !api_keys.is_empty()`——只判存在性，**绝不**读 env 名/值）；`version` 由 `main.rs` 经 `build.rs` 注入的 `MCPGW_GIT_SHA`/`MCPGW_BUILD_TIME` 构造后传入 |
 | `VersionInfo` | `Serialize` + `Clone` | `version` / `git_sha` / `build_time` |
 | `UpstreamConfigInfo` | `Serialize` + `Clone` | 一个配置上游的非敏感设置：`name` / `transport`（`stdio`/`http` 短标签）/ `call_timeout_ms`（**无** url/bearer/任何认证引用） |
@@ -89,25 +91,41 @@
 
 | 项 | 签名 | 说明 |
 |----|------|------|
-| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` / 启动时组装、运行期不可变的 `about: AboutInfo` |
+| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` / 启动时组装、运行期不可变的 `about: AboutInfo` / `admin_token: Option<Arc<str>>`（子系统 B：admin Bearer token，启动期由 `admin_token_env` 解析；`None` → 全部 `/api/admin/*` 经中间件返 404） |
 | `UpstreamInfo` | `Serialize` | 一个配置上游的静态身份：`name` / `transport`（装配期由 `Config` 给出） |
-| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 13 个 `/api/*` 路由 + `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
+| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 18 个 `/api/*` 路由（14 读 + 4 admin 写）+ `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；**4 个 `/api/admin/*` 写路由经 `route_layer` 单独挂 `require_admin_token` 中间件**（开放读端点不鉴权）；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
+
+### 运行时禁用写子系统 `require_admin_token` / `disable_*` / `enable_*` / `disabled`（`admin.rs` / `api.rs`，子系统 B）
+
+| 项 | 签名 | 说明 |
+|----|------|------|
+| `require_admin_token` | `async (State<Arc<AppState>>, Request, Next) -> Response` | `/api/admin/*` 的 Bearer 鉴权中间件：`AppState.admin_token` 为 `None` → **404**（未配置，不泄露存在性）；配了但缺/错 Bearer → **401**；匹配 → 放行。常量时间 `subtle::ConstantTimeEq` 比较（镜像 `downstream/http.rs` 的 api-key 路径），Bearer scheme 大小写不敏感、空 token 视为未提供 |
+| `disable_upstream` / `enable_upstream` | `async (State<Arc<AppState>>, Path<String>) -> Response` | 禁用/启用一个上游 namespace：**幂等优先**（已是目标态 → 直接回 `200 Json(DisabledSnapshot)`、跳过校验与 rebuild）；disable 在真正新变更时校验 `name ∈ 配置上游`（否则 404）；改集经 `spawn_blocking` 同步持久化 → `await rebuild_snapshot`（失败回 **500**）→ 回整集 |
+| `disable_tool` / `enable_tool` | `async (State<Arc<AppState>>, Path<String>) -> Response` | 同上，针对单个 qualified 工具名；disable 校验 `name ∈ 当前 catalog`（否则 404）。enable 仅移除、幂等、不校验存在性 |
+| `disabled` | `(&AppState) -> gateway::DisabledSnapshot` | `api.rs` 纯函数（`h_disabled` 调用）：读 `gateway.disabled().snapshot()`，是**开放只读** `GET /api/disabled` 的响应体（永远 200；空集即 `{upstreams:[],tools:[]}`） |
+
+> 隐藏式语义经现有代码路径达成（被禁用项经 `gateway::DisableSet` + `rebuild_snapshot` 过滤后从快照消失，
+> `metatools`/`downstream` 零改动），详见 [dashboard L3](../L3-details/dashboard.md) 与 [gateway L2/L3](./gateway.md)。
 
 `/api/*` 端点（逐符号见 L4）：`/api/overview`、`/api/upstreams`、`/api/upstreams/{name}`、`/api/tools?q=`、
 `/api/tools/{name}`、`/api/metrics`、`/api/traces?source=live|history&limit=`、`/api/traces/{id}`、
 `/api/metrics/history?limit=&bucket_ms=`、
 `/api/calls?source=live|history&meta=&upstream=&tool=&outcome=&since=&until=&q=&arg_key=&arg_val=&limit=&offset=`（`q`/`arg_key`/`arg_val` 为内容过滤，仅 live）、`/api/calls/{id}`、
 `/api/activity?window=<ms>`（活动聚合，`window` 缺省 15min、clamp 1min–24h，返回 `ActivityResponse`）、
-`/api/about`（启动时组装的**非敏感**生效配置/限额 + 版本/git SHA/构建时间，运行期不可变，返回 `Json<AboutInfo>`——**绝不**含密钥/token/env 名/值）
-（M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404）。
+`/api/about`（启动时组装的**非敏感**生效配置/限额 + 版本/git SHA/构建时间，运行期不可变，返回 `Json<AboutInfo>`——**绝不**含密钥/token/env 名/值）、
+`/api/disabled`（**开放只读**，返回 `Json<DisabledSnapshot>`；子系统 B）、
+`POST /api/admin/{upstreams,tools}/{name}/{disable,enable}`（**4 个 Bearer 鉴权写端点**，未配 `admin_token_env` → 404；逐符号见上「运行时禁用写子系统」）
+（M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404；**子系统 B 新增开放 `/api/disabled` + 4 个 admin POST，端点计数 13 → 18**）。
 
 ## 依赖
 
-- 内部：`gateway`（`GatewayState`：读活快照 + `last_summary`）、`observe`（`CallSink`/`CallRecord`、
+- 内部：`gateway`（`GatewayState`：读活快照 + `last_summary`；**子系统 B** 另用 `DisableSet`/`DisabledSnapshot`
+  与 `disabled()`/`disabled_arc()` 访问器读改运行时禁用集 + 触发 `rebuild_snapshot`）、`observe`（`CallSink`/`CallRecord`、
   `CallContentSink`/`CallContent` 与 `DiscoverySink`/`DiscoveryRecord` 契约）、`catalog`（经 `GatewaySnapshot::catalog()` 列工具）、`config`
   （装配期取上游/策略/路径）。
-- 外部：`axum`（router/handler）、`tokio`（serve）、`serde`/`serde_json`（视图序列化、JSONL 读写）、`tracing`、
-  `rust-embed`（编译期内嵌 `ui/dist/` 静态产物，`debug-embed`+`mime-guess`）。
+- 外部：`axum`（router/handler）、`tokio`（serve；admin handler 的 `spawn_blocking` 跑同步持久化）、
+  `serde`/`serde_json`（视图序列化、JSONL 读写）、`tracing`、`subtle`（**子系统 B** admin token 的常量时间
+  `ConstantTimeEq` 比较，复用下游 HTTP 的 api-key 模式）、`rust-embed`（编译期内嵌 `ui/dist/` 静态产物，`debug-embed`+`mime-guess`）。
 - 前端工程在 `crates/dashboard/ui/`（Svelte 5 + Vite）：`npm run build` 重新生成 `ui/dist/`（**已入库**，故 `cargo build`
   不依赖 node；`node_modules/` gitignore），由 `assets.rs` 经 `rust-embed` 内嵌。
 - discovery JSONL writer **只用 `std::thread` + `std::sync::mpsc`（有界 `sync_channel`）+ `std::fs`**（与
@@ -119,13 +137,15 @@
   `CallRingSink`（加进**独立的 `CallContentSink` 切片** `content_sinks`，**不**进元数据 sinks，故内容不入
   tracing/审计/指标）、按 `trace_queries` 构造 `DiscoveryRingSink`（注入 stdio + HTTP 两个下游的 `DiscoverySink` 切片），
   并把 `[dashboard].payload_max_bytes` 一并透传给 stdio + HTTP 两个传输；面板起为**自己端口上的独立 task**
-  （默认 `127.0.0.1:8971`，localhost、无鉴权），带优雅关停与有界 writer drain。
+  （默认 `127.0.0.1:8971`，localhost、读端点无鉴权、admin 写经 Bearer），带优雅关停与有界 writer drain。
   详见 L4 [mcpgw-main](../L4-api/mcpgw-main.md)。
 
 ## 不负责
 
-- **任何写操作 / 控制面**：面板纯只读，不暴露重启上游、改配置、撤 key 等动作。
-- **鉴权 / TLS / 反代**：默认绑 localhost、无 auth；非 loopback 绑定只 `warn`，不内建鉴权（留给反代）。
+- **除运行时禁用外的写操作 / 控制面**：写子系统 B（opt-in，须配 `admin_token_env`）**仅**提供临时 disable/enable
+  上游/工具；**不**暴露重启上游、改主配置、撤 key、热重载等其它控制面动作。**默认未配 token 时面板纯只读**。
+- **鉴权 / TLS / 反代**：开放读端点默认绑 localhost、无 auth；写子系统 B 的 4 个 `/api/admin/*` 经单一共享 admin
+  Bearer token 鉴权（无用户系统/RBAC）。非 loopback 绑定只 `warn`，不内建 TLS（留给反代）。
 - **图表库 / SSE / WebSocket**：SPA 用 **Svelte 5 + Vite** 构建、产物经 `rust-embed` 内嵌；仍每 3s 轮询
   `/api/*`、**无 SSE/WS**，也无图表库。
 - **指标导出（Prometheus/OTel）**：属 `observe` 接缝的另一类 sink（M6.T2），不在本 crate。

@@ -1,9 +1,10 @@
 # L4 — `crates/dashboard` API
 
-源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api,assets}.rs` + `ui/`（Svelte 5 + Vite
-前端工程，产物内嵌）。只读可视化面板（子系统 A）：把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL
-聚合成 13 个 `/api/*` JSON 端点 + 一个由 `rust-embed` 内嵌的 Svelte SPA，跑在独立 localhost 端口上。所有对外
-类型经 `lib.rs` re-export。
+源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api,about,admin,assets}.rs` + `ui/`（Svelte 5 + Vite
+前端工程，产物内嵌）。**默认只读**可视化面板（子系统 A）：把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL
+聚合成 **18** 个 `/api/*` JSON 端点（14 读 + 子系统 B 的 4 个 Bearer 鉴权 admin 写）+ 一个由 `rust-embed` 内嵌的
+Svelte SPA，跑在独立 localhost 端口上。**子系统 B**（`admin.rs`，可选，经 `[dashboard].admin_token_env` 开启）提供
+运行时 disable/enable 上游/工具的写 API（开放只读端点 `GET /api/disabled` 暴露禁用集）。所有对外类型经 `lib.rs` re-export。
 
 ---
 
@@ -226,11 +227,14 @@ pub struct AppState {
     pub discovery_path: Option<PathBuf>,
     pub started_at: Instant,
     pub about: AboutInfo,
+    pub admin_token: Option<std::sync::Arc<str>>,  // 子系统 B：env 解析的 admin Bearer token；None → /api/admin/* 返回 404
 }
 ```
 handler 的**只读共享态**（装配期一次性注入）：活快照句柄 + 实时指标 sink + 可选 discovery ring +
 可选 per-call ring（`calls`，仅 dashboard 启用时 `Some`）+ 配置上游列表/策略名 + 历史 JSONL 路径 + 启动时刻 +
-启动时组装的只读 `about`（`AboutInfo`，非敏感，见 [`about.rs`](#aboutrsaboutsettings-只读视图启动时组装仅非敏感)）。
+启动时组装的只读 `about`（`AboutInfo`，非敏感，见 [`about.rs`](#aboutrsaboutsettings-只读视图启动时组装仅非敏感)）+
+**`admin_token`**（子系统 B：`main.rs` 在启动期由 `admin_token_env` 解析的 Bearer token，`Some(Arc<str>)` → 开启
+admin 写 API；`None` → 4 个 `/api/admin/*` 经中间件返回 404；**仅持解析后的值，绝不存 env 名、绝不进 `/api/about`**）。
 
 ### `struct UpstreamInfo`
 ```rust
@@ -277,6 +281,53 @@ pub struct CallsResponse { source, history_unavailable, total, items: Vec<CallIt
 
 ---
 
+## `admin.rs`：运行时禁用写子系统 B
+
+子系统 B 的全部符号：一个鉴权中间件 + 一个共享变更助手 + 4 个 disable/enable handler。仅当 `AppState.admin_token`
+为 `Some` 时启用（经 `route_layer` 只挂在 4 个 `/api/admin/*` POST 路由上，开放只读端点不受影响）。
+
+### `require_admin_token`（中间件，`pub`）
+```rust
+pub async fn require_admin_token(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response
+```
+Bearer 鉴权门。据 `authorize(s.admin_token, presented_bearer(&req))` 的三态：
+
+- `NotConfigured`（`admin_token == None`）→ **404**：admin API 关闭时**伪装成不存在**，不向未授权者泄漏子系统的存在。
+- `Denied`（token 已配但 Bearer 缺失 / 方案错 / 值不匹配）→ **401**。
+- `Allowed`（精确匹配）→ `next.run(req)` 放行。
+
+私有 `presented_bearer(req) -> Option<String>`：取 `Authorization` 头，scheme `Bearer` **大小写不敏感**、token 空白
+视为缺失。私有 `authorize(configured, presented) -> AdminAuth`：`configured==None` → `NotConfigured`；否则用
+**`subtle::ConstantTimeEq`** 做 token 的**常量时间**比较（抗计时侧信道，镜像下游 `http` 的 key 校验），等 → `Allowed`、
+否则 `Denied`。
+
+### `mutate_and_rebuild`（私有助手）
+```rust
+async fn mutate_and_rebuild(s: &Arc<AppState>, action: &'static str, name: String,
+                            mutate: impl FnOnce(&DisableSet) -> bool + Send + 'static) -> Response
+```
+把**同步、会 `fsync`** 的 `DisableSet` 变更经 `gateway.disabled_arc()` 取 `Arc` 后丢进
+`tokio::task::spawn_blocking`（**不阻塞 axum 执行器线程**），再 `await gateway.rebuild_snapshot()`：
+
+- rebuild **失败** → `warn!` + **500**（变更已落 `DisableSet`、但快照未更新；与其回 200 误导，不如显式 500——下次 rebuild 自会收敛）。
+- rebuild 成功 → `info!`（`action` + `name`，**绝不含 token**）+ `200 Json(disabled().snapshot())`。
+
+### 4 个 handler（`pub`）
+`disable_upstream` / `enable_upstream` / `disable_tool` / `enable_tool`，签名均
+`(State<Arc<AppState>>, Path<String>) -> Response`，统一**幂等读检查 →（disable 才）存在性校验 → `mutate_and_rebuild`**：
+
+| handler | 幂等无操作（200，不 rebuild） | 存在性校验（仅 disable）→ 404 | 变更闭包 |
+|---------|------------------------------|-------------------------------|----------|
+| `disable_upstream` | 已在禁用集 | 上游名 ∉ `s.upstreams`（配置上游列表） | `ds.disable_upstream(name)` |
+| `enable_upstream` | 不在禁用集 | —（enable 不校验，清陈旧名合法） | `ds.enable_upstream(name)` |
+| `disable_tool` | 已在禁用集 | qualified 工具名 ∉ 当前 `snapshot().catalog().get(name)`（当前不可见） | `ds.disable_tool(name)` |
+| `enable_tool` | 不在禁用集 | — | `ds.enable_tool(name)` |
+
+存在性校验**在变更之前**完成，故**绝不会把幽灵名写进禁用集**；所有成功路径都回 `DisabledSnapshot`（200），让前端拿到最新禁用集。
+**隐藏式语义 + in-flight 竞态**见 [dashboard L3 运行时禁用写子系统](../L3-details/dashboard.md) 与 [gateway L3](../L3-details/gateway.md)。
+
+---
+
 ## `assets.rs`：内嵌 UI 资源（rust-embed）
 
 ### `struct Assets`
@@ -310,7 +361,8 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 ```
 装配面板 router（`with_state(state)`）。当 `enforce_loopback_host` 为 `true`（面板绑 loopback）时，额外
 `layer` 一层 `require_local_host` 中间件以关闭 DNS 重绑定向量；为 `false`（绑非 loopback 的显式外网暴露）时
-不挂该层：
+不挂该层。子系统 B 的 4 个 admin 写路由先组成一个子 router、`.route_layer` 挂上 `admin::require_admin_token`
+中间件（**只**鉴权这 4 条，开放只读端点不受影响），再 `.merge(admin)` 进主 router：
 
 | 方法 | 路由 | handler → 响应 |
 |------|------|----------------|
@@ -327,9 +379,14 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 | GET | `/api/calls/{id}` | `Json<CallItem>` 或 404（`h…`→历史回放定位；否则按 live seq 取环） |
 | GET | `/api/activity?window=<ms>` | `Json<ActivityResponse>`（`window` 缺省 900_000=15min、`clamp(60_000, 86_400_000)`=[1min,24h]；聚合 live 环、**仅元数据**、固定 24 桶、各 Top-5；live 内存读，无 `spawn_blocking`） |
 | GET | `/api/about` | `Json<AboutInfo>`（`h_about` 直接 clone 序列化启动时组装好的 `state.about`，**运行期不变、零计算**、无 `spawn_blocking`；仅非敏感配置/限额 + 版本，绝不含密钥/env，见 [`about.rs`](#aboutrsaboutsettings-只读视图启动时组装仅非敏感)） |
+| GET | `/api/disabled` | **（子系统 B，开放只读、不鉴权）** `Json<gateway::DisabledSnapshot>`（`h_disabled` → `gateway.disabled().snapshot()`，有序的已禁用上游/工具名列表；空集即 `{upstreams:[],tools:[]}`） |
+| POST | `/api/admin/upstreams/{name}/disable` | **（子系统 B，Bearer 鉴权）** `disable_upstream` → `Json<DisabledSnapshot>`/404/500（详见 [`admin.rs`](#adminrs运行时禁用写子系统-b)） |
+| POST | `/api/admin/upstreams/{name}/enable` | **（子系统 B，Bearer 鉴权）** `enable_upstream` → `Json<DisabledSnapshot>`/500 |
+| POST | `/api/admin/tools/{name}/disable` | **（子系统 B，Bearer 鉴权）** `disable_tool` → `Json<DisabledSnapshot>`/404/500（`name`=qualified `{server}__{tool}`） |
+| POST | `/api/admin/tools/{name}/enable` | **（子系统 B，Bearer 鉴权）** `enable_tool` → `Json<DisabledSnapshot>`/500 |
 | —（fallback） | 任意非 `/api/*` 路径 | `assets::static_handler`：`/`→内嵌 `index.html`、`/assets/*`→内嵌资源（带 hash），其余回退 index |
 
-私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
+共 **18** 个 `/api/*` 端点（14 读 + 4 admin 写）。私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
 静态资源经 `assets::static_handler`（router `.fallback`）从 `rust-embed` 内嵌的 `ui/dist/` 交付（见
 [`assets.rs`](#assetsrs内嵌-ui-资源rust-embed)）。
 

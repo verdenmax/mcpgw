@@ -1,14 +1,19 @@
 # L3 — `dashboard` 细节
 
 只读可视化面板（子系统 A）的进程模型、数据来源、隐私边界，以及 `MetricsSink` 桶/分位算法、
-`DiscoveryRingSink` ring+writer、history 限量回放的实现细节。
+`DiscoveryRingSink` ring+writer、history 限量回放的实现细节；外加**可选**的运行时禁用写子系统
+（子系统 B，`admin.rs`，经 `[dashboard].admin_token_env` 开启）的鉴权、handler 流程与隐私边界。
 
 ## 进程模型：独立任务 + 独立端口 + panic 隔离 + 优雅关停
 
 - **独立端口、独立 task**：面板是 `mcpgw serve` 里一个**与下游 stdio/HTTP 完全分开**的 axum server，
   跑在自己的 `[dashboard].bind`（默认 `127.0.0.1:8971`）上、作为一个 `tokio::spawn` 的 task，带
-  `with_graceful_shutdown(oneshot)`。它**只读** `Arc<GatewayState>` 与两个 sink，不参与 MCP 协议、不改状态。
-- **localhost、无鉴权**：默认绑 loopback、**不挂任何 auth 层**（与下游 HTTP 的 Bearer 鉴权不同）。装配期
+  `with_graceful_shutdown(oneshot)`。它**默认只读** `Arc<GatewayState>` 与两个 sink、不参与 MCP 协议；唯一的写面是
+  **可选**的运行时禁用子系统（子系统 B，下文「运行时禁用写子系统」节），它只改 `GatewayState.disabled` 集并触发一次
+  rebuild，**不**改配置/重启/撤 key；未配 `admin_token_env` 时面板与历史版本一致（纯只读）。
+- **localhost；读端无鉴权、写端 Bearer 鉴权**：默认绑 loopback、**读端点不挂任何 auth 层**（与下游 HTTP 的 Bearer
+  鉴权不同）；仅子系统 B 的 4 个 admin 写端点经 `require_admin_token` 中间件做 Bearer 鉴权（开放只读端点
+  `GET /api/disabled` 不鉴权）。装配期
   若检测到「无 auth 且绑非 loopback」会 `warn`（复用 `unauthenticated_public_bind`，把面板按「无 key」判定），
   但**不**拒绝启动——外网暴露应交给反向代理。
 - **Host 头校验（抗 DNS 重绑定，非鉴权）**：面板无鉴权、仅靠绑 loopback 做访问控制，但 loopback 挡不住 DNS
@@ -79,7 +84,9 @@
 - **静态交付变化**：由原先 `include_str!` 三文件（`/`、`/app.js`、`/style.css`）改为单个 `assets::static_handler`
   挂在 router `.fallback`（`/` → 内嵌 `index.html`、`/assets/*` → 内嵌资源；未知路径回退 `index.html`）。**hash 路由**
   让 fragment 不发往服务端，故深链刷新只请求 `/`，**无需 history 回退改写**；hash params 经 `decodeURIComponent` 解码。
-  `/api/*` 端点数现为 **13 个**（M3 详情下钻 + M1 `/api/calls`、`/api/activity`、`/api/about`）。
+  `/api/*` 端点数由 **13 → 18 个**：原 13 读 + 子系统 B 新增的 **1 个开放只读** `GET /api/disabled`（共 14 读）+
+  **4 个 Bearer 鉴权写** `POST /api/admin/{upstreams,tools}/{name}/{disable,enable}`（M3 详情下钻 + M1 `/api/calls`、
+  `/api/activity`、`/api/about` 属原 13 读）。
 - **视图**：Overview（指标卡，**可点直达** upstreams/tools/calls 列表）、Calls（指标卡 → 逐条列表 → 详情下钻：
   `/api/metrics` 可点击卡过滤 `/api/calls`，行进 `/api/calls/{id}`）、Upstreams / Tools / Traces 列表，**M3 新增三个详情视图**
   `UpstreamDetail`/`ToolDetail`/`TraceDetail`（上游/工具/追踪下钻 + 上游↔工具↔调用↔追踪交叉链接）。各视图每 3s 轮询既有
@@ -141,10 +148,68 @@
 
 `/api/about` 回 dashboard 的 About/Settings 视图：**启动时**由 `AboutInfo::from_config(&cfg, version)` 从生效配置 + 版本组装**一次**、存进 `AppState.about`，`h_about` 直接 `clone` 序列化（**运行期不变、零计算**、无 `spawn_blocking`、无锁）。展示生效的非敏感配置/限额（retrieval 策略/top_k、dashboard 缓冲/截断、audit 开关/路径、server 监听形态、各上游 transport/超时）+ 版本/构建信息。
 
-- **隐私边界（仅非敏感、绝不含密钥/env）**：`AboutInfo` 及其嵌套类型（`VersionInfo`/`RetrievalInfo`/`DashboardInfo`/`AuditInfo`/`ServerInfo`/`UpstreamConfigInfo`）**字段集里根本不含**任何密钥/token/env 名/env 值/上游认证引用。`server.http_auth` **仅 bool**（`!api_keys.is_empty()`，有无鉴权），**绝不**带键名或 env 名；上游只暴露 `name`/`transport`/`call_timeout_ms`，**不含** url/bearer_env。单测 `http_auth_true_and_no_secrets_leak` 用含 `api_key`(env `SECRET_KEY`) + http 上游(`bearer_env=REMOTE_TOKEN`) 的配置组装后断言序列化 JSON **不含** `SECRET_KEY`/`REMOTE_TOKEN`/`bearer_env`/`api_key`/`admin`/`example.com`。
+- **隐私边界（仅非敏感、绝不含密钥/env）**：`AboutInfo` 及其嵌套类型（`VersionInfo`/`RetrievalInfo`/`DashboardInfo`/`AuditInfo`/`ServerInfo`/`UpstreamConfigInfo`）**字段集里根本不含**任何密钥/token/env 名/env 值/上游认证引用。`server.http_auth` **仅 bool**（`!api_keys.is_empty()`，有无鉴权），**绝不**带键名或 env 名；`dashboard.admin_enabled` 同理**仅 bool**（`admin_token_env.is_some()`，镜像 `http_auth`），**绝不**带 admin env 名或 token 值；上游只暴露 `name`/`transport`/`call_timeout_ms`，**不含** url/bearer_env。单测 `http_auth_true_and_no_secrets_leak` 用含 `api_key`(env `SECRET_KEY`) + http 上游(`bearer_env=REMOTE_TOKEN`) 的配置组装后断言序列化 JSON **不含** `SECRET_KEY`/`REMOTE_TOKEN`/`keylabel`/`example.com`/`bearer_env`/`api_key`；`admin_enabled_reflects_config_without_leaking_env_name` 另用配了 `admin_token_env="MCPGW_DASH_ADMIN"` 的 dashboard 断言 `admin_enabled==true` 但 JSON **不含**该 env 名。
 - **版本/构建信息**：`VersionInfo` 由 `main.rs` 注入——`version=CARGO_PKG_VERSION`、`git_sha=MCPGW_GIT_SHA`、`build_time=MCPGW_BUILD_TIME`（后两者由 `crates/mcpgw/build.rs` 在编译期写入，git/构建时间失败时优雅降级为 `"unknown"`/`0`，详见 [`mcpgw-main`](../L4-api/mcpgw-main.md)）。
 - **`transport_label` 自包含**：`about.rs` 私有的 `transport_label`（`Stdio→"stdio"`/`Http→"http"`）**不复用** `mcpgw` 的 `transport_str`，使 dashboard crate **不反向依赖 mcpgw**。
 - **mock-上游 e2e**（`dashboard_detail_endpoints_with_mock_upstream`）断言 `version.version` 非空、`server.http_auth=false`（测试配置无 api_key）、`upstreams` 含 `{name:"mock", transport:"stdio"}`。
+
+## 运行时禁用写子系统（子系统 B，`admin.rs`）
+
+面板的**唯一写面**，**默认关闭**：仅当 `[dashboard].admin_token_env` 指定了一个**持有 Bearer token 的环境变量名**
+时才启用。它只做「临时 disable/enable 上游或单工具」——改 `GatewayState.disabled` 集并触发一次 rebuild，
+**不**改配置文件、不重启、不撤 API-key。未配置 token 时面板与历史版本完全一致（纯只读）。
+
+### 鉴权：`require_admin_token` 中间件（404 / 401 / pass）
+
+admin 层经 `route_layer` **只挂在 4 个 admin POST 路由**上（开放只读端点 `GET /api/disabled` 不经过它）：
+
+- **未配置**（`AppState.admin_token == None`）→ **404**：写端点表现得**像不存在**，不向未授权者泄漏「这里有 admin 子系统」。
+- **配了但 Bearer 缺失 / 方案错 / 值不匹配** → **401**。
+- **Bearer 精确匹配** → 放行。
+
+token 比较走 `authorize()` 纯函数 + `subtle::ConstantTimeEq` **常量时间**比较（镜像下游 `http.rs` 的 key 校验，
+抗计时侧信道）；`presented_bearer` 解析 `Authorization` 头（scheme 大小写不敏感、空值视为缺失）。
+
+### handler 流程：幂等优先 → 存在性校验 → spawn_blocking 变更 → rebuild
+
+4 个 handler（`disable_upstream`/`enable_upstream`/`disable_tool`/`enable_tool`）统一流程：
+
+1. **幂等读检查**：先**只读** `is_*_disabled` 看是否已是目标态。已是（重复 disable/enable）→ **直接回当前
+   `DisabledSnapshot`（200）、不 mutate、不 rebuild**（幂等、省一次重建）。
+2. **存在性校验**（仅 disable，**在 mutate 之前**）：disable 时校验目标真实存在——上游须 ∈ 配置的上游列表、工具须
+   ∈ 当前 catalog；不存在 → **404**。因校验先于变更，**绝不会把幽灵名写进禁用集**。enable 不做存在性校验（清除陈旧名合法）。
+3. **`mutate_and_rebuild`**：把**同步、会 `fsync` 的持久化变更**放进 `tokio::task::spawn_blocking`（不阻塞 axum
+   执行器），随后 `await rebuild_snapshot()`。**rebuild 失败 → 500**（变更已落 `DisableSet`，快照下次重建自会收敛）；
+   成功 → 回更新后的 `DisabledSnapshot`（200）。
+4. **记录变更**：`info!` 一条结构化日志（动作 + 目标名；**绝不**含 token）。
+
+### 与 gateway 耦合 + in-flight 竞态
+
+- handler 经 `gateway.disabled_arc()` 拿到与 rebuild **同一** `Arc<DisableSet>`，故 disable 写入对下一次 rebuild 立即可见。
+- **隐藏式语义**：禁用项在下次 rebuild 后从快照消失，下游对其表现为 `ToolNotFound`；`metatools`/`downstream` 零改动。
+- **in-flight 调用可能再完成一次**：禁用只在 rebuild 生效，若某 `call_tool` 在禁用落地前已通过 `find` 解析到工具并发起，
+  它可能在禁用后**再成功返回一次**（check-then-call 竞态）；这是无锁读路径的固有取舍，**不泄漏状态**，下次 rebuild 后彻底消失。
+
+### 持久化解耦于 `dashboard.enabled`
+
+`DisableSet` 由 `main.rs` 用 `DisableSet::load_or_new([dashboard].disabled_state_path)` 在**首次 rebuild 之前**经
+`with_disabled` 注入，且**独立于 `dashboard.enabled`**——**即使不开 dashboard**，已持久化的禁用项也从启动起生效
+（持久化是 gateway 行为，非 dashboard 行为）。`disabled_state_path = None` 时纯内存、重启即清。持久化的原子写/自愈
+细节见 [gateway L3](./gateway.md) 的 `DisableSet` 节。
+
+### 开放只读端点 `GET /api/disabled`
+
+`disabled` handler（**不**经 admin 中间件）回 `DisabledSnapshot { upstreams, tools }`（有序名列表）。前端据此渲染
+「已禁用」徽标，并在被禁工具因隐藏语义从 `/api/tools` 消失时单列一个「已禁用工具」区。该端点**只读名字**、无内容、无鉴权。
+
+### 前端：admin token 仅在浏览器内存
+
+- admin token **只存浏览器内存**（组件状态），**绝不**写 localStorage/sessionStorage、不入 URL、不随只读请求发送——
+  仅在 4 个 admin POST 的 `Authorization` 头里带上；刷新即清、需重新输入。
+- 可复用的 `DisableToggle` 按钮**仅在已输入 token 时显示**；禁用徽标来自 `/api/disabled`；About 页显示 `admin_enabled`
+  徽标 + 一个 token 输入框。
+- **隐私**：服务端把 token 当作**对 env 名的引用**在启动期解析，**绝不**写日志、绝不进 `/api/about`（`admin_enabled`
+  仅 bool）、绝不持久化；前端只在内存里持有解析值。
 
 ## `MetricsSink`：固定桶直方图 + 近似分位
 

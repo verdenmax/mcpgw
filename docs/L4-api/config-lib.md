@@ -144,19 +144,28 @@ pub struct DashboardConfig {
     pub trace_buffer: usize,       // 默认 500（内存发现 ring buffer 容量，须 > 0）
     pub call_buffer: usize,        // 默认 2000（内存逐条调用 ring 容量，驱动 Calls 下钻列表，须 > 0）
     pub payload_max_bytes: usize,  // 默认 16384（Calls 详情单条 args/result 捕获的字节上限，须 > 0）
+    pub admin_token_env: Option<String>,   // 默认 None（持有 admin Bearer token 的 env 变量名；None=admin 写 API 关闭；仅引用 env 名、serve 启动期 fail-fast 解析）
+    pub disabled_state_path: Option<String>,// 默认 None（运行时禁用集 JSON 持久化路径；None=仅内存、重启即清、无自动默认）
 }
 ```
-`[dashboard]` 段（子系统 A）：可选的**只读可视化面板**——独立端口、localhost、无鉴权的 web server（实现见
-L3 [dashboard](../L3-details/dashboard.md)）。`enabled` 默认 `false`——**省略整个 `[dashboard]` 段 = 面板关闭**
+`[dashboard]` 段（子系统 A + 可选写子系统 B）：默认**只读可视化面板**——独立端口、localhost、读端点无鉴权的 web
+server（实现见 L3 [dashboard](../L3-details/dashboard.md)）。`enabled` 默认 `false`——**省略整个 `[dashboard]` 段 = 面板关闭**
 （经容器级 `#[serde(default)]` 取 `DashboardConfig::default()`）。`trace_queries` 控制是否捕获**与审计/观测物理
 隔离**的发现追踪通道（`DiscoveryRecord`，含 query 文本 + 命中工具名/分数），默认关闭；`trace_path` 给出时把该追踪
 另写一份 JSONL 供历史回放，否则仅内存 ring buffer。`call_buffer` 是逐条调用内存环（Calls 下钻列表）的容量；
 `payload_max_bytes` 是 Calls 详情里单条 `args`/`result` 内容捕获各自的字节上限（下游按它 UTF-8 截断后才入环，故
-内容常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args + result 各封顶），重启即丢）。无 flatten，故 `#[serde(default, deny_unknown_fields)]` 生效
+内容常驻内存按 `call_buffer × 2 × payload_max_bytes` 有界（args + result 各封顶），重启即丢）。
+**`admin_token_env`**（子系统 B）是**持有 admin Bearer token 的环境变量名**——仅引用 env 名、**绝不**是 token 值；
+`None` → admin 写 API 关闭（写端点 404）。它**不**经 `validate()`，而在 `serve` 启动期由 `resolve_admin_token`
+**fail-fast 解析**（仅当 `enabled`；env 缺失/空/全空白 → 报错）。**`disabled_state_path`**（子系统 B）是运行时禁用集的
+JSON 持久化路径；`None` → 仅内存、重启即清、**无自动默认**；由 gateway 在装配期 `DisableSet::load_or_new` 读取，
+**独立于 `enabled`**。无 flatten，故 `#[serde(default, deny_unknown_fields)]` 生效
 （段内未知键 → `Parse`）；实现 `Default`（`enabled=false`、`bind="127.0.0.1:8971"`、`trace_queries=false`、
-`trace_path=None`、`trace_buffer=500`、`call_buffer=2000`、`payload_max_bytes=16384`）。`validate()` 仅在 `enabled` 时
-校验 `bind.trim()` 非空、`trace_buffer > 0`、`call_buffer > 0`、`payload_max_bytes > 0`
-（否则 `Invalid`）；端口能否绑定在 `serve` 启动期由预绑定监听 fail-fast 暴露。
+`trace_path=None`、`trace_buffer=500`、`call_buffer=2000`、`payload_max_bytes=16384`、`admin_token_env=None`、
+`disabled_state_path=None`）。`validate()` 仅在 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`、
+`call_buffer > 0`、`payload_max_bytes > 0`（否则 `Invalid`）；端口能否绑定在 `serve` 启动期由预绑定监听 fail-fast 暴露。
+`admin_token_env`/`disabled_state_path` 不参与 `validate()`（前者 serve 解析、后者 gateway 加载）；默认 `None` 与解析由
+`dashboard_admin_and_disabled_path_default_none` / `dashboard_parses_admin_and_disabled_path` 单测锁定。
 
 ## `struct RetrievalConfig`
 ```rust
