@@ -130,7 +130,7 @@
 - **`by_error_kind`**：仅统计带 `error_kind` 的记录（即非 ok 调用），count 降序、并列 kind 名升序。
 - **`busiest_tools`**：**仅按 `target_tool`** 计数（`search_tools` 无 target，不计入），count 降序取 Top-5。
 - **`slowest`**：按 `latency_ms` 降序（并列按 ts 降序）取 Top-5；`label` 取 `target_tool`，无则回退 `meta_tool`。
-- **隐私边界**：`ActivityResponse`（及其 `ActivityBucket`/`KindCount`/`SlowCall`/`ToolCount`）**类型层面**就不含任何内容字段；单测 `response_has_no_payload_content_fields` 与环级 `activity_aggregates_live_ring_window` 断言序列化 JSON **不含** `"args"`/`"result"`。该端点走 live 内存读，无 `spawn_blocking`。
+- **隐私边界**：`ActivityResponse`（及其 `ActivityBucket`/`KindCount`/`SlowCall`/`ToolCount`）**类型层面**就不含任何内容字段；单测 `response_has_no_payload_content_fields` 断言序列化 JSON **不含** `"args"`/`"result"`，环级 `activity_aggregates_live_ring_window` 另断言**不含** `"args"`。该端点走 live 内存读，无 `spawn_blocking`。
 
 ## `MetricsSink`：固定桶直方图 + 近似分位
 
