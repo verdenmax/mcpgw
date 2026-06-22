@@ -117,7 +117,7 @@
       <div>History unavailable</div><div class="hint">enable <code>[audit]</code> to replay past calls</div></div>
   {:else if resp.items.length === 0}
     <div class="empty"><span class="ico"><Icon name="calls" size={28} /></span>
-      {#if anyFilter}<div>No calls match these filters</div><div class="hint">adjust or clear the filters above</div>
+      {#if anyFilter || rangeMs > 0}<div>No calls match these filters</div><div class="hint">adjust or clear the filters above</div>
       {:else}<div>No calls yet</div><div class="hint">invoke a meta-tool to see it here</div>{/if}</div>
   {:else}
     <p class="meta-line"><span class="count-pill">{resp.total}</span> total</p>
