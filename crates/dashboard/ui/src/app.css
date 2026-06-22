@@ -352,7 +352,7 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 .barbtn { background: none; border: 0; padding: 0; cursor: pointer; }
 .barnum { font-size: 9px; line-height: 1; text-align: center; color: var(--muted);
           font-variant-numeric: tabular-nums; margin-bottom: 2px; }
-.bar { width: 100%; max-height: calc(100% - 13px); border-radius: 2px 2px 0 0;
+.sparkbars .bar { width: 100%; max-height: calc(100% - 13px); border-radius: 2px 2px 0 0;
        background: linear-gradient(180deg, var(--accent), var(--accent-2));
        display: flex; align-items: flex-end; }
 .barbtn:hover .bar { filter: brightness(1.18); }
