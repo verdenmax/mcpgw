@@ -1,10 +1,13 @@
 <script>
+  import { getJSON } from "./api.js";
   import { refresh } from "./refresh.svelte.js";
   import { go } from "./format.js";
   import Icon from "./Icon.svelte";
   import RecentCalls from "./RecentCalls.svelte";
+  import DisableToggle from "./DisableToggle.svelte";
   let { name } = $props();
   let d = $state(null);
+  let dis = $state({ upstreams: [], tools: [] });
   let error = $state(null);
   let notFound = $state(false);
   async function load() {
@@ -17,6 +20,7 @@
       if (!r.ok) throw new Error(`/api/upstreams/${name} -> ${r.status}`);
       const next = await r.json();
       if (reqName === name) d = next;
+      dis = await getJSON("/api/disabled");
     } catch (e) { if (reqName === name) error = String(e); }
   }
   $effect(() => { name; refresh.tick; load(); });          // reload on name change + each refresh tick
@@ -27,7 +31,11 @@
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="server" size={28} /></span><div>Upstream not found</div></div>
 {:else if d}
-  <h2>{d.name}</h2>
+  <h2>
+    {d.name}
+    {#if dis.upstreams.includes(d.name)}<span class="badge skipped">disabled</span>{/if}
+    <DisableToggle kind="upstreams" name={d.name} disabled={dis.upstreams.includes(d.name)} />
+  </h2>
   <div class="cards">
     <div class="card"><div class="ctop"><span class="label">transport</span></div><div class="v sm">{d.transport}</div></div>
     <div class="card"><div class="ctop"><span class="label">status</span></div><div class="v sm"><span class="badge {d.status}">{d.status}</span></div></div>

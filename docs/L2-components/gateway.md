@@ -6,6 +6,8 @@
 `GatewaySnapshot`（经 `ArcSwap`），外加上游连接注册表 `UpstreamRegistry`，并负责**从上游重建快照**——把每个上游的
 工具**并发**摄取进新 catalog、建索引、原子换入。读快照**无锁**；重建经 `Mutex` 串行化。它**不**实现元工具函数本身
 （复用 `metatools`），也**不**起 MCP server 或做 eager-connect（那是 M1-B.2 的 `mcpgw serve` + `upstream::connect`）。
+**（子系统 B）** `GatewayState` 另持一个可选 JSON 持久化的 `DisableSet`（运行时禁用集，默认空 → 行为不变），
+`rebuild_snapshot` 读它**跳过被禁用上游的 ingest 与被禁用的单工具**，使被禁用项不进新快照（这是隐藏式禁用的唯一过滤点）。
 
 ## 公开接口
 
@@ -23,7 +25,7 @@
 | `skipped` | `Vec<(String, String)>` | 本次跳过的上游 + 简短原因（超时 / 调用错误）（排序） |
 
 ### 类型 `GatewayState`（`lib.rs`）
-可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 重建锁 + 最近重建摘要（`ArcSwapOption`，读无锁）。
+可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 重建锁 + 最近重建摘要（`ArcSwapOption`，读无锁）+ 运行时禁用集 `Arc<DisableSet>`（默认空）。
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
@@ -31,7 +33,25 @@
 | `registry` | `(&self) -> &UpstreamRegistry` | 上游注册表（`serve` 的 eager-connect 填充；测试注入 mock handle） |
 | `snapshot` | `(&self) -> Arc<GatewaySnapshot>` | 加载当前快照（**无锁**，`load_full`） |
 | `last_summary` | `(&self) -> Option<Arc<RebuildSummary>>` | 最近一次成功重建的 `RebuildSummary`（**无锁**），首次重建前为 `None`；供 dashboard 只读读取已摄取/被跳过的上游 |
-| `rebuild_snapshot` | `async (&self) -> Result<RebuildSummary, GatewayError>` | 从注册表**并发**摄取（每个 ingest 受该 handle 的 `call_timeout` 约束）→ 建索引 → 原子换入新快照；经重建锁串行化；返回 `RebuildSummary` 并存为 `last_summary` |
+| `with_disabled` | `(self, disabled: Arc<DisableSet>) -> Self` | **（子系统 B）** 装配期注入运行时禁用集（须在**首次 rebuild 之前**），替换默认空集；返回 `Self` 便于链式构造。cheap-clone 的 `Arc` 与 dashboard 经同一 `GatewayState` 共享 |
+| `disabled` | `(&self) -> &DisableSet` | **（子系统 B）** 借用运行时禁用集（rebuild 读、dashboard admin API 改、`GET /api/disabled` 读快照） |
+| `disabled_arc` | `(&self) -> Arc<DisableSet>` | **（子系统 B）** `Arc` 克隆，供需跨 `.await` move 的调用方（如 dashboard admin handler 在 `spawn_blocking` 里跑同步持久化变更） |
+| `rebuild_snapshot` | `async (&self) -> Result<RebuildSummary, GatewayError>` | 从注册表**并发**摄取（每个 ingest 受该 handle 的 `call_timeout` 约束）→ 建索引 → 原子换入新快照；经重建锁串行化；返回 `RebuildSummary` 并存为 `last_summary`。**读 `disabled`：ingest 前跳过被禁用上游（不在 `summary.ingested`、连 `tools/list` 都不发）、upsert 时跳过被禁用单工具** |
+
+### 类型 `DisableSet` / `DisabledSnapshot`（`disable.rs`，子系统 B）
+运行时**临时禁用集**：内存 `RwLock<{upstreams, tools}>`（两个 `BTreeSet<String>` → 天然有序）+ 可选 JSON 持久化路径。
+被禁用的上游 namespace / qualified 工具名经 `rebuild_snapshot` 过滤后从快照消失，对下游表现为 `ToolNotFound`（隐藏式
+语义，`metatools`/`downstream` 零改动）。`Default` = 空集、无持久化（默认 `GatewayState` 所持）。
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `load_or_new` | `(path: Option<PathBuf>) -> Self` | 有 path 且文件存在则读入；缺文件 → 空集（正常非错误）；坏 JSON / 坏 UTF-8 → 空集 + `warn!`（自愈，绝不 panic/挡启动）。陈旧名保留（过滤永不命中、`enable` 可清） |
+| `is_upstream_disabled` / `is_tool_disabled` | `(&self, name/qualified: &str) -> bool` | 过滤判定（`rebuild_snapshot` 调用，读锁） |
+| `disable_upstream` / `enable_upstream` / `disable_tool` / `enable_tool` | `(&self, name: &str) -> bool` | 变更，返回 `changed`；**仅 changed 时**持久化（best-effort 原子写） |
+| `snapshot` | `(&self) -> DisabledSnapshot` | 有序快照——`GET /api/disabled` 响应体 + 持久化形态 |
+
+`DisabledSnapshot { upstreams: Vec<String>, tools: Vec<String> }`（`Serialize`/`Deserialize`，有序）：开放只读端点
+`GET /api/disabled` 的 body 与磁盘 JSON 形态（空集即 `{ "upstreams": [], "tools": [] }`）。
 
 ### 函数 `run_rebuild_worker`（`lib.rs`）
 
@@ -44,7 +64,8 @@
 - 内部：`metatools`（`GatewaySnapshot`）、`catalog`（`Catalog`）、`retrieval`（`build_strategy`）、`upstream`
   （`UpstreamRegistry` / `UpstreamHandle`）。
 - 外部：`arc-swap`（`ArcSwap` 热替换）、`tokio`（`sync::Mutex` 重建锁、`task::JoinSet` 并发摄取、`mpsc` 触发
-  channel）、`thiserror`（`GatewayError`）、`tracing`（重建日志）。
+  channel）、`thiserror`（`GatewayError`）、`tracing`（重建日志）、`serde`/`serde_json`（`DisabledSnapshot` 序列化
+  + `DisableSet` 的 JSON 持久化）；`DisableSet` 内部用 `std::sync::RwLock` + `BTreeSet`（有序、无第三方锁）。
 
 ## 关键不变量
 
@@ -56,6 +77,9 @@
 - **单上游失败/挂起隔离**：每个上游在独立任务里摄取、各自受 `call_timeout` 约束；超时/报错的上游被记入
   `skipped`，**绝不**阻塞其余上游或拖死整次重建（这彻底修复了 B.1 串行摄取里 hung 上游饿死后续重建的隐患）。
 - **worker 合并**：`run_rebuild_worker` 把一波连续触发 coalesce 成单次重建，避免突发抖动放大成多次无谓重建。
+- **禁用过滤只在 rebuild**（子系统 B）：被禁用上游/工具仅在 `rebuild_snapshot` 时被剔出新快照——`metatools`/`downstream`
+  读路径零改动；已在途的调用可能在禁用生效后**再完成一次**（check-then-call 竞态，无状态泄漏），下次重建后彻底消失。
+  `DisableSet` 默认空集时整条路径行为与禁用功能引入前完全一致。
 
 ## 向下导航
 

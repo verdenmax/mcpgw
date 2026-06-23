@@ -14,6 +14,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 rust-embed = { version = "8", features = ["debug-embed", "mime-guess"] }
+subtle = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+upstream = { path = "../upstream", features = ["testkit"] }
+rmcp = { workspace = true, features = ["client", "server", "macros", "transport-io"] }

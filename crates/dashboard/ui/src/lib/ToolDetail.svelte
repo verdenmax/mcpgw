@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import RecentCalls from "./RecentCalls.svelte";
   import CopyButton from "./CopyButton.svelte";
+  import DisableToggle from "./DisableToggle.svelte";
   let { name } = $props();
   let d = $state(null);
   let error = $state(null);
@@ -28,7 +29,10 @@
 {#if notFound}
   <div class="empty"><span class="ico"><Icon name="tools" size={28} /></span><div>Tool not found</div></div>
 {:else if d}
-  <h2 class="mono">{d.name}</h2>
+  <h2 class="mono">
+    {d.name}
+    <DisableToggle kind="tools" name={d.name} disabled={false} />
+  </h2>
   <p class="meta-line">upstream: <a href={`#/upstreams/${encodeURIComponent(d.server)}`}>{d.server}</a></p>
   <p>{d.description}</p>
   <h3>Input schema</h3>

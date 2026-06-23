@@ -74,25 +74,32 @@
 
 ### `[dashboard]` 段（子系统 A）
 
-`Config.dashboard: DashboardConfig`（`#[serde(default, deny_unknown_fields)]`）开关**只读可视化面板**——一个
-**独立端口、localhost、无鉴权**的 web server，只读地展示快照/指标/搜索追踪（实现见 [dashboard L3](./dashboard.md)）。
+`Config.dashboard: DashboardConfig`（`#[serde(default, deny_unknown_fields)]`）开关**默认只读可视化面板**——一个
+**独立端口、localhost**的 web server，读端点无鉴权，展示快照/指标/搜索追踪（实现见 [dashboard L3](./dashboard.md)）；
+另含**可选**的运行时禁用写子系统（子系统 B）的两个开关（`admin_token_env`/`disabled_state_path`）。
 
 - **字段与默认**：`enabled: bool`（默认 `false`，须显式 opt-in）、`bind: String`（默认 `"127.0.0.1:8971"`，
-  仅 localhost、无 auth）、`trace_queries: bool`（默认 `false`，opt-in 后才捕获 **query 文本 + 命中工具名/分数**
+  仅 localhost、读端点无 auth）、`trace_queries: bool`（默认 `false`，opt-in 后才捕获 **query 文本 + 命中工具名/分数**
   的发现追踪）、`trace_path: Option<String>`（默认 `None`，给出则把发现追踪另写一份 JSONL 供历史回放，否则仅内存
   ring buffer）、`trace_buffer: usize`（默认 `500`，内存发现 ring buffer 容量，须 `> 0`）、`call_buffer: usize`
   （默认 `2000`，逐条调用环容量，须 `> 0`）、`payload_max_bytes: usize`（默认 `16384`，单条调用 args/result 内容文本
-  各自的字节封顶，须 `> 0`）。
+  各自的字节封顶，须 `> 0`）、`admin_token_env: Option<String>`（默认 `None`，**持有 admin Bearer token 的环境变量名**——
+  仅引用 env 名、**绝不**是 token 值；`None` → admin 写 API 关闭）、`disabled_state_path: Option<String>`（默认 `None`，
+  运行时禁用集的 JSON 持久化路径；`None` → 仅内存、重启即清、**无自动默认**）。
 - **省略整个 `[dashboard]` 段 → `DashboardConfig::default()`（关闭）**；只给 `enabled = true` 时其余字段取默认
   （`dashboard_defaults_and_partial_fill` 单测锁定）。无 flatten，故 `deny_unknown_fields` 生效（段内未知键如
-  `bogus` → `Parse`）。
+  `bogus` → `Parse`）。`admin_token_env`/`disabled_state_path` 默认 `None` 与解析由
+  `dashboard_admin_and_disabled_path_default_none` / `dashboard_parses_admin_and_disabled_path` 单测锁定。
 - **隐私分层**：`trace_queries` 控的是**与审计/观测物理隔离的独立通道**——审计 JSONL（`[audit]`）与
   `observe::CallRecord` 始终**仅元数据**，绝不含 query 文本；只有 dashboard 的发现追踪（`DiscoveryRecord`）才带
   query 与工具名，且默认关闭。逐条调用内容（args/result）同理：只活在内存调用环、供详情页实时展示/过滤，绝不落盘
-  （见 [downstream L3 调用内容捕获](./downstream.md) 与 [dashboard L3](./dashboard.md)）。
+  （见 [downstream L3 调用内容捕获](./downstream.md) 与 [dashboard L3](./dashboard.md)）。`admin_token_env` 是**对
+  env 名的引用**，配置层只透传，**绝不**含 token 值；该 token 绝不进 `/api/about`（`admin_enabled` 仅 bool）、不被日志。
 - **`validate()`**：仅当 `enabled` 时校验 `bind.trim()` 非空、`trace_buffer > 0`、`call_buffer > 0`、
   `payload_max_bytes > 0`（否则 `Invalid`）；端口能否绑定在 `serve` 启动期由**预绑定监听**fail-fast 暴露，而非配置
-  解析期。
+  解析期。`admin_token_env` **不**经 `validate()`——其 env 变量在 `serve` 启动期 **fail-fast 解析**（`resolve_admin_token`，
+  仅当 `dashboard.enabled`；env 缺失/空/全空白 → 报错，详见 [mcpgw-main L4](../L4-api/mcpgw-main.md)）；
+  `disabled_state_path` 由 gateway 在装配期 `DisableSet::load_or_new` 读取（坏文件自愈，**独立于 `enabled`**）。
 
 ## `env_passthrough` 的 allow-list 语义
 

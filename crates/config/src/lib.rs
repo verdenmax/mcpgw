@@ -165,6 +165,11 @@ pub struct DashboardConfig {
     pub call_buffer: usize,
     /// Per-call payload (args/result) capture cap in bytes for the Calls detail view. Must be > 0.
     pub payload_max_bytes: usize,
+    /// Env var name holding the dashboard admin Bearer token. None -> admin write API disabled.
+    /// The secret is referenced by env name only (resolved fail-fast at `serve` start).
+    pub admin_token_env: Option<String>,
+    /// Path to persist the runtime disable set (JSON). None -> in-memory only (lost on restart).
+    pub disabled_state_path: Option<String>,
 }
 
 impl Default for DashboardConfig {
@@ -177,6 +182,8 @@ impl Default for DashboardConfig {
             trace_buffer: 500,
             call_buffer: 2000,
             payload_max_bytes: 16384,
+            admin_token_env: None,
+            disabled_state_path: None,
         }
     }
 }
@@ -901,5 +908,26 @@ mod tests {
         let err = Config::from_toml_str("[dashboard]\nenabled = true\npayload_max_bytes = 0\n")
             .expect_err("payload_max_bytes=0 must be rejected");
         assert!(err.to_string().contains("payload_max_bytes"), "got: {err}");
+    }
+
+    #[test]
+    fn dashboard_admin_and_disabled_path_default_none() {
+        let d = Config::from_toml_str("").unwrap().dashboard;
+        assert!(d.admin_token_env.is_none());
+        assert!(d.disabled_state_path.is_none());
+    }
+
+    #[test]
+    fn dashboard_parses_admin_and_disabled_path() {
+        let d = Config::from_toml_str(
+            "[dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_DASH_ADMIN\"\ndisabled_state_path = \"mcpgw-disabled.json\"\n",
+        )
+        .unwrap()
+        .dashboard;
+        assert_eq!(d.admin_token_env.as_deref(), Some("MCPGW_DASH_ADMIN"));
+        assert_eq!(
+            d.disabled_state_path.as_deref(),
+            Some("mcpgw-disabled.json")
+        );
     }
 }

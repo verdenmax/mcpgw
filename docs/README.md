@@ -44,10 +44,10 @@ spec、实现 plan、路线图等过程产物）相互独立。
 > 有界 channel 满则丢弃、关停优雅 drain+fsync；配置 `[audit]`，std-only，默认关闭）** 与
 > **子系统 A（只读可视化 dashboard：新 `dashboard` crate 的 `MetricsSink`（聚合 per-meta-tool 调用/错误/p50/p95/max
 > + per-upstream）+ `CallRingSink`（逐条调用环，M1）+ `DiscoveryRingSink`（有界 ring + 可选发现 JSONL）+ history JSONL 回放
-> + `build_dashboard_router` 的 13 个 `/api/*`（含 M3 的 `upstreams/{name}`、`tools/{name}`、`traces/{id}` 详情下钻，以及 `calls`/`activity`/`about`）+ `assets::static_handler` fallback
+> + `build_dashboard_router` 的 18 个 `/api/*`（含 M3 的 `upstreams/{name}`、`tools/{name}`、`traces/{id}` 详情下钻，`calls`/`activity`/`about`，开放只读 `disabled`，及 4 个 Bearer 鉴权的 `admin/{upstreams,tools}/{name}/{disable,enable}` 写）+ `assets::static_handler` fallback
 > 内嵌一个 **Svelte 5 + Vite 构建、rust-embed 内嵌的多视图 hash-路由 SPA**（M2，`dist/` 入库故 cargo 不依赖 node）；
 > `observe` 新增 `DiscoveryRecord`/`DiscoverySink` 发现追踪
-> 契约；配置 `[dashboard]`，独立 port、localhost、无鉴权、默认关闭）**。注意
+> 契约；配置 `[dashboard]`，独立 port、localhost、读端点无鉴权（admin 写子系统 B 经 Bearer、opt-in）、默认关闭）**。注意
 > `embedder`、`chat`、`observe` crate 只有 L2 + L4 文档（无独立 L3；`observe` 的细节并入
 > `downstream` L3）；`dashboard` 则另有独立 **L3**（进程模型 / 数据源 / 隐私边界 / 直方图算法）。
 > `observe` 的 L4 有两篇（`observe-lib.md` 记录形状/sink 契约、`observe-audit.md` 审计落盘）。

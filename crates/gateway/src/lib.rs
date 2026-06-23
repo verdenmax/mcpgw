@@ -12,6 +12,9 @@ use retrieval::{build_strategy, Backends, Embedder};
 use tokio::sync::Mutex;
 use upstream::registry::UpstreamRegistry;
 
+mod disable;
+pub use disable::{DisableSet, DisabledSnapshot};
+
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
     #[error("unknown retrieval strategy: {0}")]
@@ -64,6 +67,8 @@ pub struct GatewayState {
     rebuild_lock: Arc<Mutex<()>>,
     /// Most recent rebuild summary (ingested/skipped upstreams), for the dashboard. Read lock-free.
     last_summary: Arc<ArcSwapOption<RebuildSummary>>,
+    /// Runtime disable set (default empty). Read on every rebuild to skip disabled upstreams/tools.
+    disabled: Arc<disable::DisableSet>,
 }
 
 impl GatewayState {
@@ -80,6 +85,7 @@ impl GatewayState {
             backends,
             rebuild_lock: Arc::new(Mutex::new(())),
             last_summary: Arc::new(ArcSwapOption::empty()),
+            disabled: Arc::new(disable::DisableSet::default()),
         })
     }
 
@@ -113,6 +119,24 @@ impl GatewayState {
         &self.registry
     }
 
+    /// Replace the disable set (assembly-time injection, before the first rebuild). Cheap-clone
+    /// `Arc` shared with the dashboard via the same `GatewayState`.
+    pub fn with_disabled(mut self, disabled: Arc<disable::DisableSet>) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// The runtime disable set (read by rebuild; mutated by the dashboard admin API).
+    pub fn disabled(&self) -> &disable::DisableSet {
+        self.disabled.as_ref()
+    }
+
+    /// An owned `Arc` clone of the disable set — for callers that move it across an `.await`
+    /// (e.g. the dashboard admin handler runs the synchronous, fsync-ing mutation in `spawn_blocking`).
+    pub fn disabled_arc(&self) -> Arc<disable::DisableSet> {
+        self.disabled.clone()
+    }
+
     /// Load the current snapshot (lock-free).
     pub fn snapshot(&self) -> Arc<GatewaySnapshot> {
         self.snapshot.load_full()
@@ -133,6 +157,9 @@ impl GatewayState {
         let mut set = tokio::task::JoinSet::new();
         let mut names_by_id: HashMap<tokio::task::Id, String> = HashMap::new();
         for name in self.registry.server_names() {
+            if self.disabled.is_upstream_disabled(&name) {
+                continue; // disabled upstream: not even ingested
+            }
             if let Some(handle) = self.registry.get(&name) {
                 let timeout = handle.call_timeout();
                 let task_name = name.clone();
@@ -160,6 +187,9 @@ impl GatewayState {
                 Ok(Err(e)) => summary.skipped.push((name, e.to_string())),
                 Ok(Ok(_dupes)) => {
                     for tool in local.iter() {
+                        if self.disabled.is_tool_disabled(&tool.qualified_name()) {
+                            continue; // disabled single tool: skip upsert
+                        }
                         catalog.upsert(tool.clone());
                     }
                     summary.ingested.push(name);

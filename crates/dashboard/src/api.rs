@@ -31,6 +31,8 @@ pub struct AppState {
     pub started_at: Instant,
     /// 启动时组装的只读 About/Settings 信息（非敏感）。
     pub about: crate::about::AboutInfo,
+    /// Admin Bearer token (env-resolved at startup). None -> /api/admin/* returns 404.
+    pub admin_token: Option<std::sync::Arc<str>>,
 }
 
 #[derive(Serialize)]
@@ -167,6 +169,11 @@ pub fn upstreams(state: &AppState) -> Vec<UpstreamView> {
             }
         })
         .collect()
+}
+
+/// `/api/disabled` body: the current runtime disable set (open/read-only).
+pub fn disabled(s: &AppState) -> gateway::DisabledSnapshot {
+    s.gateway.disabled().snapshot()
 }
 
 /// Single-upstream detail: its `UpstreamView` fields + the list of tools it currently exposes.
@@ -414,17 +421,14 @@ pub fn activity(state: &AppState, window_ms: u64) -> crate::activity::ActivityRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
     use observe::{CallContentSink, CallSink};
 
-    async fn seeded_state() -> AppState {
-        // A gateway with two tools under one server, rebuilt so the snapshot is populated.
-        let gw = Arc::new(GatewayState::new("bm25").unwrap());
-        // Seed the snapshot directly via a rebuild over a registry is heavy; instead assert on the
-        // metrics/upstreams plumbing using an empty gateway + configured upstream list.
-        let metrics = Arc::new(MetricsSink::new());
+    fn make_state(gw: Arc<GatewayState>) -> AppState {
         AppState {
             gateway: gw,
-            metrics,
+            metrics: Arc::new(MetricsSink::new()),
             discovery: None,
             calls: None,
             upstreams: vec![UpstreamInfo {
@@ -443,7 +447,33 @@ mod tests {
                     build_time: "0".into(),
                 },
             ),
+            admin_token: None,
         }
+    }
+
+    async fn seeded_state() -> AppState {
+        make_state(Arc::new(GatewayState::new("bm25").unwrap()))
+    }
+
+    /// A gateway with the testkit MockUpstream connected and rebuilt (catalog populated with
+    /// `mock__echo`/`mock__greet`/...). Returns the server task to abort at test end.
+    async fn gateway_with_mock(name: &str) -> (Arc<GatewayState>, tokio::task::JoinHandle<()>) {
+        use rmcp::ServiceExt;
+        let (server_io, client_io) = tokio::io::duplex(4096);
+        let join = tokio::spawn(async move {
+            let svc = upstream::testkit::MockUpstream::new()
+                .serve(server_io)
+                .await
+                .unwrap();
+            svc.waiting().await.unwrap();
+        });
+        let handle = upstream::connection::UpstreamHandle::connect(name, client_io)
+            .await
+            .unwrap();
+        let gw = Arc::new(GatewayState::new("bm25").unwrap());
+        gw.registry().insert(Arc::new(handle));
+        gw.rebuild_snapshot().await.unwrap();
+        (gw, join)
     }
 
     #[tokio::test]
@@ -463,6 +493,159 @@ mod tests {
         assert_eq!(ups[0].name, "github");
         assert_eq!(ups[0].transport, "stdio");
         assert_eq!(ups[0].status, "unknown"); // no rebuild summary yet
+    }
+
+    #[tokio::test]
+    async fn disabled_endpoint_reflects_gateway_disable_set() {
+        let st = seeded_state().await;
+        // Empty by default.
+        assert_eq!(disabled(&st), gateway::DisabledSnapshot::default());
+        // Mutating the shared gateway disable set is reflected through the endpoint.
+        st.gateway.disabled().disable_upstream("github");
+        st.gateway.disabled().disable_tool("github__create_issue");
+        let snap = disabled(&st);
+        assert_eq!(snap.upstreams, vec!["github"]);
+        assert_eq!(snap.tools, vec!["github__create_issue"]);
+    }
+
+    #[tokio::test]
+    async fn admin_disable_enable_upstream_roundtrip() {
+        let st = Arc::new(seeded_state().await); // upstreams = ["github"]
+        let r = crate::admin::disable_upstream(State(st.clone()), Path("github".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(disabled(&st).upstreams, vec!["github"]);
+        let r = crate::admin::enable_upstream(State(st.clone()), Path("github".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(disabled(&st).upstreams.is_empty());
+    }
+
+    #[tokio::test]
+    async fn admin_disable_unknown_upstream_is_404() {
+        let st = Arc::new(seeded_state().await);
+        let r = crate::admin::disable_upstream(State(st.clone()), Path("nope".into())).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn admin_disable_absent_tool_is_404() {
+        let st = Arc::new(seeded_state().await); // empty catalog (no upstreams ingested)
+        let r = crate::admin::disable_tool(State(st.clone()), Path("github__x".into())).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn admin_disable_tool_success_hides_it_and_reflects_in_disabled() {
+        let (gw, join) = gateway_with_mock("mock").await;
+        let st = Arc::new(make_state(gw));
+        assert!(st.gateway.snapshot().catalog().get("mock__echo").is_some());
+
+        let r = crate::admin::disable_tool(State(st.clone()), Path("mock__echo".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        // After the handler's rebuild: gone from the catalog, listed in /api/disabled.
+        assert!(st.gateway.snapshot().catalog().get("mock__echo").is_none());
+        assert_eq!(disabled(&st).tools, vec!["mock__echo"]);
+        // Sibling tool is unaffected.
+        assert!(st.gateway.snapshot().catalog().get("mock__greet").is_some());
+
+        let r = crate::admin::enable_tool(State(st.clone()), Path("mock__echo".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(st.gateway.snapshot().catalog().get("mock__echo").is_some());
+
+        join.abort();
+    }
+
+    #[tokio::test]
+    async fn admin_disable_upstream_is_idempotent() {
+        let st = Arc::new(seeded_state().await);
+        let _ = crate::admin::disable_upstream(State(st.clone()), Path("github".into())).await;
+        let r = crate::admin::disable_upstream(State(st.clone()), Path("github".into())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(disabled(&st).upstreams, vec!["github"]); // still single entry
+    }
+
+    #[tokio::test]
+    async fn admin_routes_gated_and_open_read_stays_open() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt; // for `oneshot`
+
+        let admin_uris = [
+            "/api/admin/upstreams/x/disable",
+            "/api/admin/upstreams/x/enable",
+            "/api/admin/tools/x__y/disable",
+            "/api/admin/tools/x__y/enable",
+        ];
+
+        // Unconfigured admin token -> every /api/admin/* is 404 (existence not leaked).
+        for uri in admin_uris {
+            let st = Arc::new(seeded_state().await); // admin_token: None
+            let resp = crate::build_dashboard_router(st, false)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "unconfigured {uri} must be 404"
+            );
+        }
+
+        // Configure a token: every /api/admin/* with a missing/wrong Bearer is 401.
+        for uri in admin_uris {
+            let mut state = seeded_state().await;
+            state.admin_token = Some(std::sync::Arc::from("sekret"));
+            let st = Arc::new(state);
+            let resp = crate::build_dashboard_router(st, false)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "no-bearer {uri} must be 401"
+            );
+        }
+
+        // The open read endpoint stays 200 even with a token configured and no Bearer.
+        let mut state = seeded_state().await;
+        state.admin_token = Some(std::sync::Arc::from("sekret"));
+        let st = Arc::new(state);
+        let resp = crate::build_dashboard_router(st.clone(), false)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/disabled")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Correct Bearer -> 200 (github is a configured upstream; empty-gateway rebuild succeeds).
+        let resp = crate::build_dashboard_router(st, false)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/upstreams/github/disable")
+                    .header("authorization", "Bearer sekret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

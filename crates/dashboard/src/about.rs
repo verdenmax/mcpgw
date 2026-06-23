@@ -33,6 +33,9 @@ pub struct DashboardInfo {
     pub trace_queries: bool,
     pub trace_buffer: usize,
     pub trace_path: Option<String>,
+    /// True iff `[dashboard].admin_token_env` is configured (admin write API enabled). Never the
+    /// env name or token value — a bare existence bool, mirroring `ServerInfo.http_auth`.
+    pub admin_enabled: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -89,6 +92,7 @@ impl AboutInfo {
                 trace_queries: cfg.dashboard.trace_queries,
                 trace_buffer: cfg.dashboard.trace_buffer,
                 trace_path: cfg.dashboard.trace_path.clone(),
+                admin_enabled: cfg.dashboard.admin_token_env.is_some(),
             },
             audit: AuditInfo {
                 enabled: cfg.audit.enabled,
@@ -143,6 +147,7 @@ mod tests {
         assert_eq!(a.upstreams.len(), 1);
         assert_eq!(a.upstreams[0].name, "mock");
         assert_eq!(a.upstreams[0].transport, "stdio");
+        assert!(!a.dashboard.admin_enabled, "no admin_token_env -> false");
         assert_eq!(a.version.version, "0.1.0");
     }
 
@@ -150,7 +155,7 @@ mod tests {
     fn http_auth_true_and_no_secrets_leak() {
         let toml = "[retrieval]\nstrategy = \"bm25\"\n\
                     [server.http]\nenabled = true\nbind = \"0.0.0.0:9000\"\npath = \"/mcp\"\n\
-                    [[server.http.api_key]]\nname = \"admin\"\nenv = \"SECRET_KEY\"\n\
+                    [[server.http.api_key]]\nname = \"keylabel\"\nenv = \"SECRET_KEY\"\n\
                     [[upstream]]\nname = \"remote\"\ntransport = \"http\"\nurl = \"https://example.com/mcp\"\nbearer_env = \"REMOTE_TOKEN\"\ncall_timeout_ms = 5000\n";
         let cfg = config::Config::from_toml_str(toml).unwrap();
         let a = AboutInfo::from_config(&cfg, ver());
@@ -162,7 +167,7 @@ mod tests {
         for secret in [
             "SECRET_KEY",
             "REMOTE_TOKEN",
-            "admin",
+            "keylabel",
             "example.com",
             "bearer_env",
             "api_key",
@@ -172,5 +177,19 @@ mod tests {
                 "About JSON must not leak {secret:?}: {json}"
             );
         }
+    }
+
+    #[test]
+    fn admin_enabled_reflects_config_without_leaking_env_name() {
+        let toml = "[retrieval]\nstrategy = \"bm25\"\n\
+                    [dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_DASH_ADMIN\"\n";
+        let cfg = config::Config::from_toml_str(toml).unwrap();
+        let a = AboutInfo::from_config(&cfg, ver());
+        assert!(a.dashboard.admin_enabled, "admin_token_env set -> true");
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(
+            !json.contains("MCPGW_DASH_ADMIN"),
+            "About JSON must not leak the admin env var name: {json}"
+        );
     }
 }

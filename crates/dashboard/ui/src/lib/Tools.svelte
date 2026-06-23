@@ -3,8 +3,10 @@
   import { refresh } from "./refresh.svelte.js";
   import { go } from "./format.js";
   import Icon from "./Icon.svelte";
+  import DisableToggle from "./DisableToggle.svelte";
   let q = $state("");
   let tools = $state(null);
+  let dis = $state({ upstreams: [], tools: [] });
   let error = $state(null);
   async function load() {
     const reqQ = q; // discard a superseded response if the filter changed mid-flight
@@ -13,6 +15,7 @@
       const t = await getJSON(`/api/tools${qs}`);
       if (reqQ !== q) return;
       tools = t; error = null;
+      dis = await getJSON("/api/disabled");
     } catch (e) { if (reqQ === q) error = String(e); }
   }
   // Refetch on every `q` change and on each global refresh tick.
@@ -38,7 +41,10 @@
           {@const href = `#/tools/${encodeURIComponent(t.name)}`}
           <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <tr class="row-link" onclick={() => go(href)}>
-            <td class="mono"><a class="rl" href={href}>{t.name}</a></td><td>{t.description}</td>
+            <td class="mono">
+              <a class="rl" href={href}>{t.name}</a>
+              <DisableToggle kind="tools" name={t.name} disabled={false} />
+            </td><td>{t.description}</td>
           </tr>
         {/each}
       </tbody>
@@ -46,4 +52,19 @@
   {/if}
 {:else if !error}
   <div class="skeleton">{#each Array(5) as _}<div class="sk row"></div>{/each}</div>
+{/if}
+
+{#if dis.tools.length > 0}
+  <h3>Disabled tools</h3>
+  <div class="table-wrap"><div class="table-scroll"><table>
+    <thead><tr><th>name</th><th></th></tr></thead>
+    <tbody>
+      {#each dis.tools as name}
+        <tr>
+          <td class="mono">{name} <span class="badge skipped">disabled</span></td>
+          <td><DisableToggle kind="tools" {name} disabled={true} /></td>
+        </tr>
+      {/each}
+    </tbody>
+  </table></div></div>
 {/if}

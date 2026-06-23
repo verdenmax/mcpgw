@@ -96,21 +96,26 @@
 打不开即**启动期 fail-fast**；`validate()` **不**校验 `path`。
 
 ### 类型 `DashboardConfig`
-`[dashboard]` 段（子系统 A）。`#[serde(default, deny_unknown_fields)]`：可选的**只读可视化面板**——独立端口、
-localhost、无鉴权，只读展示快照/指标/调用记录/搜索追踪。**省略整个 `[dashboard]` 段 = 关闭。**
+`[dashboard]` 段（子系统 A）。`#[serde(default, deny_unknown_fields)]`：可选的**默认只读可视化面板**——独立端口、
+localhost，读端点无鉴权，展示快照/指标/调用记录/搜索追踪。**省略整个 `[dashboard]` 段 = 关闭。** 另含**可选**的
+运行时禁用写子系统（子系统 B）的两个开关：配 `admin_token_env` 即开启 Bearer 鉴权的 disable/enable 写 API。
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
 | `enabled` | `bool` | `false` | 须显式 opt-in 才启动面板 |
-| `bind` | `String` | `"127.0.0.1:8971"` | 监听地址；仅 localhost、无 auth。`validate()` 要求 `enabled` 时 `trim()` 非空 |
+| `bind` | `String` | `"127.0.0.1:8971"` | 监听地址；仅 localhost、读端点无 auth。`validate()` 要求 `enabled` 时 `trim()` 非空 |
 | `trace_queries` | `bool` | `false` | opt-in 后才捕获**发现追踪**（query 文本 + 命中工具名/分数）；与审计/观测物理隔离 |
 | `trace_path` | `Option<String>` | `None` | 给出则把发现追踪另写一份 JSONL 供历史回放，否则仅内存 ring |
 | `trace_buffer` | `usize` | `500` | 内存发现 ring 容量；`enabled` 时须 `> 0` |
 | `call_buffer` | `usize` | `2000` | 逐条调用环（M1 内容捕获）容量；`enabled` 时须 `> 0` |
 | `payload_max_bytes` | `usize` | `16384` | 单条调用 args/result 内容文本各自的字节封顶；`enabled` 时须 `> 0` |
+| `admin_token_env` | `Option<String>` | `None` | **（子系统 B）** 持有 admin Bearer token 的**环境变量名**（仅引用 env 名，**绝不**是 token 值）。`None` → admin 写 API 关闭（写端点 404）。**配置层只解析透传**，token 在 `serve` 启动期 **fail-fast 解析**（仅当 `enabled`；缺/空/全空白 → 报错） |
+| `disabled_state_path` | `Option<String>` | `None` | **（子系统 B）** 运行时禁用集的 JSON 持久化路径。`None` → 仅内存（重启即清）、**无自动默认**。由 gateway 加载，**独立于 `enabled`** |
 
 实现见 [dashboard L3](../L3-details/dashboard.md)；逐条调用内容只活在内存环、绝不落盘（见
-[downstream L3 调用内容捕获](../L3-details/downstream.md)）。
+[downstream L3 调用内容捕获](../L3-details/downstream.md)）。`admin_token_env`/`disabled_state_path` **不**经
+`validate()`（前者在 `serve` 解析、后者由 gateway 加载）；单测 `dashboard_admin_and_disabled_path_default_none`
+与 `dashboard_parses_admin_and_disabled_path` 覆盖默认 `None` 与解析。
 
 ### 错误 `ConfigError`
 `enum ConfigError { Parse(toml::de::Error), Invalid(String) }`（`thiserror`，`Parse` 带 `#[from]`）。

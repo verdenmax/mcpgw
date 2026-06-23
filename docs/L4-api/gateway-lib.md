@@ -23,6 +23,22 @@ pub struct RebuildSummary {
 ```
 一次重建的遥测。
 
+## `struct DisableSet` / `struct DisabledSnapshot`（`disable.rs`，`pub use` 自 `lib.rs`）
+```rust
+pub struct DisableSet { /* RwLock<{upstreams, tools}: BTreeSet<String>> + Option<PathBuf> */ }
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DisabledSnapshot { pub upstreams: Vec<String>, pub tools: Vec<String> }
+```
+运行时**临时禁用集**（子系统 B），经 `pub use disable::{DisableSet, DisabledSnapshot}` 暴露到 crate 根。内存
+`BTreeSet`（有序）+ 可选 JSON 持久化。被禁用的上游 namespace / qualified 工具名经 `rebuild_snapshot` 过滤后从快照消失
+（隐藏式语义）。`Default` = 空集、无持久化。主要 API：
+
+- `load_or_new(path: Option<PathBuf>) -> Self`：有 path 且文件在则读入；缺文件 → 空集；坏 JSON/UTF-8 → 空集 + `warn!`（自愈，绝不 panic）。
+- `is_upstream_disabled(&str) -> bool` / `is_tool_disabled(&str) -> bool`：过滤判定（`rebuild_snapshot` 用）。
+- `disable_upstream`/`enable_upstream`/`disable_tool`/`enable_tool(&str) -> bool`：变更，返回 `changed`；仅 changed 时 best-effort 原子写盘（temp→fsync→rename）。
+- `snapshot(&self) -> DisabledSnapshot`：有序快照——`GET /api/disabled` 响应体 + 磁盘形态。
+
 ## `struct GatewayState`
 ```rust
 #[derive(Clone)]
@@ -33,10 +49,12 @@ pub struct GatewayState {
     backends: Backends,                        // 私有，retrieval 后端（embedder/chat/subagent_candidates），跨 rebuild 持有（保留缓存）
     rebuild_lock: Arc<Mutex<()>>,              // 私有，串行化重建
     last_summary: Arc<ArcSwapOption<RebuildSummary>>, // 私有，最近一次重建摘要（供 dashboard 只读读取）
+    disabled: Arc<DisableSet>,                 // 私有，运行时禁用集（默认空），每次 rebuild 读以跳过禁用上游/工具
 }
 ```
 可廉价 `Clone` 的共享网关状态：`ArcSwap` 快照（读无锁）+ 上游注册表 + 策略名 + 检索后端 `Backends` + 重建锁 +
-最近重建摘要（`ArcSwapOption`，读无锁）。`Clone` 仅克隆内部 `Arc`，所有克隆共享同一份状态。
+最近重建摘要（`ArcSwapOption`，读无锁）+ 运行时禁用集 `Arc<DisableSet>`（默认空 → 行为不变）。`Clone` 仅克隆内部
+`Arc`，所有克隆共享同一份状态（含同一 `DisableSet`，故 dashboard admin 写入对 rebuild 立即可见）。
 
 ### `GatewayState::new`
 ```rust
@@ -82,6 +100,28 @@ pub fn last_summary(&self) -> Option<Arc<RebuildSummary>>
 （含 `ingested`/`skipped`），首次重建前为 `None`。每次重建在 swap 快照后 `store(Some(Arc::new(summary)))`。
 供 dashboard 的 `/api/upstreams` 等只读读取已摄取/被跳过的上游归因。无错误。
 
+### `GatewayState::with_disabled`
+```rust
+pub fn with_disabled(self, disabled: Arc<DisableSet>) -> Self
+```
+**（子系统 B）** 装配期注入运行时禁用集，替换默认空集，返回 `Self`（builder 风格，便于链式构造）。须在**首次
+`rebuild_snapshot` 之前**调用（`mcpgw` 的 `prepare_state` 在 `connect_all` + 初次 rebuild 前调），使持久化的禁用项
+从启动即生效。`Arc` 与 dashboard 经同一 `GatewayState`（cheap-clone）共享。
+
+### `GatewayState::disabled`
+```rust
+pub fn disabled(&self) -> &DisableSet
+```
+**（子系统 B）** 借用运行时禁用集：`rebuild_snapshot` 读它过滤、dashboard admin handler 改它、`GET /api/disabled`
+读它的 `snapshot()`。无锁（`DisableSet` 内部自带 `RwLock`）。
+
+### `GatewayState::disabled_arc`
+```rust
+pub fn disabled_arc(&self) -> Arc<DisableSet>
+```
+**（子系统 B）** `Arc` 克隆，供需跨 `.await` `move` 的调用方——dashboard admin handler 在 `spawn_blocking` 里跑同步、
+会 `fsync` 的持久化变更，需把 `Arc<DisableSet>` move 进闭包。
+
 ### `GatewayState::rebuild_snapshot`
 ```rust
 pub async fn rebuild_snapshot(&self) -> Result<RebuildSummary, GatewayError>
@@ -89,13 +129,15 @@ pub async fn rebuild_snapshot(&self) -> Result<RebuildSummary, GatewayError>
 从注册表**并发**重建快照（持 `rebuild_lock` 串行化）：
 
 1. `rebuild_lock.lock().await` 取得守卫。
-2. 对 `registry.server_names()` 的每个上游 `spawn` 一个 `JoinSet` 任务，在**任务私有** `Catalog` 上
-   `tokio::time::timeout(handle.call_timeout(), handle.ingest_into(&mut local)).await`；同时把 `spawn` 返回的
+2. 对 `registry.server_names()` 的每个上游：**先 `self.disabled.is_upstream_disabled(name)` → 跳过被禁用上游**
+   （连任务都不 `spawn`、不发 `tools/list`、不进 `ingested`/`skipped`）；否则 `spawn` 一个 `JoinSet` 任务，在**任务私有**
+   `Catalog` 上 `tokio::time::timeout(handle.call_timeout(), handle.ingest_into(&mut local)).await`；同时把 `spawn` 返回的
    `task::Id` → 上游名记入 `names_by_id`（用于 panic 归因）。
 3. `join_next` 收集：每个结果先经私有 `resolve_joined` 处理——任务 panic/取消（`JoinError`）按 `task::Id` 归因后
    降级为 `skipped("task failed: …")` + 一条 `warn`（归因缺失则记 `"<ingest task>"`），返回 `None` 即跳过、**绝不** re-panic；
    其余按 outcome：超时 → `skipped("ingest timed out")`；调用错误 → `skipped(err)`；成功 → 把 `local` 工具
-   `upsert` 进最终 catalog 并记 `ingested`。两表均排序。
+   `upsert` 进最终 catalog（**`upsert` 前 `self.disabled.is_tool_disabled(tool.qualified_name())` → 跳过被禁用的单工具**）
+   并记 `ingested`。两表均排序。
 4. `build_strategy(&self.strategy_name, &self.backends)?`（未知名/缺 embedder 或 chat 则 `Err(GatewayError::Strategy)`）→
    `strat.index(&catalog)`。复用 state 持有的 `backends`，故 `CachingEmbedder` 的缓存跨 rebuild 保留。
 5. `self.snapshot.store(Arc::new(GatewaySnapshot::new(catalog, strat)))` **原子换入**（build-then-swap），返回

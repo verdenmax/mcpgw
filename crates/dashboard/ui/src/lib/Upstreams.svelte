@@ -3,12 +3,15 @@
   import { refresh } from "./refresh.svelte.js";
   import { go } from "./format.js";
   import Icon from "./Icon.svelte";
+  import DisableToggle from "./DisableToggle.svelte";
   let ups = $state(null);
+  let dis = $state({ upstreams: [], tools: [] });
   let error = $state(null);
   let sortKey = $state("name");
   let sortDir = $state(1); // 1 asc, -1 desc
+  const disUp = $derived(new Set(dis.upstreams));
   async function load() {
-    try { ups = await getJSON("/api/upstreams"); error = null; }
+    try { ups = await getJSON("/api/upstreams"); dis = await getJSON("/api/disabled"); error = null; }
     catch (e) { error = String(e); }
   }
   $effect(() => { refresh.tick; load(); });
@@ -49,7 +52,12 @@
           <tr class="row-link" onclick={() => go(href)}>
             <td class="mono"><a class="rl" href={href}>{u.name}</a></td>
             <td>{u.transport}</td>
-            <td><span class="badge {u.status}">{u.status}</span>{#if u.reason} <span class="muted">{u.reason}</span>{/if}</td>
+            <td>
+              <span class="badge {u.status}">{u.status}</span>
+              {#if disUp.has(u.name)}<span class="badge skipped">disabled</span>{/if}
+              {#if u.reason} <span class="muted">{u.reason}</span>{/if}
+              <DisableToggle kind="upstreams" name={u.name} disabled={disUp.has(u.name)} />
+            </td>
             <td class="num">{u.tools}</td>
             <td class="num">{u.calls}</td>
             <td class="num" class:bad={u.errors > 0}>{u.errors}</td>

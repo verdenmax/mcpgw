@@ -444,11 +444,15 @@ dependencies = [
  "config",
  "gateway",
  "observe",
+ "rmcp",
  "rust-embed",
  "serde",
  "serde_json",
+ "subtle",
  "tokio",
+ "tower",
  "tracing",
+ "upstream",
 ]
 
 [[package]]
@@ -655,6 +659,8 @@ dependencies = [
  "metatools",
  "retrieval",
  "rmcp",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

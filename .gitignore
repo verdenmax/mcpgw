@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .superpowers/
 crates/dashboard/ui/node_modules/
+
+# Dashboard 运行时禁用集状态文件（[dashboard].disabled_state_path 的约定文件名）
+mcpgw-disabled.json
