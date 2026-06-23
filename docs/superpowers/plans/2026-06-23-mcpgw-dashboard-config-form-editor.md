@@ -368,7 +368,7 @@ Create `crates/dashboard/ui/src/lib/configSchema.js`:
 
 ```js
 // Enumerations + section metadata shared by the form sections and the validator.
-export const STRATEGIES = ["bm25", "vector", "subagent"];
+export const STRATEGIES = ["bm25", "vector", "hybrid", "subagent"];
 export const TRANSPORTS = ["stdio", "http"];
 
 // Left-nav order of top-level sections (TOML-native key names).
@@ -401,7 +401,7 @@ export function validateModel(model) {
       push("retrieval.strategy", `strategy 必须是 ${STRATEGIES.join(" / ")}`);
     if (r.top_k !== undefined && (!Number.isInteger(r.top_k) || r.top_k < 1))
       push("retrieval.top_k", "top_k 必须是 ≥1 的整数");
-    if (r.strategy === "vector") requireSub(push, "retrieval.vector", r.vector);
+    if (r.strategy === "vector" || r.strategy === "hybrid") requireSub(push, "retrieval.vector", r.vector);
     if (r.strategy === "subagent") requireSub(push, "retrieval.subagent", r.subagent);
   }
 
@@ -413,6 +413,7 @@ export function validateModel(model) {
       if (!u.name || !u.name.trim()) push(`${base}.name`, "name 必填");
       else {
         if (u.name.includes("__")) push(`${base}.name`, 'name 不能包含 "__"');
+        if (/^_|_$/.test(u.name)) push(`${base}.name`, 'name 不能以 "_" 开头或结尾');
         if (seen.has(u.name)) push(`${base}.name`, `name "${u.name}" 重复`);
         seen.add(u.name);
       }
@@ -583,21 +584,21 @@ git commit -m "refactor(dashboard/ui): 抽出 RawEditor + Config 加 Raw│Form 
 - Create: `crates/dashboard/ui/src/lib/SectionDashboard.svelte`
 - Create: `crates/dashboard/ui/src/lib/SectionUpstreams.svelte`（占位 stub）
 
-- [ ] **Step 1: 扩展 `configSchema.js` 加 `defaultSection`**
+- [ ] **Step 1: 确认 `configSchema.js` 已含 `defaultSection`**
 
-追加到 `crates/dashboard/ui/src/lib/configSchema.js` 末尾：
+> 注：`defaultSection` 已在 Task 3 提前合并进 `configSchema.js`（含 server `stdio:true`、`top_k:8` 等后端对齐值）。本步只需确认其存在、无需重复创建；下方为参考实现：
 
 ```js
 // Default value for a section when the user enables it from the form (aligned with the
 // config crate's #[serde(default)] sensible defaults). `upstream` is handled as an array.
 export function defaultSection(name) {
   switch (name) {
-    case "retrieval": return { strategy: "bm25", top_k: 10 };
-    case "server": return { stdio: false };
+    case "retrieval": return { strategy: "bm25", top_k: 8 };
+    case "server": return { stdio: true };
     case "audit": return { enabled: false, path: "mcpgw-audit.jsonl" };
     case "dashboard":
       return { enabled: false, bind: "127.0.0.1:8971", trace_queries: false,
-               trace_buffer: 500, call_buffer: 500, payload_max_bytes: 4096 };
+               trace_buffer: 500, call_buffer: 2000, payload_max_bytes: 16384 };
     default: return {};
   }
 }
@@ -651,7 +652,7 @@ Create `crates/dashboard/ui/src/lib/SectionRetrieval.svelte`:
   let { retrieval = $bindable() } = $props();
   // Lazily create the vector/subagent sub-table when its strategy is selected.
   $effect(() => {
-    if (retrieval?.strategy === "vector" && !retrieval.vector) retrieval.vector = { model: "", api_key_env: "" };
+    if ((retrieval?.strategy === "vector" || retrieval?.strategy === "hybrid") && !retrieval.vector) retrieval.vector = { model: "", api_key_env: "" };
     if (retrieval?.strategy === "subagent" && !retrieval.subagent) retrieval.subagent = { model: "", api_key_env: "" };
   });
 </script>
@@ -665,7 +666,7 @@ Create `crates/dashboard/ui/src/lib/SectionRetrieval.svelte`:
   </label>
   <label class="cfg-field">top_k <input type="number" min="1" bind:value={retrieval.top_k} /></label>
 
-  {#if retrieval.strategy === "vector" && retrieval.vector}
+  {#if (retrieval.strategy === "vector" || retrieval.strategy === "hybrid") && retrieval.vector}
     <fieldset class="cfg-sub"><legend>vector</legend>
       <label class="cfg-field">base_url <input bind:value={retrieval.vector.base_url} placeholder="(默认)" /></label>
       <label class="cfg-field">model <input bind:value={retrieval.vector.model} /></label>

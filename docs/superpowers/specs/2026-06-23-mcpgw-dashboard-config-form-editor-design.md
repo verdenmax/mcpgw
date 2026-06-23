@@ -98,9 +98,9 @@ raw 模式**保真**（保留用户的注释与排版）、实现简单，但代
 
 | 字段 | 控件 | 约束 |
 | --- | --- | --- |
-| `strategy` | select `[bm25 \| vector \| subagent]` | 必填，默认 `bm25` |
+| `strategy` | select `[bm25 \| vector \| hybrid \| subagent]` | 必填，默认 `bm25` |
 | `top_k` | number | ≥1，默认 10 |
-| `vector.*`（`strategy=vector` 时展开） | — | `base_url` text(默认值) · `model` text 必填 · `api_key_env` env名 必填 · `dim`/`timeout_ms`/`batch_size` number 可选 |
+| `vector.*`（`strategy=vector` 或 `hybrid` 时展开） | — | `base_url` text(默认值) · `model` text 必填 · `api_key_env` env名 必填 · `dim`/`timeout_ms`/`batch_size` number 可选 |
 | `subagent.*`（`strategy=subagent` 时展开） | — | `base_url` text(默认值) · `model` text 必填 · `api_key_env` env名 必填 · `timeout_ms`/`candidates` number 可选 |
 
 **`[server]` `⟳`**
