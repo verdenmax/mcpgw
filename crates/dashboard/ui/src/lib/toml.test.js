@@ -107,3 +107,10 @@ test("stringifyToml tolerates null fields via prune", () => {
   expect(out).toContain("strategy");
   expect(out).not.toContain("vector");
 });
+
+test("pruneModel drops sub-tables that prune to empty (leftover empty [retrieval.vector])", () => {
+  const m = { retrieval: { strategy: "bm25", top_k: 8, vector: { model: "", api_key_env: "" } } };
+  const p = pruneModel(m);
+  expect("vector" in p.retrieval).toBe(false);
+  expect(p.retrieval.strategy).toBe("bm25");
+});

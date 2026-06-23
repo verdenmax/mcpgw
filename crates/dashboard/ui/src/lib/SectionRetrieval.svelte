@@ -5,6 +5,10 @@
     if ((retrieval?.strategy === "vector" || retrieval?.strategy === "hybrid") && !retrieval.vector) retrieval.vector = { model: "", api_key_env: "" };
     if (retrieval?.strategy === "subagent" && !retrieval.subagent) retrieval.subagent = { model: "", api_key_env: "" };
   });
+  function onStrategy() {
+    if (retrieval.strategy !== "vector" && retrieval.strategy !== "hybrid") delete retrieval.vector;
+    if (retrieval.strategy !== "subagent") delete retrieval.subagent;
+  }
 </script>
 
 {#if retrieval === undefined}
@@ -12,7 +16,7 @@
   <button type="button" class="admbtn" onclick={() => (retrieval = defaultSection("retrieval"))}>+ 启用 [retrieval]</button>
 {:else}
   <label class="cfg-field">strategy
-    <select bind:value={retrieval.strategy}>{#each STRATEGIES as s}<option value={s}>{s}</option>{/each}</select>
+    <select bind:value={retrieval.strategy} onchange={onStrategy}>{#each STRATEGIES as s}<option value={s}>{s}</option>{/each}</select>
   </label>
   <label class="cfg-field">top_k <input type="number" min="1" bind:value={retrieval.top_k} /></label>
 

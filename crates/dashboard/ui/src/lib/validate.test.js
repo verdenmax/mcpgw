@@ -97,3 +97,18 @@ test("valid http upstream with proper header passes", () => {
   const e = validateModel({ upstream: [{ name: "h", transport: "http", url: "https://x", headers: { "X-Foo": "ENV_F" } }] });
   expect(e.length).toBe(0);
 });
+
+test("subagent candidates must be >=1 when present", () => {
+  const e = validateModel({ retrieval: { strategy: "subagent", top_k: 5, subagent: { model: "m", api_key_env: "K", candidates: 0 } } });
+  expect(e.some((x) => x.path === "retrieval.subagent.candidates")).toBe(true);
+});
+
+test("dashboard buffers must be >=1 when enabled", () => {
+  const e = validateModel({ dashboard: { enabled: true, bind: "127.0.0.1:8971", trace_queries: false, trace_buffer: 0, call_buffer: 2000, payload_max_bytes: 16384 } });
+  expect(e.some((x) => x.path === "dashboard.trace_buffer")).toBe(true);
+});
+
+test("dashboard buffers not checked when disabled", () => {
+  const e = validateModel({ dashboard: { enabled: false, bind: "x", trace_queries: false, trace_buffer: 0, call_buffer: 0, payload_max_bytes: 0 } });
+  expect(e.length).toBe(0);
+});

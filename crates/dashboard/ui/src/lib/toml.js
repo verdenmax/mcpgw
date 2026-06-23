@@ -22,7 +22,9 @@ export function pruneModel(value) {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
       if (k === "" || v === null || v === undefined || v === "") continue;
-      out[k] = pruneModel(v);
+      const pv = pruneModel(v);
+      if (pv !== null && typeof pv === "object" && !Array.isArray(pv) && Object.keys(pv).length === 0) continue; // drop empty sub-tables
+      out[k] = pv;
     }
     return out;
   }

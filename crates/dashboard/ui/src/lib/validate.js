@@ -18,6 +18,9 @@ export function validateModel(model) {
       push("retrieval.top_k", "top_k 必须是 ≥1 的整数");
     if (r.strategy === "vector" || r.strategy === "hybrid") requireSub(push, "retrieval.vector", r.vector);
     if (r.strategy === "subagent") requireSub(push, "retrieval.subagent", r.subagent);
+    if (r.strategy === "subagent" && r.subagent && r.subagent.candidates !== undefined
+        && (!Number.isInteger(r.subagent.candidates) || r.subagent.candidates < 1))
+      push("retrieval.subagent.candidates", "candidates 必须是 ≥1 的整数");
   }
 
   const s = model.server;
@@ -26,6 +29,13 @@ export function validateModel(model) {
       if (!k.name || !k.name.trim()) push(`server.http.api_key[${i}].name`, "api_key name 必填");
       if (!k.env || !k.env.trim()) push(`server.http.api_key[${i}].env`, "api_key env 必填");
     });
+  }
+
+  const d = model.dashboard;
+  if (d && d.enabled) {
+    for (const f of ["trace_buffer", "call_buffer", "payload_max_bytes"]) {
+      if (d[f] !== undefined && (!Number.isInteger(d[f]) || d[f] < 1)) push(`dashboard.${f}`, `${f} 启用时必须是 ≥1 的整数`);
+    }
   }
 
   const ups = model.upstream;
