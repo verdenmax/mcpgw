@@ -930,4 +930,64 @@ mod tests {
             Some("mcpgw-disabled.json")
         );
     }
+
+    /// Contract anchor: a representative document shaped like the dashboard
+    /// front-end's `stringifyToml` output is accepted by the backend parser.
+    /// Catches drift where the UI serializes TOML the backend rejects.
+    #[test]
+    fn frontend_normalized_toml_is_accepted() {
+        let toml = r#"
+[retrieval]
+strategy = "hybrid"
+top_k = 8
+
+[retrieval.vector]
+model = "e5"
+api_key_env = "VK"
+
+[server]
+stdio = false
+
+[server.http]
+enabled = true
+bind = "127.0.0.1:8970"
+path = "/mcp"
+
+[[server.http.api_key]]
+name = "a"
+env = "K"
+
+[[upstream]]
+name = "mock"
+transport = "stdio"
+command = "/bin/mock"
+
+[[upstream]]
+name = "remote"
+transport = "http"
+url = "https://x/mcp"
+bearer_env = "TKN"
+
+[upstream.headers]
+X-Tenant = "ENV_T"
+X-Trace = "ENV_R"
+"#;
+        let c = Config::from_toml_str(toml).unwrap();
+        assert_eq!(c.upstreams.len(), 2);
+        assert_eq!(c.retrieval.strategy, "hybrid");
+        assert_eq!(c.server.http.as_ref().unwrap().api_keys.len(), 1);
+        match &c.upstreams[1].transport {
+            UpstreamTransport::Http {
+                url,
+                bearer_env,
+                headers,
+            } => {
+                assert_eq!(url, "https://x/mcp");
+                assert_eq!(bearer_env.as_deref(), Some("TKN"));
+                assert_eq!(headers.get("X-Tenant").map(String::as_str), Some("ENV_T"));
+                assert_eq!(headers.get("X-Trace").map(String::as_str), Some("ENV_R"));
+            }
+            other => panic!("expected http transport, got {other:?}"),
+        }
+    }
 }

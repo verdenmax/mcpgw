@@ -132,6 +132,15 @@
 `GET/PUT /api/admin/config`（**2 个 Bearer 鉴权端点**，子系统 C 在线改配；未配 `admin_token_env` → 404；逐符号见上「在线改配写子系统」）
 （M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404；**子系统 B 新增开放 `/api/disabled` + 4 个 admin POST 使端点 13 → 18；子系统 C 再加 `GET/PUT /api/admin/config` 使 18 → 20**）。
 
+### 前端：Config 的 `Raw │ Form` 双模（纯前端，`admin_config.rs` / API 零改动）
+
+Config 视图在原 raw `<textarea>` 之外新增**结构化 Form** 模式，顶部 `Raw │ Form` 两视图切换（`Config.svelte` 持 `content`/`model`/`view` 三态）：
+
+- **新增前端组件**（`ui/src/lib/`）：`RawEditor`（raw `<textarea>`）、`FormEditor`（左侧段导航 + 段面板容器）、`SectionRetrieval` / `SectionServer` / `SectionAudit` / `SectionDashboard` / `SectionUpstreams`（每个顶层段一个面板，含数组增删、transport/headers 编辑）。
+- **纯函数库**（`ui/src/lib/`，无 Svelte 依赖、vitest 覆盖）：`toml.js`（`parseToml`/`stringifyToml` 经 **smol-toml** 双向转换 + `pruneModel` 剪枝）、`validate.js`（`validateModel` 字段级即时校验）、`configSchema.js`（`STRATEGIES`/`TRANSPORTS` 枚举、`SECTIONS`/`sectionReload` 段标注、`defaultSection` 启用默认值）。
+- **TOML-native 键**：表单 model 直接用 TOML 文件中的键名——`upstream`、`api_key`，transport **扁平**（`transport = "stdio"|"http"` + `command`/`url` 等兄弟字段），即**不是** Rust serde 在 `Config` 上 rename 后的 `upstreams`/`api_keys`（那是 Rust 侧 / `AboutInfo` 的名字）；故 model ↔ raw 文本互转无需别名映射。
+- **后端零改动**：Form 模式 Save 经 `stringifyToml(model)` 序列化为 TOML，仍走**同一** `PUT /api/admin/config`，`admin_config.rs` 与 API 契约**完全不变**。但序列化会**规范化**输出（注释/排版丢失）——raw 模式「逐字保真」仅在**全程不切到 Form**时成立。
+
 ## 依赖
 
 - 内部：`gateway`（`GatewayState`：读活快照 + `last_summary`；**子系统 B** 另用 `DisableSet`/`DisabledSnapshot`
