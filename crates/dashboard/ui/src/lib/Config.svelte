@@ -1,11 +1,13 @@
 <script>
   import { admin, adminGet, adminPut } from "./admin.svelte.js";
+  import RawEditor from "./RawEditor.svelte";
   let content = $state("");
   let loaded = $state(false);
   let error = $state(null);
   let result = $state(null);
   let busy = $state(false);
   let reqId = 0;
+  let view = $state("raw"); // "raw" | "form"
 
   async function load() {
     busy = true; error = null; result = null;
@@ -40,7 +42,15 @@
 {:else}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if loaded}
-    <textarea class="cfg-edit" bind:value={content} spellcheck="false" aria-label="config TOML"></textarea>
+    <div class="cfg-modes">
+      <button class="admbtn" class:active={view === "raw"} onclick={() => (view = "raw")}>Raw</button>
+      <button class="admbtn" class:active={view === "form"} onclick={() => (view = "form")}>Form</button>
+    </div>
+    {#if view === "raw"}
+      <RawEditor bind:content />
+    {:else}
+      <p class="muted">表单模式将在 Task 5–7 接入。</p>
+    {/if}
     <div class="toolbar">
       <button class="admbtn" onclick={save} disabled={busy}>{busy ? "saving…" : "Save"}</button>
       <button class="admbtn" onclick={load} disabled={busy}>Reload</button>
