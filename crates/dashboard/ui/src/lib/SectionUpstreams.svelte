@@ -20,7 +20,8 @@
 
   function addHeader(u) { u.headers = { ...(u.headers ?? {}), "": "" }; }
   function setHeaderKey(u, oldK, newK) {
-    const h = {}; for (const [k, v] of Object.entries(u.headers)) h[k === oldK ? newK : k] = v; u.headers = h;
+    if (newK !== oldK && Object.prototype.hasOwnProperty.call(u.headers ?? {}, newK)) return; // refuse collision (would drop a value)
+    const h = {}; for (const [k, v] of Object.entries(u.headers ?? {})) h[k === oldK ? newK : k] = v; u.headers = h;
   }
   function rmHeader(u, k) { const h = { ...u.headers }; delete h[k]; u.headers = h; }
 </script>

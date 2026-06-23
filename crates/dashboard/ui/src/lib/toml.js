@@ -1,9 +1,6 @@
 import { parse, stringify } from "smol-toml";
 
-/**
- * Parse raw TOML text into a model object (TOML-native keys: `upstream`, `api_key`).
- * Returns { ok: true, model } or { ok: false, error } — never throws.
- */
+/** Parse raw TOML into a model. Returns { ok:true, model } or { ok:false, error } — never throws. */
 export function parseToml(raw) {
   try {
     return { ok: true, model: parse(raw) };
@@ -14,9 +11,25 @@ export function parseToml(raw) {
 }
 
 /**
- * Serialize a model back to canonical TOML text.
- * NOTE: comments / original formatting are NOT preserved (normalized output).
+ * Deep-copy a model dropping entries that can't/shouldn't serialize: null/undefined values,
+ * empty-string values (cleared optional fields), and empty keys (blank header rows). This keeps
+ * smol-toml happy (it can't serialize null) and prevents blank `"" = ""` header rows or cleared
+ * optionals from being persisted (they fall back to backend defaults instead).
  */
+export function pruneModel(value) {
+  if (Array.isArray(value)) return value.map(pruneModel);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (k === "" || v === null || v === undefined || v === "") continue;
+      out[k] = pruneModel(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Serialize a model to canonical TOML (comments NOT preserved; null/undefined/empty pruned). */
 export function stringifyToml(model) {
-  return stringify(model);
+  return stringify(pruneModel(model));
 }

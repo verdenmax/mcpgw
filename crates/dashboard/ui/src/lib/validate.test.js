@@ -81,3 +81,19 @@ test("subagent strategy requires subagent.model + api_key_env", () => {
   expect(e.some((x) => x.path === "retrieval.subagent.model")).toBe(true);
   expect(e.some((x) => x.path === "retrieval.subagent.api_key_env")).toBe(true);
 });
+
+test("server.http.api_key requires name + env", () => {
+  const e = validateModel({ server: { stdio: false, http: { enabled: true, bind: "x", path: "/", api_key: [{ name: "", env: "" }] } } });
+  expect(e.some((x) => x.path === "server.http.api_key[0].name")).toBe(true);
+  expect(e.some((x) => x.path === "server.http.api_key[0].env")).toBe(true);
+});
+
+test("http upstream header value (env name) required when header named", () => {
+  const e = validateModel({ upstream: [{ name: "h", transport: "http", url: "https://x", headers: { "X-Foo": "" } }] });
+  expect(e.some((x) => x.path === "upstream[0].headers.X-Foo")).toBe(true);
+});
+
+test("valid http upstream with proper header passes", () => {
+  const e = validateModel({ upstream: [{ name: "h", transport: "http", url: "https://x", headers: { "X-Foo": "ENV_F" } }] });
+  expect(e.length).toBe(0);
+});

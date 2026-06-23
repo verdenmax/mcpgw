@@ -20,6 +20,14 @@ export function validateModel(model) {
     if (r.strategy === "subagent") requireSub(push, "retrieval.subagent", r.subagent);
   }
 
+  const s = model.server;
+  if (s && s.http && Array.isArray(s.http.api_key)) {
+    s.http.api_key.forEach((k, i) => {
+      if (!k.name || !k.name.trim()) push(`server.http.api_key[${i}].name`, "api_key name 必填");
+      if (!k.env || !k.env.trim()) push(`server.http.api_key[${i}].env`, "api_key env 必填");
+    });
+  }
+
   const ups = model.upstream;
   if (Array.isArray(ups)) {
     const seen = new Set();
@@ -40,6 +48,11 @@ export function validateModel(model) {
         if (!u.command || !u.command.trim()) push(`${base}.command`, "stdio 上游 command 必填");
       } else if (u.transport === "http") {
         if (!u.url || !u.url.trim()) push(`${base}.url`, "http 上游 url 必填");
+        if (u.headers) {
+          for (const [hk, hv] of Object.entries(u.headers)) {
+            if (hk && (typeof hv !== "string" || !hv.trim())) push(`${base}.headers.${hk}`, "header 值（env 名）必填");
+          }
+        }
       }
     });
   }

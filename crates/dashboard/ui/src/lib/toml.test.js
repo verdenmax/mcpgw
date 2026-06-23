@@ -1,5 +1,6 @@
 import { test, expect } from "vitest";
 import { parseToml, stringifyToml } from "./toml.js";
+import { pruneModel } from "./toml.js";
 
 const SAMPLE = `[retrieval]
 strategy = "bm25"
@@ -82,4 +83,27 @@ test("round-trip of a form-built model: subagent, http headers map, empty lists"
   const round = parseToml(stringifyToml(model));
   expect(round.ok).toBe(true);
   expect(round.model).toEqual(model);
+});
+
+test("pruneModel drops null/undefined so smol-toml can serialize", () => {
+  const m = { retrieval: { strategy: "bm25", top_k: null }, upstream: [{ name: "x", transport: "stdio", command: "/x", url: undefined }] };
+  const p = pruneModel(m);
+  expect("top_k" in p.retrieval).toBe(false);
+  expect("url" in p.upstream[0]).toBe(false);
+  expect(p.upstream[0].name).toBe("x");
+});
+
+test("pruneModel drops empty-string values and empty keys (e.g. blank header rows / cleared optionals)", () => {
+  const m = { retrieval: { strategy: "bm25", top_k: 8, vector: { model: "m", api_key_env: "K", base_url: "" } },
+    upstream: [{ name: "u", transport: "http", url: "https://x", headers: { "": "", "X-Real": "ENV" } }] };
+  const p = pruneModel(m);
+  expect("base_url" in p.retrieval.vector).toBe(false);   // cleared optional dropped
+  expect("" in p.upstream[0].headers).toBe(false);         // blank header key dropped
+  expect(p.upstream[0].headers["X-Real"]).toBe("ENV");     // real header kept
+});
+
+test("stringifyToml tolerates null fields via prune", () => {
+  const out = stringifyToml({ retrieval: { strategy: "bm25", top_k: 10, vector: null } });
+  expect(out).toContain("strategy");
+  expect(out).not.toContain("vector");
 });
