@@ -289,6 +289,22 @@ token 非空时显示导航项 **Config**：进入 `adminGet('/api/admin/config'
 **需重启**段横幅）；400 → 内联校验错误；401 → token 失效；404 → 提示 serve 未带 `--config`。复用现有 `.error`/`.badge` 风格、
 等宽字体、**无 `{@html}`**（XSS guard）；admin token 仍仅存浏览器内存。
 
+### 前端：Config 的 `Raw │ Form` 双模机制（纯前端，后端零改动）
+
+Config 视图除原 raw `<textarea>`（`RawEditor`）外另有**结构化 Form**（`FormEditor` + 五个 `Section*` 段面板），顶部 `Raw │ Form` 切换。`Config.svelte` 以 `content`（raw 文本，raw 视图权威）与 `model`（解析后的对象，form 视图权威）**双 source-of-truth**，切换/保存时单向同步：
+
+- **同步**：切到 **Form** = `parseToml(content) → model`（smol-toml 解析；**失败**则禁用表单、内联提示 `parseError`，可回 Raw 修语法）；切到 **Raw** 或 **Save** = `stringifyToml(model) → content`。`stringifyToml` 先经 **`pruneModel`** 深拷贝剪枝：丢弃 `null` / `undefined` / **空字符串值** / **空键**——使**清空的可选字段**与**空白 header 行**（`"" = ""`）不落盘（回退后端默认）、且 smol-toml 不致因 `null` 抛错；**`false` / `0` 被保留**（非空值）。注意 `stringifyToml` 仅产出规范化 TOML——**原 raw 的注释/排版/键序不保留**，故任何经 Form 的往返都会重排版（仅全程不切 Form 才逐字保真）。
+
+  ```
+              切到 Form
+    content ───parseToml─────────────▶ model
+              切到 Raw / Save
+    content ◀──stringifyToml∘pruneModel── model
+    (raw 视图权威)                      (form 视图权威)
+  ```
+- **两层校验**：前端 `validateModel(model)` 在 form 视图**即时**跑（内联红框 + **校验未过时 Save 禁用**），覆盖 `strategy ∈ {bm25,vector,hybrid,subagent}`、`top_k ≥ 1` 整数、`vector` **与 `hybrid`** 都要求 `[retrieval.vector]`（`model`+`api_key_env`）、`subagent` 要求 `[retrieval.subagent]`、upstream `name` **非空 / 不含 `__` / 不以 `_` 开头结尾 / 数组内唯一**、`transport` stdio→`command`·http→`url`、`call_timeout_ms ≥ 1`、`server.http.api_key` 每项 `name`+`env` 必填、http upstream 具名 header 的**值（env 名）必填**。**前端只是即时反馈——Save 时后端 `config_validator` 仍是 env 可解析与全结构校验的最终权威**（前端通过、后端仍可能 400）。
+- **段按需启用**：未配置的段（`model.<段> === undefined`）只显示 **`+ 启用 [段]`**，点击注入 `defaultSection(name)` 的合理默认（对齐 config crate 的 `#[serde(default)]`；`upstream` 作数组处理）。左导航每段带生效徽标——`upstream` **🔥 热生效**、其余段 **⟳ 需重启**（经 `configSchema.js` 的 `sectionReload`，与后端 `restart_diff` 的热/重启划分一致）。
+
 ## `MetricsSink`：固定桶直方图 + 近似分位
 
 - **固定桶上界（ms）**：`BUCKETS_MS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, u64::MAX]`（最后一桶无界）。
@@ -371,6 +387,7 @@ token 非空时显示导航项 **Config**：进入 `adminGet('/api/admin/config'
   原子落盘后回 `ApplyResult`；`atomic_write` 写出 temp+fsync+rename 后原文件为新内容且生成 `<path>.bak` 备份、IO 失败时
   清理 temp、原文件不动；`restart_diff` 对仅改 `[[upstream]]` 时 `needs_restart` 为空、改 `[retrieval]`/`[server]`/`[audit]`/
   `[dashboard]` 段时各自段名入 `needs_restart`；`applied_upstreams` 基线只纳入连接成功的上游（连失败者下次 PUT 重试；**启动初始基线同理——仅 seed boot 连上者，故 boot 失败上游修好后原样 re-PUT 即重试**）。
+- `ui/src/lib/*.test.js`（**vitest，前端纯函数**，`npm run test`，当前 **24 个**）：`toml.test.js`（**8**）覆盖 `parseToml` 取 TOML-native 键、`parse→stringify→parse` 语义 round-trip（含 subagent、http **headers map**、**空数组**）、非法 TOML 回结构化 error、空 model 往返、`pruneModel` 丢 `null`/`undefined` 及**空串值/空键**（清空可选 + 空白 header 行）；`validate.test.js`（**16**）覆盖空/合法 model 无错及各 corner——strategy/transport 越界、`top_k`/`call_timeout_ms` 下界、`vector` **与 `hybrid`** 均要求 vector 子段、`subagent` 子段、upstream `name` 空/`__`/`_`/重复、stdio↔command·http↔url、`server.http.api_key` 的 name+env、http header 值必填。
 
 ## 相关
 
