@@ -252,7 +252,10 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         )
         .route("/api/admin/tools/{name}/disable", post(admin::disable_tool))
         .route("/api/admin/tools/{name}/enable", post(admin::enable_tool))
-        .route("/api/admin/config", get(admin_config::get_config))
+        .route(
+            "/api/admin/config",
+            get(admin_config::get_config).put(admin_config::put_config),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             admin::require_admin_token,

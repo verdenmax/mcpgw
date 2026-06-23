@@ -483,7 +483,9 @@ pub(crate) mod tests {
 
     /// A gateway with the testkit MockUpstream connected and rebuilt (catalog populated with
     /// `mock__echo`/`mock__greet`/...). Returns the server task to abort at test end.
-    async fn gateway_with_mock(name: &str) -> (Arc<GatewayState>, tokio::task::JoinHandle<()>) {
+    pub(crate) async fn gateway_with_mock(
+        name: &str,
+    ) -> (Arc<GatewayState>, tokio::task::JoinHandle<()>) {
         use rmcp::ServiceExt;
         let (server_io, client_io) = tokio::io::duplex(4096);
         let join = tokio::spawn(async move {
