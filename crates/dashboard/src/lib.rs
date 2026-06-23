@@ -20,7 +20,7 @@ mod history;
 pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket};
 
 mod api;
-pub use api::{AppState, UpstreamInfo};
+pub use api::{AppState, ConfigValidator, UpstreamInfo};
 
 mod assets;
 
