@@ -11,7 +11,7 @@
   let error = $state(null);
   let result = $state(null);
   let busy = $state(false);
-  let view = $state("raw");      // "raw" | "form"
+  let view = $state("form");     // "raw" | "form"
   let parseError = $state(null); // set when switching to form fails to parse
   let reqId = 0;
 
@@ -26,7 +26,8 @@
       if (r.status === 404) { error = "serve 未带 --config（无文件可改）"; loaded = false; return; }
       if (r.status === 401) { error = "admin token 失效，请在 About 重新输入"; loaded = false; return; }
       if (!r.ok) { error = `GET ${r.status}: ${await r.text()}`; loaded = false; return; }
-      content = (await r.json()).content; loaded = true; view = "raw"; model = null;
+      content = (await r.json()).content; loaded = true;
+      toForm(); // default to Form: parse content→model（失败则 parseError，用户点 Raw 修）
     } catch (e) { if (my === reqId) error = String(e); }
     finally { if (my === reqId) busy = false; }
   }
@@ -62,28 +63,32 @@
 {:else}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if loaded}
-    <div class="cfg-modes">
-      <button class="admbtn" class:active={view === "raw"} aria-pressed={view === "raw"} onclick={toRaw}>Raw</button>
-      <button class="admbtn" class:active={view === "form"} aria-pressed={view === "form"} onclick={toForm}>Form</button>
-    </div>
-
-    {#if view === "raw"}
-      <RawEditor bind:content />
-    {:else if parseError}
-      <p class="error" role="alert">raw 有语法错误，修正后可结构化编辑：{parseError}</p>
-    {:else if model}
-      <FormEditor bind:model />
-      {#if errors.length}
-        <ul class="cfg-errs">{#each errors as e}<li><code>{e.path}</code> — {e.msg}</li>{/each}</ul>
-      {/if}
-    {/if}
-
-    <div class="toolbar">
-      <button class="admbtn" onclick={save} disabled={busy || (view === "form" && (parseError || errors.length > 0))}>{busy ? "saving…" : "Save"}</button>
-      <button class="admbtn" onclick={load} disabled={busy}>Reload</button>
+    <div class="cfg-panel">
+      <div class="cfg-bar">
+        <div class="cfg-seg" role="group" aria-label="editor mode">
+          <button type="button" class:active={view === "raw"} aria-pressed={view === "raw"} onclick={toRaw}>Raw</button>
+          <button type="button" class:active={view === "form"} aria-pressed={view === "form"} onclick={toForm}>Form</button>
+        </div>
+        <div class="cfg-actions">
+          <button class="admbtn" onclick={save} disabled={busy || (view === "form" && (parseError || errors.length > 0))}>{busy ? "saving…" : "Save"}</button>
+          <button class="admbtn" onclick={load} disabled={busy}>Reload</button>
+        </div>
+      </div>
+      <div class="cfg-body">
+        {#if view === "raw"}
+          <RawEditor bind:content />
+        {:else if parseError}
+          <p class="error" role="alert">raw 有语法错误，修正后可结构化编辑：{parseError}</p>
+        {:else if model}
+          <FormEditor bind:model />
+          {#if errors.length}
+            <ul class="cfg-errs">{#each errors as e}<li><code>{e.path}</code> — {e.msg}</li>{/each}</ul>
+          {/if}
+        {/if}
+      </div>
     </div>
     {#if result}
-      <div class="card" style="margin-top:var(--s3)">
+      <div class="card" style="margin-top:var(--s4)">
         <p>✓ saved · upstreams +{result.upstreams.added.length} −{result.upstreams.removed.length} ~{result.upstreams.reconnected.length}
           {#if result.upstreams.connect_failures.length}
             <span class="badge error" title={result.upstreams.connect_failures.map((f) => f[1]).join("; ")}>connect failed: {result.upstreams.connect_failures.map((f) => f[0]).join(", ")}</span>

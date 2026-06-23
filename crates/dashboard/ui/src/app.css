@@ -401,8 +401,21 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 }
 
 /* ---- Config form mode ---- */
-.cfg-modes { display: flex; gap: var(--s2); margin-bottom: var(--s3); }
-.cfg-modes .admbtn.active { color: var(--fg); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* ---- Config form mode: container ---- */
+.cfg-panel { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel);
+  box-shadow: var(--shadow-sm); overflow: hidden; }
+.cfg-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); background: var(--panel-2); }
+.cfg-bar .cfg-actions { display: flex; gap: var(--s2); }
+.cfg-body { padding: var(--s4); }
+
+.cfg-seg { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border);
+  border-radius: var(--r-pill); background: var(--panel); }
+.cfg-seg button { font: inherit; font-size: var(--fs-sm); cursor: pointer; border: 0; background: none;
+  color: var(--muted); padding: 4px 16px; border-radius: var(--r-pill);
+  transition: color .14s, background .14s; }
+.cfg-seg button:hover { color: var(--fg); }
+.cfg-seg button.active { background: var(--brand-fill); color: #fff; }
 
 .cfg-form { display: flex; gap: var(--s4); align-items: flex-start; }
 .cfg-nav { display: flex; flex-direction: column; gap: var(--s1); min-width: 150px; }
