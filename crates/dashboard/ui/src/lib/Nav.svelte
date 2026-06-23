@@ -1,7 +1,8 @@
 <script>
   import { route } from "./router.svelte.js";
+  import { admin } from "./admin.svelte.js";
   import Icon from "./Icon.svelte";
-  const items = [
+  const base = [
     ["overview", "Overview", "overview"],
     ["upstreams", "Upstreams", "upstreams"],
     ["tools", "Tools", "tools"],
@@ -9,6 +10,7 @@
     ["traces", "Traces", "traces"],
     ["about", "About", "info"],
   ];
+  const items = $derived(admin.token ? [...base, ["config", "Config", "wrench"]] : base);
 </script>
 
 <nav class="sidebar">

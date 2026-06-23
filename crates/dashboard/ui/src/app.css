@@ -385,3 +385,17 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 .admbtn:hover { color: var(--fg); border-color: var(--muted); }
 .admbtn:disabled { opacity: 0.5; cursor: default; }
 .admbtn.err { color: var(--danger); border-color: var(--danger); }
+
+.cfg-edit {
+  width: 100%;
+  min-height: 360px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+}
