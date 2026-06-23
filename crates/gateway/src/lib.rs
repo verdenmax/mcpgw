@@ -1,7 +1,7 @@
 //! mcpgw `gateway`: holds the live, atomically-swappable `GatewaySnapshot` plus the
 //! registry of upstream connections, and rebuilds the snapshot from the upstreams.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -28,6 +28,62 @@ pub struct RebuildSummary {
     pub ingested: Vec<String>,
     /// Upstreams skipped this rebuild, with a short reason (timeout / call error).
     pub skipped: Vec<(String, String)>,
+}
+
+/// One upstream-reconcile outcome (serialized into the dashboard's `ApplyResult`).
+///
+/// `added`/`reconnected` are *planned* intents: an entry that also appears in `connect_failures`
+/// did not actually (re)connect — for a *changed* upstream the previous connection is retained.
+/// Cross-reference `connect_failures` for the truly-applied set.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReconcileSummary {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub reconnected: Vec<String>,
+    pub connect_failures: Vec<(String, String)>, // (name, error)
+}
+
+/// Pure three-way diff of upstream configs by name: which to drop, which to (re)connect.
+struct ReconcilePlan {
+    removed: Vec<String>,
+    to_connect: Vec<config::UpstreamConfig>,
+    added: Vec<String>,
+    reconnected: Vec<String>,
+}
+
+fn plan_upstream_reconcile(
+    old: &[config::UpstreamConfig],
+    new: &[config::UpstreamConfig],
+) -> ReconcilePlan {
+    let old_by: HashMap<&str, &config::UpstreamConfig> =
+        old.iter().map(|u| (u.name.as_str(), u)).collect();
+    let new_names: HashSet<&str> = new.iter().map(|u| u.name.as_str()).collect();
+
+    let mut plan = ReconcilePlan {
+        removed: vec![],
+        to_connect: vec![],
+        added: vec![],
+        reconnected: vec![],
+    };
+    for u in old {
+        if !new_names.contains(u.name.as_str()) {
+            plan.removed.push(u.name.clone());
+        }
+    }
+    for u in new {
+        match old_by.get(u.name.as_str()) {
+            None => {
+                plan.added.push(u.name.clone());
+                plan.to_connect.push(u.clone());
+            }
+            Some(prev) if *prev != u => {
+                plan.reconnected.push(u.name.clone());
+                plan.to_connect.push(u.clone());
+            }
+            Some(_) => {} // unchanged: leave the live connection untouched
+        }
+    }
+    plan
 }
 
 /// Resolve one `JoinSet::join_next` result: the joined value to process, or `None` if the task
@@ -137,6 +193,37 @@ impl GatewayState {
         self.disabled.clone()
     }
 
+    /// Reconcile the upstream registry against a new config: drop removed upstreams, (re)connect
+    /// added/changed ones (reusing the eager connect path), then rebuild the snapshot. Best-effort:
+    /// a connect failure is recorded in `connect_failures` and never aborts the others or rolls back.
+    pub async fn reconcile_upstreams(
+        &self,
+        old: &[config::UpstreamConfig],
+        new: &[config::UpstreamConfig],
+        trigger: upstream::connection::RebuildTrigger,
+    ) -> ReconcileSummary {
+        let plan = plan_upstream_reconcile(old, new);
+        if plan.removed.is_empty() && plan.to_connect.is_empty() {
+            return ReconcileSummary::default(); // nothing changed: skip remove/connect/rebuild
+        }
+        for name in &plan.removed {
+            self.registry.remove(name);
+        }
+        let mut connect_failures = Vec::new();
+        if !plan.to_connect.is_empty() {
+            let csum =
+                upstream::connect::connect_all(self.registry(), &plan.to_connect, trigger).await;
+            connect_failures = csum.skipped;
+        }
+        let _ = self.rebuild_snapshot().await;
+        ReconcileSummary {
+            added: plan.added,
+            removed: plan.removed,
+            reconnected: plan.reconnected,
+            connect_failures,
+        }
+    }
+
     /// Load the current snapshot (lock-free).
     pub fn snapshot(&self) -> Arc<GatewaySnapshot> {
         self.snapshot.load_full()
@@ -234,6 +321,32 @@ mod tests {
     fn gateway_state_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<super::GatewayState>();
+    }
+
+    fn ups(toml: &str) -> Vec<config::UpstreamConfig> {
+        config::Config::from_toml_str(toml).unwrap().upstreams
+    }
+
+    #[test]
+    fn plan_reconcile_classifies_add_remove_change_unchanged() {
+        let a = ups(
+            "[[upstream]]\nname=\"keep\"\ntransport=\"stdio\"\ncommand=\"x\"\n\
+                     [[upstream]]\nname=\"drop\"\ntransport=\"stdio\"\ncommand=\"x\"\n\
+                     [[upstream]]\nname=\"chg\"\ntransport=\"stdio\"\ncommand=\"x\"\n",
+        );
+        let b = ups(
+            "[[upstream]]\nname=\"keep\"\ntransport=\"stdio\"\ncommand=\"x\"\n\
+                     [[upstream]]\nname=\"chg\"\ntransport=\"stdio\"\ncommand=\"y\"\n\
+                     [[upstream]]\nname=\"new\"\ntransport=\"stdio\"\ncommand=\"x\"\n",
+        );
+        let p = super::plan_upstream_reconcile(&a, &b);
+        assert_eq!(p.removed, vec!["drop"]);
+        assert_eq!(p.added, vec!["new"]);
+        assert_eq!(p.reconnected, vec!["chg"]);
+        // unchanged "keep" is neither removed nor reconnected nor in to_connect
+        let tc: Vec<&str> = p.to_connect.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(tc, vec!["chg", "new"]); // order: new list order
+        assert!(!tc.contains(&"keep"));
     }
 
     #[tokio::test]

@@ -15,6 +15,7 @@
   import Traces from "./lib/Traces.svelte";
   import TraceDetail from "./lib/TraceDetail.svelte";
   import About from "./lib/About.svelte";
+  import Config from "./lib/Config.svelte";
 
   let now = $state(Date.now()); // 1s clock so the "updated Ns ago" label ticks
   const updatedAgo = $derived.by(() => { void now; return ago(refresh.at); });
@@ -62,6 +63,8 @@
       <Traces />
     {:else if route.view === "about"}
       <About />
+    {:else if route.view === "config"}
+      <Config />
     {:else}
       <p class="muted">coming soon</p>
     {/if}

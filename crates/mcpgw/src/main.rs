@@ -106,7 +106,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 .enable_all()
                 .build()
                 .map_err(|e| e.to_string())?;
-            rt.block_on(run_serve(cfg))?;
+            rt.block_on(run_serve(cfg, cli.config.clone()))?;
         }
     }
     Ok(())
@@ -258,14 +258,37 @@ fn build_backends(cfg: &config::Config) -> Result<retrieval::Backends, String> {
     Ok(backends)
 }
 
-/// Build gateway state, connect upstreams, build the initial snapshot, and return the
-/// state plus the rebuild-trigger receiver for the worker. Split out so it is unit-testable.
+/// Validate candidate config TOML for the dashboard's online editor: structure + at least one
+/// server transport + every env reference resolvable (the same pre-flight `serve` runs at startup,
+/// so a saved config can't reference a missing secret or fail to boot). Returns Config or an error.
+fn validate_config_text(cfg_text: &str) -> Result<config::Config, String> {
+    let cfg = config::Config::from_toml_str(cfg_text).map_err(|e| e.to_string())?;
+    let http_enabled = cfg.server.http.as_ref().is_some_and(|h| h.enabled);
+    if !cfg.server.stdio && !http_enabled {
+        return Err(
+            "no server transport enabled (set [server].stdio or [server.http].enabled)".into(),
+        );
+    }
+    resolve_api_keys(&cfg)?;
+    resolve_admin_token(&cfg)?;
+    validate_upstream_http_env(&cfg)?;
+    build_backends(&cfg)?;
+    Ok(cfg)
+}
+
+/// Build gateway state, connect upstreams, build the initial snapshot, and return the state
+/// plus: the rebuild-trigger receiver (for the worker), a clone of the trigger sender (for the
+/// dashboard's online-config reconcile), and the names of upstreams that failed to connect at
+/// boot (so `run_serve` seeds `applied_upstreams` with the boot-connected subset, making a
+/// boot-failed upstream retryable by an identical re-PUT). Split out so it is unit-testable.
 async fn prepare_state(
     cfg: &config::Config,
 ) -> Result<
     (
         Arc<gateway::GatewayState>,
         tokio::sync::mpsc::Receiver<String>,
+        tokio::sync::mpsc::Sender<String>,
+        Vec<String>,
     ),
     String,
 > {
@@ -282,14 +305,19 @@ async fn prepare_state(
             .with_disabled(disabled),
     );
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let trigger = tx.clone();
     let csum = upstream::connect::connect_all(state.registry(), &cfg.upstreams, tx).await;
     tracing::info!(connected = ?csum.connected, skipped = ?csum.skipped, "upstreams connected");
+    // Names that failed to connect at boot, so the caller seeds `applied_upstreams` with the
+    // boot-CONNECTED subset only — a later identical re-PUT then retries these (symmetric with
+    // the PUT-failure path) instead of treating them as "unchanged".
+    let boot_skipped: Vec<String> = csum.skipped.iter().map(|(n, _)| n.clone()).collect();
     let rsum = state.rebuild_snapshot().await.map_err(|e| e.to_string())?;
     tracing::info!(ingested = ?rsum.ingested, skipped = ?rsum.skipped, "initial snapshot built");
-    Ok((state, rx))
+    Ok((state, rx, trigger, boot_skipped))
 }
 
-async fn run_serve(cfg: config::Config) -> Result<(), String> {
+async fn run_serve(cfg: config::Config, config_path: Option<PathBuf>) -> Result<(), String> {
     use rmcp::transport::stdio;
     use rmcp::ServiceExt;
 
@@ -313,7 +341,7 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
     let admin_token = resolve_admin_token(&cfg)?;
     validate_upstream_http_env(&cfg)?;
 
-    let (state, rx) = prepare_state(&cfg).await?;
+    let (state, rx, rebuild_trigger, boot_skipped) = prepare_state(&cfg).await?;
     tokio::spawn(gateway::run_rebuild_worker((*state).clone(), rx));
 
     // Observation sinks shared by both stdio and http transports. Default = TracingSink;
@@ -478,6 +506,19 @@ async fn run_serve(cfg: config::Config) -> Result<(), String> {
                 },
             ),
             admin_token: admin_token.clone(),
+            config_path: config_path.clone(),
+            config_validator: std::sync::Arc::new(validate_config_text)
+                as dashboard::ConfigValidator,
+            config_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            boot_config: std::sync::Arc::new(cfg.clone()),
+            applied_upstreams: std::sync::Arc::new(std::sync::Mutex::new(
+                cfg.upstreams
+                    .iter()
+                    .filter(|u| !boot_skipped.contains(&u.name))
+                    .cloned()
+                    .collect(),
+            )),
+            rebuild_trigger: rebuild_trigger.clone(),
         });
         // Enforce a local Host header only when bound to loopback (non-loopback is an explicit,
         // already-warned operator exposure that they front themselves).
@@ -655,10 +696,25 @@ mod tests {
         // Empty config: 0 upstreams, stdio default on. prepare_state must succeed and yield
         // a usable (empty) snapshot.
         let cfg = config::Config::default_from_empty();
-        let (state, _rx) = prepare_state(&cfg).await.expect("prepare ok");
+        let (state, _rx, _trigger, _boot_skipped) = prepare_state(&cfg).await.expect("prepare ok");
         assert!(metatools::search_tools(&state.snapshot(), "anything", 5)
             .await
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_state_reports_boot_skipped_upstreams() {
+        // A stdio upstream whose command can't spawn lands in csum.skipped at boot; prepare_state
+        // must surface its name so the caller seeds applied_upstreams with boot-connected only.
+        let cfg = config::Config::from_toml_str(
+            "[[upstream]]\nname = \"bootbad\"\ntransport = \"stdio\"\ncommand = \"/nonexistent-mcpgw-boot-bin\"\n",
+        )
+        .expect("valid config");
+        let (_state, _rx, _trigger, boot_skipped) = prepare_state(&cfg).await.expect("prepare ok");
+        assert!(
+            boot_skipped.contains(&"bootbad".to_string()),
+            "expected boot_skipped to contain the failed upstream, got {boot_skipped:?}"
+        );
     }
 
     #[test]
@@ -706,6 +762,22 @@ mod tests {
         let cfg = config::Config::default_from_empty();
         let b = build_backends(&cfg).unwrap();
         assert!(b.embedder.is_none() && b.chat.is_none() && b.subagent_candidates.is_none());
+    }
+
+    #[test]
+    fn validate_config_text_ok_and_rejects_bad_toml_and_missing_env() {
+        let cfg = validate_config_text("[retrieval]\nstrategy = \"bm25\"\n").expect("valid");
+        assert_eq!(cfg.retrieval.strategy, "bm25"); // returns the parsed Config
+        assert!(validate_config_text("not = = toml").is_err()); // bad TOML
+        std::env::remove_var("MCPGW_VCT_MISSING");
+        let err = validate_config_text(
+            "[dashboard]\nenabled = true\nadmin_token_env = \"MCPGW_VCT_MISSING\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("MCPGW_VCT_MISSING"),
+            "error should name the missing env: {err}"
+        );
     }
 
     #[test]

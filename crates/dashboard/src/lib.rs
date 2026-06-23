@@ -20,11 +20,13 @@ mod history;
 pub use history::{replay_audit_calls, replay_audit_metrics, replay_discovery_items, MetricBucket};
 
 mod api;
-pub use api::{AppState, UpstreamInfo};
+pub use api::{AppState, ConfigValidator, UpstreamInfo};
 
 mod assets;
 
 mod admin;
+
+mod admin_config;
 
 use axum::extract::Request;
 use axum::extract::{Path, Query, State};
@@ -250,6 +252,10 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
         )
         .route("/api/admin/tools/{name}/disable", post(admin::disable_tool))
         .route("/api/admin/tools/{name}/enable", post(admin::enable_tool))
+        .route(
+            "/api/admin/config",
+            get(admin_config::get_config).put(admin_config::put_config),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             admin::require_admin_token,

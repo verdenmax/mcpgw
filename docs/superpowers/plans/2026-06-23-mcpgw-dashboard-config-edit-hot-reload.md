@@ -550,6 +550,8 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 
 校验（注入器，结构+全 env）→ 原子落盘(+.bak，经 `spawn_blocking` 离开 async worker)→ `reconcile_upstreams` → `needs_restart` diff → `ApplyResult`。全程持 `config_write_lock`。
 
+> 注（Task 1 审查传导）：`ReconcileSummary` 的 `added`/`reconnected` 是**意图**，与 `connect_failures` 交叉看才是真正生效的集合（changed 上游若 reconnect 失败，仍保留旧连接）。`ApplyResult` 按 spec 即 `ReconcileSummary + needs_restart`，**不**再额外折叠 ingest 健康——某上游"连上但 ingest 失败/超时"经既有 Overview/Upstreams 视图（`last_summary`）观察，不在本 PUT 响应里重复。
+
 - [ ] **Step 1: 写测试（`admin_config.rs` 测试模块，追加）**
 
 ```rust
@@ -763,6 +765,8 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 - 重建 `crates/dashboard/ui/dist/`
 
 > 前端无测试框架：验证 = `npm run build` 通过 + dist 再生 + `cargo build -p dashboard --locked` 内嵌。
+>
+> 注（Task 1 审查传导）：结果展示里 `+added −removed ~reconnected` 是**尝试**计数；`connect_failures` 用 `badge error` 单独突出（已在 Config.svelte 实现），运维据此区分"已生效"与"尝试但失败（保留旧连接）"。
 
 - [ ] **Step 1: `admin.svelte.js` 加 GET/PUT 助手**
 

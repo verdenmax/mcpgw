@@ -16,6 +16,11 @@ pub struct UpstreamInfo {
     pub transport: String,
 }
 
+/// Validates a candidate config TOML (structure + env refs) -> Config or error message.
+/// Injected by main.rs so the env-resolution logic stays in the bin (no dashboard->main dep).
+pub type ConfigValidator =
+    std::sync::Arc<dyn Fn(&str) -> Result<config::Config, String> + Send + Sync>;
+
 /// Shared read-only state for the dashboard API handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -33,6 +38,19 @@ pub struct AppState {
     pub about: crate::about::AboutInfo,
     /// Admin Bearer token (env-resolved at startup). None -> /api/admin/* returns 404.
     pub admin_token: Option<std::sync::Arc<str>>,
+    /// Path to the live config file (Some only when `serve --config X`). None -> config edit 404.
+    pub config_path: Option<PathBuf>,
+    /// Validates candidate TOML (structure + all env refs resolvable) -> Config or error message.
+    /// Injected by main.rs so env-resolution stays in the bin (no dashboard->main dependency).
+    pub config_validator: ConfigValidator,
+    /// Serializes config PUTs (validate + write + reconcile).
+    pub config_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Boot config snapshot; baseline for the "needs restart" diff of non-upstream sections.
+    pub boot_config: std::sync::Arc<config::Config>,
+    /// Upstream configs currently applied (reconcile baseline; updated on each successful PUT).
+    pub applied_upstreams: std::sync::Arc<std::sync::Mutex<Vec<config::UpstreamConfig>>>,
+    /// Rebuild trigger handed to connect_all during upstream hot-reload.
+    pub rebuild_trigger: tokio::sync::mpsc::Sender<String>,
 }
 
 #[derive(Serialize)]
@@ -419,13 +437,13 @@ pub fn activity(state: &AppState, window_ms: u64) -> crate::activity::ActivityRe
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use observe::{CallContentSink, CallSink};
 
-    fn make_state(gw: Arc<GatewayState>) -> AppState {
+    pub(crate) fn make_state(gw: Arc<GatewayState>) -> AppState {
         AppState {
             gateway: gw,
             metrics: Arc::new(MetricsSink::new()),
@@ -448,16 +466,26 @@ mod tests {
                 },
             ),
             admin_token: None,
+            config_path: None,
+            config_validator: std::sync::Arc::new(|t: &str| {
+                config::Config::from_toml_str(t).map_err(|e| e.to_string())
+            }),
+            config_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            boot_config: std::sync::Arc::new(config::Config::default_from_empty()),
+            applied_upstreams: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+            rebuild_trigger: tokio::sync::mpsc::channel::<String>(1).0,
         }
     }
 
-    async fn seeded_state() -> AppState {
+    pub(crate) async fn seeded_state() -> AppState {
         make_state(Arc::new(GatewayState::new("bm25").unwrap()))
     }
 
     /// A gateway with the testkit MockUpstream connected and rebuilt (catalog populated with
     /// `mock__echo`/`mock__greet`/...). Returns the server task to abort at test end.
-    async fn gateway_with_mock(name: &str) -> (Arc<GatewayState>, tokio::task::JoinHandle<()>) {
+    pub(crate) async fn gateway_with_mock(
+        name: &str,
+    ) -> (Arc<GatewayState>, tokio::task::JoinHandle<()>) {
         use rmcp::ServiceExt;
         let (server_io, client_io) = tokio::io::duplex(4096);
         let join = tokio::spawn(async move {

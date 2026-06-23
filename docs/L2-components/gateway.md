@@ -8,6 +8,9 @@
 （复用 `metatools`），也**不**起 MCP server 或做 eager-connect（那是 M1-B.2 的 `mcpgw serve` + `upstream::connect`）。
 **（子系统 B）** `GatewayState` 另持一个可选 JSON 持久化的 `DisableSet`（运行时禁用集，默认空 → 行为不变），
 `rebuild_snapshot` 读它**跳过被禁用上游的 ingest 与被禁用的单工具**，使被禁用项不进新快照（这是隐藏式禁用的唯一过滤点）。
+**（子系统 C）** `GatewayState` 另提供 `reconcile_upstreams(old, new, trigger)`：按 `name` 对上游配置做**纯三向 diff**
+后协调注册表（删除/重连/不动）并末尾 `rebuild_snapshot`，供 dashboard 的在线改配做**上游热重载**（best-effort，
+复用既有 `connect_all`/`registry.remove`，与禁用过滤天然组合）。
 
 ## 公开接口
 
@@ -37,6 +40,7 @@
 | `disabled` | `(&self) -> &DisableSet` | **（子系统 B）** 借用运行时禁用集（rebuild 读、dashboard admin API 改、`GET /api/disabled` 读快照） |
 | `disabled_arc` | `(&self) -> Arc<DisableSet>` | **（子系统 B）** `Arc` 克隆，供需跨 `.await` move 的调用方（如 dashboard admin handler 在 `spawn_blocking` 里跑同步持久化变更） |
 | `rebuild_snapshot` | `async (&self) -> Result<RebuildSummary, GatewayError>` | 从注册表**并发**摄取（每个 ingest 受该 handle 的 `call_timeout` 约束）→ 建索引 → 原子换入新快照；经重建锁串行化；返回 `RebuildSummary` 并存为 `last_summary`。**读 `disabled`：ingest 前跳过被禁用上游（不在 `summary.ingested`、连 `tools/list` 都不发）、upsert 时跳过被禁用单工具** |
+| `reconcile_upstreams` | `async (&self, old: &[UpstreamConfig], new: &[UpstreamConfig], trigger: RebuildTrigger) -> ReconcileSummary` | **（子系统 C）** 按 `name` 三向 diff `old`/`new`：removed → `registry.remove`、added·changed → `upstream::connect::connect_all`（复用 eager-connect 路径）、unchanged → 不动连接；末尾单次 `rebuild_snapshot`。**best-effort**——连接失败记 `connect_failures`、不中止其它/不回滚；纯 no-op（无增删）提前返回不 rebuild。供 dashboard 在线改配做上游热重载 |
 
 ### 类型 `DisableSet` / `DisabledSnapshot`（`disable.rs`，子系统 B）
 运行时**临时禁用集**：内存 `RwLock<{upstreams, tools}>`（两个 `BTreeSet<String>` → 天然有序）+ 可选 JSON 持久化路径。
@@ -53,6 +57,19 @@
 `DisabledSnapshot { upstreams: Vec<String>, tools: Vec<String> }`（`Serialize`/`Deserialize`，有序）：开放只读端点
 `GET /api/disabled` 的 body 与磁盘 JSON 形态（空集即 `{ "upstreams": [], "tools": [] }`）。
 
+### 类型 `ReconcileSummary`（`lib.rs`，子系统 C）
+`reconcile_upstreams` 的结果，`#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]`，序列化进 dashboard 的 `ApplyResult`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `added` | `Vec<String>` | 本次新增（`new` 有、`old` 无）尝试连接的上游名 |
+| `removed` | `Vec<String>` | 本次移除（`old` 有、`new` 无）从 registry 删除的上游名 |
+| `reconnected` | `Vec<String>` | 同名但 `UpstreamConfig` 改变、尝试重连的上游名 |
+| `connect_failures` | `Vec<(String, String)>` | (名, 错误)：`added`/`reconnected` 里**实际连接失败**者 |
+
+> `added`/`reconnected` 是**计划意图**：同时出现在 `connect_failures` 里的项**未真正（重）连**（changed 上游连接失败时旧连接保留）。
+> 取**真正生效集**须把 `added`/`reconnected` 与 `connect_failures` 交叉看。私有 `plan_upstream_reconcile(old, new) -> ReconcilePlan` 是被重点测试的纯三向 diff。
+
 ### 函数 `run_rebuild_worker`（`lib.rs`）
 
 | 函数 | 签名 | 说明 |
@@ -62,7 +79,8 @@
 ## 依赖
 
 - 内部：`metatools`（`GatewaySnapshot`）、`catalog`（`Catalog`）、`retrieval`（`build_strategy`）、`upstream`
-  （`UpstreamRegistry` / `UpstreamHandle`）。
+  （`UpstreamRegistry` / `UpstreamHandle`；**子系统 C** 另用 `connect::connect_all`）、`config`（**子系统 C**：
+  `reconcile_upstreams` 的 `UpstreamConfig` 三向 diff）。
 - 外部：`arc-swap`（`ArcSwap` 热替换）、`tokio`（`sync::Mutex` 重建锁、`task::JoinSet` 并发摄取、`mpsc` 触发
   channel）、`thiserror`（`GatewayError`）、`tracing`（重建日志）、`serde`/`serde_json`（`DisabledSnapshot` 序列化
   + `DisableSet` 的 JSON 持久化）；`DisableSet` 内部用 `std::sync::RwLock` + `BTreeSet`（有序、无第三方锁）。
@@ -80,6 +98,8 @@
 - **禁用过滤只在 rebuild**（子系统 B）：被禁用上游/工具仅在 `rebuild_snapshot` 时被剔出新快照——`metatools`/`downstream`
   读路径零改动；已在途的调用可能在禁用生效后**再完成一次**（check-then-call 竞态，无状态泄漏），下次重建后彻底消失。
   `DisableSet` 默认空集时整条路径行为与禁用功能引入前完全一致。
+- **上游热重载 best-effort 且与禁用组合**（子系统 C）：`reconcile_upstreams` 的某上游连接失败只记 `connect_failures`、
+  **不**中止其它上游、**不**回滚已落盘配置；其末尾 `rebuild_snapshot` 仍读 `DisableSet` 过滤，故热加的禁用上游照样隐藏。
 
 ## 向下导航
 

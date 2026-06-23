@@ -10,7 +10,7 @@
 
 - **`prepare_state(&cfg)`**：纯装配 + 可单测——`GatewayState::new(strategy)` → 建 `mpsc::channel::<String>(64)`
   作 `RebuildTrigger` → `upstream::connect::connect_all(registry, &cfg.upstreams, tx)`（eager-connect、降级启动）
-  → 初始 `rebuild_snapshot()` → 返回 `(Arc<GatewayState>, rx)`。两步都 `tracing::info!` 出 connect/rebuild 摘要。
+  → 初始 `rebuild_snapshot()` → 返回 `(Arc<GatewayState>, rx, trigger 发送端 clone, boot_skipped: Vec<String>)`（末元素 = 启动连接失败的上游名字 `csum.skipped`，供 `run_serve` 把 `applied_upstreams` seed 为 boot-connected 子集）。两步都 `tracing::info!` 出 connect/rebuild 摘要。
 - **`run_serve(cfg)`**：装 stderr tracing subscriber → 校验**至少启用一种传输**（`cfg.server.stdio` 或
   `[server.http].enabled`，均未启用则 `Err("no server transport enabled ...")`）→ **env 密钥启动期解析**
   `resolve_api_keys` + `validate_upstream_http_env`（见下）→ **构造观测 sinks**（以 `observe::TracingSink`
