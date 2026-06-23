@@ -437,13 +437,13 @@ pub fn activity(state: &AppState, window_ms: u64) -> crate::activity::ActivityRe
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use observe::{CallContentSink, CallSink};
 
-    fn make_state(gw: Arc<GatewayState>) -> AppState {
+    pub(crate) fn make_state(gw: Arc<GatewayState>) -> AppState {
         AppState {
             gateway: gw,
             metrics: Arc::new(MetricsSink::new()),
@@ -477,7 +477,7 @@ mod tests {
         }
     }
 
-    async fn seeded_state() -> AppState {
+    pub(crate) async fn seeded_state() -> AppState {
         make_state(Arc::new(GatewayState::new("bm25").unwrap()))
     }
 
