@@ -429,12 +429,16 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
   width: 3px; border-radius: 3px; background: var(--accent-grad); }
 .cfg-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--s4); }
 
-.cfg-field { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--fs-sm); color: var(--fg-dim); }
-.cfg-field input, .cfg-field select { background: var(--raised); border: 1px solid var(--border);
-  border-radius: var(--r-sm); color: var(--fg); padding: var(--s2); font: inherit; }
-.cfg-field input:focus, .cfg-field select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
-.cfg-switch { flex-direction: row; align-items: center; gap: var(--s2); }
-.cfg-switch input { width: auto; }
+.cfg-field { display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-sm); color: var(--fg-dim); }
+.cfg-field > input, .cfg-field > select { background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); color: var(--fg); padding: 7px 10px; font: inherit;
+  transition: border-color .14s, box-shadow .14s; }
+.cfg-sub .cfg-field > input, .cfg-sub .cfg-field > select { background: var(--panel); }
+.cfg-field > input[type="number"] { font-variant-numeric: tabular-nums; }
+.cfg-field > input:hover, .cfg-field > select:hover { border-color: var(--border-hover); }
+.cfg-field > input:focus, .cfg-field > select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.cfg-field.cfg-switch { flex-direction: row; align-items: center; gap: var(--s2); }
+.cfg-field.cfg-switch input { width: auto; }
 
 .cfg-sub { border: 1px solid var(--border); border-radius: var(--r-md);
   padding: var(--s3) var(--s4) var(--s4); background: var(--panel-2);
@@ -444,10 +448,16 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
   padding-bottom: var(--s2); border-bottom: 1px solid var(--border-soft); }
 
 .cfg-arr { display: flex; flex-direction: column; gap: var(--s2); }
-.cfg-arr-row { display: flex; gap: var(--s2); align-items: center; }
-.cfg-arr-row input { flex: 1; }
+.cfg-arr .label { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.cfg-arr-row { display: flex; gap: var(--s2); align-items: center; padding: var(--s2);
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); }
+.cfg-arr-row input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); color: var(--fg); padding: 6px 9px; font: inherit;
+  transition: border-color .14s, box-shadow .14s; }
+.cfg-arr-row input:hover { border-color: var(--border-hover); }
+.cfg-arr-row input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 
-.cfg-errs { list-style: none; padding: var(--s2) var(--s3); margin: var(--s2) 0 0;
-  border: 1px solid var(--danger-bd); background: var(--danger-bg); border-radius: var(--r-sm);
+.cfg-errs { list-style: none; padding: var(--s3); margin: var(--s3) 0 0;
+  border: 1px solid var(--danger-bd); background: var(--danger-bg); border-radius: var(--r-md);
   color: var(--danger); font-size: var(--fs-sm); display: flex; flex-direction: column; gap: var(--s1); }
-.cfg-errs code { color: var(--fg); }
+.cfg-errs code { color: var(--fg); font-family: var(--mono); }
