@@ -276,8 +276,11 @@ fn validate_config_text(cfg_text: &str) -> Result<config::Config, String> {
     Ok(cfg)
 }
 
-/// Build gateway state, connect upstreams, build the initial snapshot, and return the
-/// state plus the rebuild-trigger receiver for the worker. Split out so it is unit-testable.
+/// Build gateway state, connect upstreams, build the initial snapshot, and return the state
+/// plus: the rebuild-trigger receiver (for the worker), a clone of the trigger sender (for the
+/// dashboard's online-config reconcile), and the names of upstreams that failed to connect at
+/// boot (so `run_serve` seeds `applied_upstreams` with the boot-connected subset, making a
+/// boot-failed upstream retryable by an identical re-PUT). Split out so it is unit-testable.
 async fn prepare_state(
     cfg: &config::Config,
 ) -> Result<
@@ -285,6 +288,7 @@ async fn prepare_state(
         Arc<gateway::GatewayState>,
         tokio::sync::mpsc::Receiver<String>,
         tokio::sync::mpsc::Sender<String>,
+        Vec<String>,
     ),
     String,
 > {
@@ -304,9 +308,13 @@ async fn prepare_state(
     let trigger = tx.clone();
     let csum = upstream::connect::connect_all(state.registry(), &cfg.upstreams, tx).await;
     tracing::info!(connected = ?csum.connected, skipped = ?csum.skipped, "upstreams connected");
+    // Names that failed to connect at boot, so the caller seeds `applied_upstreams` with the
+    // boot-CONNECTED subset only — a later identical re-PUT then retries these (symmetric with
+    // the PUT-failure path) instead of treating them as "unchanged".
+    let boot_skipped: Vec<String> = csum.skipped.iter().map(|(n, _)| n.clone()).collect();
     let rsum = state.rebuild_snapshot().await.map_err(|e| e.to_string())?;
     tracing::info!(ingested = ?rsum.ingested, skipped = ?rsum.skipped, "initial snapshot built");
-    Ok((state, rx, trigger))
+    Ok((state, rx, trigger, boot_skipped))
 }
 
 async fn run_serve(cfg: config::Config, config_path: Option<PathBuf>) -> Result<(), String> {
@@ -333,7 +341,7 @@ async fn run_serve(cfg: config::Config, config_path: Option<PathBuf>) -> Result<
     let admin_token = resolve_admin_token(&cfg)?;
     validate_upstream_http_env(&cfg)?;
 
-    let (state, rx, rebuild_trigger) = prepare_state(&cfg).await?;
+    let (state, rx, rebuild_trigger, boot_skipped) = prepare_state(&cfg).await?;
     tokio::spawn(gateway::run_rebuild_worker((*state).clone(), rx));
 
     // Observation sinks shared by both stdio and http transports. Default = TracingSink;
@@ -503,7 +511,13 @@ async fn run_serve(cfg: config::Config, config_path: Option<PathBuf>) -> Result<
                 as dashboard::ConfigValidator,
             config_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             boot_config: std::sync::Arc::new(cfg.clone()),
-            applied_upstreams: std::sync::Arc::new(std::sync::Mutex::new(cfg.upstreams.clone())),
+            applied_upstreams: std::sync::Arc::new(std::sync::Mutex::new(
+                cfg.upstreams
+                    .iter()
+                    .filter(|u| !boot_skipped.contains(&u.name))
+                    .cloned()
+                    .collect(),
+            )),
             rebuild_trigger: rebuild_trigger.clone(),
         });
         // Enforce a local Host header only when bound to loopback (non-loopback is an explicit,
@@ -682,10 +696,25 @@ mod tests {
         // Empty config: 0 upstreams, stdio default on. prepare_state must succeed and yield
         // a usable (empty) snapshot.
         let cfg = config::Config::default_from_empty();
-        let (state, _rx, _trigger) = prepare_state(&cfg).await.expect("prepare ok");
+        let (state, _rx, _trigger, _boot_skipped) = prepare_state(&cfg).await.expect("prepare ok");
         assert!(metatools::search_tools(&state.snapshot(), "anything", 5)
             .await
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_state_reports_boot_skipped_upstreams() {
+        // A stdio upstream whose command can't spawn lands in csum.skipped at boot; prepare_state
+        // must surface its name so the caller seeds applied_upstreams with boot-connected only.
+        let cfg = config::Config::from_toml_str(
+            "[[upstream]]\nname = \"bootbad\"\ntransport = \"stdio\"\ncommand = \"/nonexistent-mcpgw-boot-bin\"\n",
+        )
+        .expect("valid config");
+        let (_state, _rx, _trigger, boot_skipped) = prepare_state(&cfg).await.expect("prepare ok");
+        assert!(
+            boot_skipped.contains(&"bootbad".to_string()),
+            "expected boot_skipped to contain the failed upstream, got {boot_skipped:?}"
+        );
     }
 
     #[test]

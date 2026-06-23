@@ -370,7 +370,7 @@ token 非空时显示导航项 **Config**：进入 `adminGet('/api/admin/config'
   原文；`put_config` 的 `config_path=None` → 404、空/全空白 body → 400 不写盘、校验失败 → 400 + 消息不写盘、成功 →
   原子落盘后回 `ApplyResult`；`atomic_write` 写出 temp+fsync+rename 后原文件为新内容且生成 `<path>.bak` 备份、IO 失败时
   清理 temp、原文件不动；`restart_diff` 对仅改 `[[upstream]]` 时 `needs_restart` 为空、改 `[retrieval]`/`[server]`/`[audit]`/
-  `[dashboard]` 段时各自段名入 `needs_restart`；`applied_upstreams` 基线只纳入连接成功的上游（连失败者下次 PUT 重试）。
+  `[dashboard]` 段时各自段名入 `needs_restart`；`applied_upstreams` 基线只纳入连接成功的上游（连失败者下次 PUT 重试；**启动初始基线同理——仅 seed boot 连上者，故 boot 失败上游修好后原样 re-PUT 即重试**）。
 
 ## 相关
 

@@ -235,7 +235,7 @@ pub struct AppState {
     pub config_validator: ConfigValidator,         // = Arc<dyn Fn(&str) -> Result<Config, String> + Send + Sync>，main.rs 注入
     pub config_write_lock: Arc<tokio::sync::Mutex<()>>,  // 串行化整个 PUT（校验/写/reconcile 不交错）
     pub boot_config: Arc<Config>,                  // 启动基线，restart_diff 据此判定哪些段需重启
-    pub applied_upstreams: Arc<std::sync::Mutex<Vec<UpstreamConfig>>>,  // 已成功应用的上游基线（排除连接失败者）
+    pub applied_upstreams: Arc<std::sync::Mutex<Vec<UpstreamConfig>>>,  // 已成功应用的上游基线（启动 seed=boot-connected 子集 / PUT 后=连上者，均排除连接失败者）
     pub rebuild_trigger: tokio::sync::mpsc::Sender<String>,  // reconcile 末尾触发一次 rebuild 的句柄
 }
 ```

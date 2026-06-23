@@ -304,6 +304,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn put_config_excludes_connect_failure_from_baseline_so_re_put_retries() {
+        // A stdio upstream with an unspawnable command PASSES validation (commands aren't
+        // spawn-checked there) but FAILS connect during reconcile: it lands in connect_failures and
+        // is EXCLUDED from the applied baseline, so an identical re-PUT re-attempts it (symmetric
+        // with boot-skipped seeding) instead of treating it as "unchanged".
+        let p = std::env::temp_dir().join(format!("mcpgw-cfg-cf-{}.toml", std::process::id()));
+        std::fs::write(&p, "[retrieval]\nstrategy = \"bm25\"\n").unwrap();
+        let mut state = seeded_state().await; // real GatewayState + real validator, empty baseline
+        state.config_path = Some(p.clone());
+        let st = std::sync::Arc::new(state);
+
+        let body =
+            "[[upstream]]\nname = \"bad\"\ntransport = \"stdio\"\ncommand = \"/nonexistent-mcpgw-bin\"\n";
+
+        let r = put_config(State(st.clone()), body.to_string()).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let cf: Vec<(String, String)> =
+            serde_json::from_value(v["upstreams"]["connect_failures"].clone()).unwrap();
+        assert!(
+            cf.iter().any(|(n, _)| n == "bad"),
+            "connect_failures must contain the unspawnable upstream, got {cf:?}"
+        );
+        // Baseline EXCLUDES the connect-failed upstream -> a re-PUT won't see it as "unchanged".
+        assert!(
+            st.applied_upstreams
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|u| u.name != "bad"),
+            "applied_upstreams must not contain the connect-failed upstream"
+        );
+
+        // Second identical PUT: "bad" is (re)attempted (still planned as added + in
+        // connect_failures), proving the exclusion makes it recoverable rather than a silent no-op.
+        let r2 = put_config(State(st.clone()), body.to_string()).await;
+        assert_eq!(r2.status(), StatusCode::OK);
+        let bytes2 = axum::body::to_bytes(r2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
+        let added2: Vec<String> = serde_json::from_value(v2["upstreams"]["added"].clone()).unwrap();
+        let cf2: Vec<(String, String)> =
+            serde_json::from_value(v2["upstreams"]["connect_failures"].clone()).unwrap();
+        assert!(
+            added2.contains(&"bad".to_string()),
+            "re-PUT must re-attempt the failed upstream, not treat it as unchanged"
+        );
+        assert!(cf2.iter().any(|(n, _)| n == "bad"));
+
+        let mut bak = p.clone().into_os_string();
+        bak.push(".bak");
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(std::path::PathBuf::from(bak));
+    }
+
+    #[tokio::test]
     async fn config_routes_are_gated() {
         use axum::body::Body;
         use axum::http::Request;
