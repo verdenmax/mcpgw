@@ -1,7 +1,7 @@
 # L4 — `crates/gateway/src/lib.rs` API
 
 源文件：`crates/gateway/src/lib.rs`。活的、可原子热替换的 `GatewaySnapshot` 状态 + 上游注册表 + 重建逻辑 +
-list_changed 重建 worker。
+list_changed 重建 worker + 上游热重载对账（`reconcile_upstreams`，子系统 C）。
 
 ## `enum GatewayError`
 ```rust
@@ -22,6 +22,20 @@ pub struct RebuildSummary {
 }
 ```
 一次重建的遥测。
+
+## `struct ReconcileSummary`
+```rust
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReconcileSummary {
+    pub added: Vec<String>,                       // 新增并尝试连接的上游名
+    pub removed: Vec<String>,                      // 已从 registry 摘除的上游名
+    pub reconnected: Vec<String>,                 // 配置变更、已尝试重连的上游名
+    pub connect_failures: Vec<(String, String)>,  // (上游名, 连接错误)——连接失败者
+}
+```
+一次**上游热重载**（`reconcile_upstreams`，子系统 C）的遥测，`Serialize` 后嵌进 dashboard 的 `ApplyResult.upstreams`。
+**`added`/`reconnected` 是"意图"**：表示该上游被纳入本次 (re)connect 批，**不**保证连接成功（*changed* 上游连失败时旧连接仍保留）；
+**真正生效的集合须用 `added`/`reconnected` 减去 `connect_failures`**。`removed` 则确定已摘除。
 
 ## `struct DisableSet` / `struct DisabledSnapshot`（`disable.rs`，`pub use` 自 `lib.rs`）
 ```rust
@@ -146,6 +160,31 @@ pub async fn rebuild_snapshot(&self) -> Result<RebuildSummary, GatewayError>
 读路径（`snapshot()`）全程无锁；重建经 `rebuild_lock` 串行化以保证 last-store-wins、不留陈旧快照；per-ingest
 超时使 hung/慢上游被隔离进 `skipped`，不拖死重建；单个 ingest 任务 panic/取消亦经 `resolve_joined` 降级为
 `skipped`（按 `task::Id` 归因），保住启动期（`prepare_state` 初次构建）与重建 worker 的崩溃隔离。
+
+### `GatewayState::reconcile_upstreams`
+```rust
+pub async fn reconcile_upstreams(
+    &self,
+    old: &[config::UpstreamConfig],
+    new: &[config::UpstreamConfig],
+    trigger: upstream::connection::RebuildTrigger,
+) -> ReconcileSummary
+```
+**（子系统 C：上游热重载）** 把活的上游注册表对账到一份新配置，供 dashboard 的 `PUT /api/admin/config` 在落盘后调用。流程：
+
+1. **纯三向 diff**：私有 `plan_upstream_reconcile(old, new)` 按**名**比对 → `ReconcilePlan{ removed, to_connect, added, reconnected }`：
+   仅在 `old` 的 → `removed`；仅在 `new` 的 → `added`（+入 `to_connect`）；两边都有但**配置不等**（`prev != u`）→ `reconnected`
+   （+入 `to_connect`）；**完全相同 → 原连接不动**（不重连）。
+2. **no-op 早退**：若 `removed` 与 `to_connect` 均空（纯无变更）→ 直接返回 `ReconcileSummary::default()`，**跳过 remove/connect/rebuild**。
+3. **应用（best-effort）**：对 `removed` 逐个 `registry.remove(name)`；`to_connect` 非空时 `upstream::connect::connect_all(
+   registry, &to_connect, trigger)`（复用 eager-connect 路径），其 `skipped` 即 `connect_failures`。
+4. **单次 rebuild**：`self.rebuild_snapshot().await`（**忽略其 `Result`**——已用 `let _ =`，对账不因重建错误而 panic）；
+   rebuild 会施加 M4 的禁用过滤，故热重载与运行时禁用**组合**正确。
+5. 返回 `ReconcileSummary{ added, removed, reconnected, connect_failures }`。
+
+**best-effort**：单个上游连接失败只记进 `connect_failures`、**绝不**中止其余上游或回滚（已落盘的配置不动）；`added`/`reconnected`
+是意图、须与 `connect_failures` 交叉核对（见上 `ReconcileSummary`）。dashboard 据此把 `applied_upstreams` 基线只更新为
+**连接成功**者，使对同一份配置再次 PUT 会重试仍失败的上游。详见 [gateway L3 上游热重载](../L3-details/gateway.md)。
 
 ## `async fn run_rebuild_worker`
 ```rust

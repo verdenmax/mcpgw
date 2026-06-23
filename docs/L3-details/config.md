@@ -100,6 +100,10 @@
   解析期。`admin_token_env` **不**经 `validate()`——其 env 变量在 `serve` 启动期 **fail-fast 解析**（`resolve_admin_token`，
   仅当 `dashboard.enabled`；env 缺失/空/全空白 → 报错，详见 [mcpgw-main L4](../L4-api/mcpgw-main.md)）；
   `disabled_state_path` 由 gateway 在装配期 `DisableSet::load_or_new` 读取（坏文件自愈，**独立于 `enabled`**）。
+- **M5 在线改配的校验复用**（边界说明）：dashboard 子系统 C 的在线编辑器对提交的整份 TOML 复用**同一套** `from_toml_str`
+  结构校验 + `serve` 启动期的 env 解析器（经 `main.rs::validate_config_text` 注入）。`config` crate **不**为此新增任何
+  API、仍只做纯解析/结构校验，env 值的读取与 fail-fast 始终在 `mcpgw` bin——这条边界（config 纯解析、env 解析在 serve）
+  在 M5 保持不变。
 
 ## `env_passthrough` 的 allow-list 语义
 

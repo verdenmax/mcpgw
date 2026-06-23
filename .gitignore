@@ -8,3 +8,6 @@ crates/dashboard/ui/node_modules/
 
 # Dashboard 运行时禁用集状态文件（[dashboard].disabled_state_path 的约定文件名）
 mcpgw-disabled.json
+
+# 在线改配（写子系统 C）原子落盘时生成的单个覆盖式配置备份
+*.bak

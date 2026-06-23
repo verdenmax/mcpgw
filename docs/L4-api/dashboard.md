@@ -1,10 +1,12 @@
 # L4 — `crates/dashboard` API
 
-源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api,about,admin,assets}.rs` + `ui/`（Svelte 5 + Vite
+源文件：`crates/dashboard/src/{lib,metrics,trace,history,calls,api,about,admin,admin_config,assets}.rs` + `ui/`（Svelte 5 + Vite
 前端工程，产物内嵌）。**默认只读**可视化面板（子系统 A）：把 `gateway` 活快照、`observe` 实时观测与可选历史 JSONL
-聚合成 **18** 个 `/api/*` JSON 端点（14 读 + 子系统 B 的 4 个 Bearer 鉴权 admin 写）+ 一个由 `rust-embed` 内嵌的
-Svelte SPA，跑在独立 localhost 端口上。**子系统 B**（`admin.rs`，可选，经 `[dashboard].admin_token_env` 开启）提供
-运行时 disable/enable 上游/工具的写 API（开放只读端点 `GET /api/disabled` 暴露禁用集）。所有对外类型经 `lib.rs` re-export。
+聚合成 **20** 个 `/api/*` JSON 端点（14 读 + 子系统 B 的 4 个 + 子系统 C 的 2 个，共 6 个 Bearer 鉴权 admin 端点）+ 一个由
+`rust-embed` 内嵌的 Svelte SPA，跑在独立 localhost 端口上。**子系统 B**（`admin.rs`，可选，经
+`[dashboard].admin_token_env` 开启）提供运行时 disable/enable 上游/工具的写 API（开放只读端点 `GET /api/disabled` 暴露
+禁用集）；**子系统 C**（`admin_config.rs`，M5，需同时配 `admin_token_env` 与 `serve --config`）提供在线编辑整份
+`mcpgw.toml` + 上游热重载的 `GET/PUT /api/admin/config`。所有对外类型经 `lib.rs` re-export。
 
 ---
 
@@ -228,13 +230,25 @@ pub struct AppState {
     pub started_at: Instant,
     pub about: AboutInfo,
     pub admin_token: Option<std::sync::Arc<str>>,  // 子系统 B：env 解析的 admin Bearer token；None → /api/admin/* 返回 404
+    // —— 子系统 C（M5 在线改配 + 上游热重载）注入的 6 个字段 ——
+    pub config_path: Option<PathBuf>,              // serve --config 路径；None → /api/admin/config 返回 404
+    pub config_validator: ConfigValidator,         // = Arc<dyn Fn(&str) -> Result<Config, String> + Send + Sync>，main.rs 注入
+    pub config_write_lock: Arc<tokio::sync::Mutex<()>>,  // 串行化整个 PUT（校验/写/reconcile 不交错）
+    pub boot_config: Arc<Config>,                  // 启动基线，restart_diff 据此判定哪些段需重启
+    pub applied_upstreams: Arc<std::sync::Mutex<Vec<UpstreamConfig>>>,  // 已成功应用的上游基线（排除连接失败者）
+    pub rebuild_trigger: tokio::sync::mpsc::Sender<String>,  // reconcile 末尾触发一次 rebuild 的句柄
 }
 ```
 handler 的**只读共享态**（装配期一次性注入）：活快照句柄 + 实时指标 sink + 可选 discovery ring +
 可选 per-call ring（`calls`，仅 dashboard 启用时 `Some`）+ 配置上游列表/策略名 + 历史 JSONL 路径 + 启动时刻 +
 启动时组装的只读 `about`（`AboutInfo`，非敏感，见 [`about.rs`](#aboutrsaboutsettings-只读视图启动时组装仅非敏感)）+
 **`admin_token`**（子系统 B：`main.rs` 在启动期由 `admin_token_env` 解析的 Bearer token，`Some(Arc<str>)` → 开启
-admin 写 API；`None` → 4 个 `/api/admin/*` 经中间件返回 404；**仅持解析后的值，绝不存 env 名、绝不进 `/api/about`**）。
+admin 写 API；`None` → 6 个 `/api/admin/*` 经中间件返回 404；**仅持解析后的值，绝不存 env 名、绝不进 `/api/about`**）+
+**子系统 C 的 6 个字段**（`config_path`/`config_validator`/`config_write_lock`/`boot_config`/`applied_upstreams`/
+`rebuild_trigger`，均由 `main.rs` 在 `prepare_state`/`run_serve` 时注入；`config_path=None` 或 `config_validator` 拒绝时
+`/api/admin/config` 写路径降级，详见 [`admin_config.rs`](#admin_configrs在线改配写子系统-c)）。`ConfigValidator` 是
+`api.rs` 暴露的类型别名 `Arc<dyn Fn(&str) -> Result<config::Config, String> + Send + Sync>`，把 env 校验逻辑留在 `main.rs`、
+避免 dashboard → mcpgw 反向依赖。
 
 ### `struct UpstreamInfo`
 ```rust
@@ -284,7 +298,7 @@ pub struct CallsResponse { source, history_unavailable, total, items: Vec<CallIt
 ## `admin.rs`：运行时禁用写子系统 B
 
 子系统 B 的全部符号：一个鉴权中间件 + 一个共享变更助手 + 4 个 disable/enable handler。仅当 `AppState.admin_token`
-为 `Some` 时启用（经 `route_layer` 只挂在 4 个 `/api/admin/*` POST 路由上，开放只读端点不受影响）。
+为 `Some` 时启用（经 `route_layer` 挂在 **6 个 admin 操作**上——子系统 B 的 4 个 disable/enable POST + 子系统 C 的 `GET/PUT /api/admin/config`，开放只读端点不受影响）。
 
 ### `require_admin_token`（中间件，`pub`）
 ```rust
@@ -328,6 +342,72 @@ async fn mutate_and_rebuild(s: &Arc<AppState>, action: &'static str, name: Strin
 
 ---
 
+## `admin_config.rs`：在线改配写子系统 C
+
+子系统 C（M5）的全部符号：2 个 handler + 原子写 + 重启差异 + 2 个视图/结果类型。仅当 `AppState.admin_token` 为 `Some`
+**且** `config_path` 为 `Some`（serve 带 `--config`）时完全可用；两端点经同一 `route_layer` 挂在 admin 子路由上做 Bearer 鉴权。
+
+### `struct ConfigView`（`Serialize`，经 `lib.rs` re-export）
+```rust
+pub struct ConfigView { pub path: String, pub content: String }
+```
+`GET /api/admin/config` 的响应体：当前 `mcpgw.toml` 的**路径**（即 `serve --config` 传入的原值，未 `canonicalize`，可能是相对路径）与**整份原文文本**（逐字，注释/排版保留）。
+
+### `struct ApplyResult`（`Serialize`，经 `lib.rs` re-export）
+```rust
+pub struct ApplyResult {
+    pub upstreams: gateway::ReconcileSummary,   // 上游热重载结果（added/removed/reconnected/connect_failures）
+    pub needs_restart: Vec<&'static str>,       // 改了但需重启才生效的非上游段名（restart_diff 产出）
+}
+```
+`PUT /api/admin/config` 成功（200）的响应体：上游部分**热生效**、`needs_restart` 列出**已落盘但需重启**的段。
+
+### `get_config`（handler，`pub`）
+```rust
+pub async fn get_config(State(s): State<Arc<AppState>>) -> Response
+```
+`s.config_path == None` → **404**（serve 未带 `--config`，无文件可读）。否则读该文件 → `200 Json(ConfigView{path,content})`；
+读 IO 失败 → **500**。GET 虽属"读"，但因含完整配置文本而**挂在 Bearer 鉴权的 admin 子路由**上（同 `route_layer`）。
+
+### `put_config`（handler，`pub`）
+```rust
+pub async fn put_config(State(s): State<Arc<AppState>>, body: String) -> Response
+```
+`s.config_path == None` 的 **404** 在**取锁前**短路；其余**持 `s.config_write_lock`（`tokio::Mutex`）串行**。顺序：
+
+1. `s.config_path == None` → **404**（取锁前短路，无文件可改）。
+2. **取 `s.config_write_lock`** 后 `body.trim().is_empty()` → **400**（空/全空白，**不写盘**）。
+3. `(s.config_validator)(&body)` → `Err(msg)` 则 **400 + msg**（**不写盘**）；`Ok(new_cfg)` 继续。
+4. `spawn_blocking(atomic_write(path, &body))` 原子落盘（详见下）；IO 失败 → **500**（原文件/`.bak` 不动）。
+5. `s.gateway.reconcile_upstreams(applied, &new_cfg.upstreams, s.rebuild_trigger.clone())` 热重载上游。
+6. 更新 `*s.applied_upstreams.lock() = ` **连接成功**的上游（排除 `connect_failures`，使再 PUT 重试失败者）。
+7. `needs_restart = restart_diff(&s.boot_config, &new_cfg)`。
+8. `200 Json(ApplyResult{ upstreams, needs_restart })`。
+
+校验逻辑（结构 + 所有 env 引用可解析 + 至少一种 server 传输）由 `main.rs` 经 `config_validator` 注入，本文件**不**自带 env 解析，
+保持 dashboard 不反向依赖 `mcpgw`。
+
+### `atomic_write`（私有）
+```rust
+fn atomic_write(path: &Path, content: &str) -> std::io::Result<()>
+```
+顺序 **备份 → temp+fsync → rename**：①若 `path` 存在，先复制为单个 `<path>.bak`（**覆盖式**，best-effort，失败仅 `warn`）；
+②写同目录 temp（`.tmp.{pid}`）→ `write_all` → `sync_all`（fsync）→ `rename` 覆盖 `path`（同盘原子）；③任一步出错即删 temp。
+保证任何时刻 `path` 要么旧完整、要么新完整。`*.bak` 已 gitignore。
+
+### `restart_diff`（私有）
+```rust
+fn restart_diff(boot: &Config, new: &Config) -> Vec<&'static str>
+```
+**解构 `new`**（编译期穷尽，新增段会强制 review）逐段比 `[retrieval]`/`[server]`/`[audit]`/`[dashboard]` 与**启动基线**
+`boot`（非"上一次 PUT"）；差异段名入返回值。`[[upstream]]` **不**计入（它走热重载）。以 `boot_config` 为基线使
+"相对正在运行的进程是否仍需重启"在多次 PUT 间累计准确。
+
+> 详细流程、best-effort 不回滚语义、明文 token 部署前提见 [dashboard L3 在线改配子系统](../L3-details/dashboard.md)；
+> 上游三向 diff 见 [gateway L3](../L3-details/gateway.md)。
+
+---
+
 ## `assets.rs`：内嵌 UI 资源（rust-embed）
 
 ### `struct Assets`
@@ -361,8 +441,9 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 ```
 装配面板 router（`with_state(state)`）。当 `enforce_loopback_host` 为 `true`（面板绑 loopback）时，额外
 `layer` 一层 `require_local_host` 中间件以关闭 DNS 重绑定向量；为 `false`（绑非 loopback 的显式外网暴露）时
-不挂该层。子系统 B 的 4 个 admin 写路由先组成一个子 router、`.route_layer` 挂上 `admin::require_admin_token`
-中间件（**只**鉴权这 4 条，开放只读端点不受影响），再 `.merge(admin)` 进主 router：
+不挂该层。子系统 B 的 4 个 admin 写路由 + 子系统 C 的 2 个 `/api/admin/config` 路由先组成一个 admin 子 router、
+`.route_layer` 挂上 `admin::require_admin_token` 中间件（**只**鉴权这 6 条，开放只读端点不受影响），再
+`.merge(admin)` 进主 router：
 
 | 方法 | 路由 | handler → 响应 |
 |------|------|----------------|
@@ -384,9 +465,11 @@ pub fn build_dashboard_router(state: Arc<AppState>, enforce_loopback_host: bool)
 | POST | `/api/admin/upstreams/{name}/enable` | **（子系统 B，Bearer 鉴权）** `enable_upstream` → `Json<DisabledSnapshot>`/500 |
 | POST | `/api/admin/tools/{name}/disable` | **（子系统 B，Bearer 鉴权）** `disable_tool` → `Json<DisabledSnapshot>`/404/500（`name`=qualified `{server}__{tool}`） |
 | POST | `/api/admin/tools/{name}/enable` | **（子系统 B，Bearer 鉴权）** `enable_tool` → `Json<DisabledSnapshot>`/500 |
+| GET | `/api/admin/config` | **（子系统 C，Bearer 鉴权）** `get_config` → `Json<ConfigView>`（当前 `mcpgw.toml` 路径 + 整份原文）/404（未带 `--config`）/500（详见 [`admin_config.rs`](#admin_configrs在线改配写子系统-c)） |
+| PUT | `/api/admin/config` | **（子系统 C，Bearer 鉴权）** `put_config`（body=完整 TOML）→ 校验 → 原子落盘(+.bak) → 上游热重载 → `Json<ApplyResult>`/404（无 `--config`）/400（空 body 或校验失败，不写盘）/500 |
 | —（fallback） | 任意非 `/api/*` 路径 | `assets::static_handler`：`/`→内嵌 `index.html`、`/assets/*`→内嵌资源（带 hash），其余回退 index |
 
-共 **18** 个 `/api/*` 端点（14 读 + 4 admin 写）。私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
+共 **20** 个 `/api/*` 端点（14 读 + 6 admin：子系统 B 的 4 写 + 子系统 C 的 `GET/PUT /api/admin/config`）。私有 `qparam_usize(q, key, default)` 解析查询参数；`const MAX_HISTORY_LIMIT = 50_000` 封顶历史 `limit`。
 静态资源经 `assets::static_handler`（router `.fallback`）从 `rust-embed` 内嵌的 `ui/dist/` 交付（见
 [`assets.rs`](#assetsrs内嵌-ui-资源rust-embed)）。
 
@@ -405,7 +488,8 @@ async fn require_local_host(req: Request, next: Next) -> axum::response::Respons
 源在 `crates/dashboard/ui/src/`，`npm run build` 经 Vite 产出 `ui/dist/`（hash 命名的多文件，**已入库**），再由
 [`assets.rs`](#assetsrs内嵌-ui-资源rust-embed) 经 `rust-embed` 编译期内嵌，故 `cargo build` 不依赖 node。
 
-- **左侧导航**（`Nav.svelte`）：Overview / Upstreams / Tools / Calls / Traces。
+- **左侧导航**（`Nav.svelte`）：Overview / Upstreams / Tools / Calls / Traces；**输入 admin token 后**额外显示
+  **Config**（子系统 C 的在线改配视图，token 为空时隐藏）。
 - **hash 路由**（`router.svelte.js`）：`#/<view>/<...params>`（如 `#/calls`、`#/calls/{id}`、`#/upstreams/{name}`、
   `#/tools/{name}`、`#/traces/{id}`）；params 经 `decodeURIComponent` 解码（含 `__`/编码字符的 qualified 工具名安全），
   fragment 不发往服务端，故深链刷新只请求 `/`（不需要 history 回退改写）。
@@ -425,6 +509,11 @@ async fn require_local_host(req: Request, next: Next) -> axum::response::Respons
   null→设的条件依赖陷阱）并在有桶选时附 `since`/`until`，`loadCalls` 的滚动 `since` 仅在**无 `bucketSel`** 时附加；
   `setRange`/时间范围 chip 清桶选，selected-bucket chip 也清桶选。**后端无新增**——复用既有 `/api/calls` 的
   `since`/`until`（闭区间 `[since, until]`），`/api/activity` 不变。
+- **Config 编辑视图**（M5 子系统 C，token-gated）：`adminGet('/api/admin/config')` 把当前 `mcpgw.toml` 载入
+  `<textarea>`，**Save** → `adminPut('/api/admin/config', text)`；200 渲染 `ApplyResult`（上游
+  added/removed/reconnected/**connect_failures** 区分 + **需重启**段横幅）、400 内联校验错误、401 token 失效、404 提示
+  serve 未带 `--config`。复用 `.error`/`.badge` 风格与等宽字体；admin token 仅存浏览器内存（**绝不**写 localStorage、
+  绝不进 URL），随 `Authorization: Bearer` 头发出。
 - **XSS 防线**：Svelte 的 `{expr}` 插值**自动转义**，全前端**不用** `{@html}`（`assets.rs` 的
   `no_svelte_component_uses_raw_html` 单测扫描 `ui/src` 锁死这一点），故 query 文本/工具名/上游名/错误原因等不可信
   字段绝不以原始 HTML 注入。
@@ -435,6 +524,9 @@ async fn require_local_host(req: Request, next: Next) -> axum::response::Respons
   实现**：前者读仅元数据 `CallRecord`、后者读 opt-in `DiscoveryRecord`，二者物理隔离（隐私边界见 L3）。
 - discovery JSONL writer 只用 `std::thread` + `std::sync::mpsc`（有界 `sync_channel`）+ `std::fs`，**不进
   tokio 运行时**（与 `observe` 审计 writer 同构）。
+- **子系统 C**（`admin_config.rs`）依赖 `gateway::{GatewayState::reconcile_upstreams, ReconcileSummary}` 做上游热重载、
+  `config::Config`（结构校验/段比对）；env 校验逻辑**不**在本 crate，而由 `main.rs` 经 `config_validator` 注入
+  （保持 dashboard 不反向依赖 `mcpgw`）。原子写经 `tokio::task::spawn_blocking` 离开 async worker。
 - 装配/关停顺序见 [mcpgw-main](./mcpgw-main.md)；配置见 [config-lib](./config-lib.md) 的 `DashboardConfig`。
 
 > 进程模型/算法/数据来源/隐私见 L3：[dashboard](../L3-details/dashboard.md)；组件视角见 L2：

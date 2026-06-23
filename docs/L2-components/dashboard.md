@@ -3,11 +3,12 @@
 ## 职责
 
 网关的**默认只读可视化面板**（子系统 A）：把 `gateway` 的活快照、`observe` 的调用观测与可选的历史 JSONL
-回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 18 个 `/api/*` JSON 端点 + 一个
+回放聚合起来，经一个**独立 localhost 端口**上的小 axum server 暴露为 20 个 `/api/*` JSON 端点 + 一个
 **Svelte 5 + Vite 构建、经 `rust-embed` 内嵌**的 SPA（`assets::static_handler` fallback 交付）。它**默认只读**，
-默认关闭、须显式 opt-in；配置 `[dashboard].admin_token_env` 后额外提供**运行时禁用写子系统 B**（仅 disable/enable
-上游/工具、经 Bearer 鉴权；`GET /api/disabled` 开放只读），仍**不**做改配/重启/撤 key——**不配 token 时与今天完全
-一致的纯只读面板**。
+默认关闭、须显式 opt-in；配置 `[dashboard].admin_token_env` 后额外提供**两个 Bearer 鉴权写子系统**：**子系统 B**
+（运行时禁用——仅 disable/enable 上游/工具；`GET /api/disabled` 开放只读）与 **子系统 C**（在线改配 + 上游热重载——
+`GET/PUT /api/admin/config` 编辑整份 `mcpgw.toml`，`[[upstream]]` 增/删/改热重载、其余字段需重启）。二者**都不**重启
+进程、不撤 key——**不配 token 时与今天完全一致的纯只读面板**。
 
 本 crate 提供三个接入 `observe` 接缝的 sink：
 - `MetricsSink` 实现 `observe::CallSink`，**实时聚合**每个元工具的调用数/错误数/延迟分位（p50/p95/max）
@@ -91,9 +92,9 @@
 
 | 项 | 签名 | 说明 |
 |----|------|------|
-| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` / 启动时组装、运行期不可变的 `about: AboutInfo` / `admin_token: Option<Arc<str>>`（子系统 B：admin Bearer token，启动期由 `admin_token_env` 解析；`None` → 全部 `/api/admin/*` 经中间件返 404） |
+| `AppState` | `Clone` | 面板 handler 的只读共享态：`gateway` / `metrics` / 可选 `discovery` ring / 可选 `calls`（逐条调用环，仅 dashboard 启用时 `Some`）/ `upstreams: Vec<UpstreamInfo>` / `strategy` / 可选 `audit_path` / `discovery_path` / `started_at` / 启动时组装、运行期不可变的 `about: AboutInfo` / `admin_token: Option<Arc<str>>`（子系统 B：admin Bearer token，启动期由 `admin_token_env` 解析；`None` → 全部 `/api/admin/*` 经中间件返 404）/ **（子系统 C，6 字段）** `config_path: Option<PathBuf>`（`serve --config X` 时 `Some`，否则 config 端点 404）、`config_validator: Arc<dyn Fn(&str)->Result<Config,String>+Send+Sync>`（`main.rs` 注入的严格校验器：结构 + 全 env 引用，**避免 dashboard→main 依赖**）、`config_write_lock: Arc<tokio::Mutex<()>>`（串行化整个 PUT）、`boot_config: Arc<Config>`（启动快照，`needs_restart` 非上游基线）、`applied_upstreams: Arc<Mutex<Vec<UpstreamConfig>>>`（上游 reconcile 的"旧"基线，PUT 成功后更新、排除连接失败者）、`rebuild_trigger: mpsc::Sender<String>`（传给 `connect_all`） |
 | `UpstreamInfo` | `Serialize` | 一个配置上游的静态身份：`name` / `transport`（装配期由 `Config` 给出） |
-| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 18 个 `/api/*` 路由（14 读 + 4 admin 写）+ `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；**4 个 `/api/admin/*` 写路由经 `route_layer` 单独挂 `require_admin_token` 中间件**（开放读端点不鉴权）；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
+| `build_dashboard_router` | `(state: Arc<AppState>, enforce_loopback_host: bool) -> axum::Router` | 装配 20 个 `/api/*` 路由（14 读 + 6 admin 写）+ `assets::static_handler` fallback（内嵌 SPA：`/` → `index.html`、`/assets/*` → 内嵌资源），`with_state(state)`；**6 个 `/api/admin/*` 路由经 `route_layer` 单独挂 `require_admin_token` 中间件**（子系统 B 的 4 个 disable/enable POST + 子系统 C 的 `GET/PUT /api/admin/config`；开放读端点不鉴权）；`enforce_loopback_host` 时挂反 DNS-rebinding 的 Host 校验层 |
 
 ### 运行时禁用写子系统 `require_admin_token` / `disable_*` / `enable_*` / `disabled`（`admin.rs` / `api.rs`，子系统 B）
 
@@ -107,6 +108,19 @@
 > 隐藏式语义经现有代码路径达成（被禁用项经 `gateway::DisableSet` + `rebuild_snapshot` 过滤后从快照消失，
 > `metatools`/`downstream` 零改动），详见 [dashboard L3](../L3-details/dashboard.md) 与 [gateway L2/L3](./gateway.md)。
 
+### 在线改配写子系统 `get_config` / `put_config` / `atomic_write` / `restart_diff` / `ApplyResult` / `ConfigView`（`admin_config.rs`，子系统 C）
+
+| 项 | 签名 | 说明 |
+|----|------|------|
+| `ConfigView` | `Serialize` | `GET /api/admin/config` 的响应体：`path: String` + `content: String`（当前 `mcpgw.toml` 原文本；文件无明文密钥，原样返回） |
+| `ApplyResult` | `Serialize` | `PUT /api/admin/config` 的响应体：`upstreams: gateway::ReconcileSummary`（上游热重载结果）+ `needs_restart: Vec<&'static str>`（落盘但需重启才生效的非上游段名） |
+| `get_config` | `async (State<Arc<AppState>>) -> Response` | `config_path==None` → **404**；否则 `read_to_string` 当前文件回 `Json<ConfigView>`（读失败 500）。Bearer 鉴权（经 `route_layer`） |
+| `put_config` | `async (State<Arc<AppState>>, body: String) -> Response` | `config_path==None`→**404**（取锁前短路）；其余持 `config_write_lock` 串行：**空白 body**→400；`config_validator(body)` 失败→**400 + 错误消息、不写盘**；否则经 `spawn_blocking(atomic_write)` 原子落盘（失败 500）→ `gateway.reconcile_upstreams(applied_upstreams, new.upstreams, rebuild_trigger)` 热重载 → 更新 `applied_upstreams`（**排除连接失败者**，故再 PUT 重试）→ `restart_diff(boot_config, new)` → `200 Json<ApplyResult>` |
+| `atomic_write` | `(path: &Path, content: &str) -> io::Result<()>`（私有） | best-effort 原子写：当前文件先复制为 `<path>.bak`（失败仅 `warn`）→ 写同目录 temp（`.tmp.{pid}`）→ `write_all` + `sync_all`(fsync) → `rename` 覆盖；**出错清理 temp**，不留半截 |
+| `restart_diff` | `(boot: &Config, new: &Config) -> Vec<&'static str>`（私有） | 解构 `new` 逐段比对**非上游段**（`retrieval`/`server`/`audit`/`dashboard`）与启动基线 `boot_config`，差异段名入 `needs_restart`（解构使新增顶层段时此处编译报错，防漏） |
+
+> 校验逻辑**注入**而非内联——`config_validator` 由 `main.rs` 的 `validate_config_text` 提供（复用启动期 env 解析器），dashboard 不反向依赖 main、`config` crate 保持纯解析。**热 vs 需重启**：仅 `[[upstream]]` 增/删/改经 `reconcile_upstreams` 秒级热重载，其余字段落盘但回 `needs_restart` 横幅（**不**重启进程）。详见 [dashboard L3](../L3-details/dashboard.md) 的「在线改配子系统」与 [gateway L2/L3](./gateway.md) 的 `reconcile_upstreams`。
+
 `/api/*` 端点（逐符号见 L4）：`/api/overview`、`/api/upstreams`、`/api/upstreams/{name}`、`/api/tools?q=`、
 `/api/tools/{name}`、`/api/metrics`、`/api/traces?source=live|history&limit=`、`/api/traces/{id}`、
 `/api/metrics/history?limit=&bucket_ms=`、
@@ -114,15 +128,17 @@
 `/api/activity?window=<ms>`（活动聚合，`window` 缺省 15min、clamp 1min–24h，返回 `ActivityResponse`）、
 `/api/about`（启动时组装的**非敏感**生效配置/限额 + 版本/git SHA/构建时间，运行期不可变，返回 `Json<AboutInfo>`——**绝不**含密钥/token/env 名/值）、
 `/api/disabled`（**开放只读**，返回 `Json<DisabledSnapshot>`；子系统 B）、
-`POST /api/admin/{upstreams,tools}/{name}/{disable,enable}`（**4 个 Bearer 鉴权写端点**，未配 `admin_token_env` → 404；逐符号见上「运行时禁用写子系统」）
-（M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404；**子系统 B 新增开放 `/api/disabled` + 4 个 admin POST，端点计数 13 → 18**）。
+`POST /api/admin/{upstreams,tools}/{name}/{disable,enable}`（**4 个 Bearer 鉴权写端点**，未配 `admin_token_env` → 404；逐符号见上「运行时禁用写子系统」）、
+`GET/PUT /api/admin/config`（**2 个 Bearer 鉴权端点**，子系统 C 在线改配；未配 `admin_token_env` → 404；逐符号见上「在线改配写子系统」）
+（M3 新增三个详情：`/api/upstreams/{name}`、`/api/tools/{name}`、`/api/traces/{id}`，各 `Json<…Detail>`/`Json<TraceItem>` 或 404；**子系统 B 新增开放 `/api/disabled` + 4 个 admin POST 使端点 13 → 18；子系统 C 再加 `GET/PUT /api/admin/config` 使 18 → 20**）。
 
 ## 依赖
 
 - 内部：`gateway`（`GatewayState`：读活快照 + `last_summary`；**子系统 B** 另用 `DisableSet`/`DisabledSnapshot`
-  与 `disabled()`/`disabled_arc()` 访问器读改运行时禁用集 + 触发 `rebuild_snapshot`）、`observe`（`CallSink`/`CallRecord`、
+  与 `disabled()`/`disabled_arc()` 访问器读改运行时禁用集 + 触发 `rebuild_snapshot`；**子系统 C** 另调
+  `reconcile_upstreams(...) -> ReconcileSummary` 做上游热重载）、`observe`（`CallSink`/`CallRecord`、
   `CallContentSink`/`CallContent` 与 `DiscoverySink`/`DiscoveryRecord` 契约）、`catalog`（经 `GatewaySnapshot::catalog()` 列工具）、`config`
-  （装配期取上游/策略/路径）。
+  （装配期取上游/策略/路径；**子系统 C** 用 `Config`/`UpstreamConfig` 做 `restart_diff` 与 reconcile 基线）。
 - 外部：`axum`（router/handler）、`tokio`（serve；admin handler 的 `spawn_blocking` 跑同步持久化）、
   `serde`/`serde_json`（视图序列化、JSONL 读写）、`tracing`、`subtle`（**子系统 B** admin token 的常量时间
   `ConstantTimeEq` 比较，复用下游 HTTP 的 api-key 模式）、`rust-embed`（编译期内嵌 `ui/dist/` 静态产物，`debug-embed`+`mime-guess`）。
@@ -138,13 +154,18 @@
   tracing/审计/指标）、按 `trace_queries` 构造 `DiscoveryRingSink`（注入 stdio + HTTP 两个下游的 `DiscoverySink` 切片），
   并把 `[dashboard].payload_max_bytes` 一并透传给 stdio + HTTP 两个传输；面板起为**自己端口上的独立 task**
   （默认 `127.0.0.1:8971`，localhost、读端点无鉴权、admin 写经 Bearer），带优雅关停与有界 writer drain。
-  详见 L4 [mcpgw-main](../L4-api/mcpgw-main.md)。
+  **（子系统 C）** 装 `AppState` 时另注入在线改配的 6 字段——`config_path`（= `--config` 路径，缺则 config 端点 404）、
+  `config_validator`（= `main.rs` 的 `validate_config_text`）、`config_write_lock`、`boot_config`、`applied_upstreams`、
+  `rebuild_trigger`（`prepare_state` 返回的 trigger clone）。详见 L4 [mcpgw-main](../L4-api/mcpgw-main.md)。
 
 ## 不负责
 
-- **除运行时禁用外的写操作 / 控制面**：写子系统 B（opt-in，须配 `admin_token_env`）**仅**提供临时 disable/enable
-  上游/工具；**不**暴露重启上游、改主配置、撤 key、热重载等其它控制面动作。**默认未配 token 时面板纯只读**。
-- **鉴权 / TLS / 反代**：开放读端点默认绑 localhost、无 auth；写子系统 B 的 4 个 `/api/admin/*` 经单一共享 admin
+- **进程重启 / 撤 key / 非上游热重载**：两个写子系统（B 运行时禁用、C 在线改配 + 上游热重载，均 opt-in，须配
+  `admin_token_env`；C 另须 `serve --config`）覆盖临时 disable/enable 与整份 `mcpgw.toml` 编辑 + `[[upstream]]`
+  增/删/改的秒级热重载，但**不**重启/管理进程、**不**撤 API-key、**不**热重载 `top_k`/`strategy`/`server`/
+  `dashboard`/`audit` 等非上游字段（这些经 C 可编辑、可落盘，但回 `needs_restart` 横幅、需手动重启生效）。
+  **默认未配 token 时面板纯只读**。
+- **鉴权 / TLS / 反代**：开放读端点默认绑 localhost、无 auth；写子系统 B/C 的 6 个 `/api/admin/*` 经单一共享 admin
   Bearer token 鉴权（无用户系统/RBAC）。非 loopback 绑定只 `warn`，不内建 TLS（留给反代）。
 - **图表库 / SSE / WebSocket**：SPA 用 **Svelte 5 + Vite** 构建、产物经 `rust-embed` 内嵌；仍每 3s 轮询
   `/api/*`、**无 SSE/WS**，也无图表库。
