@@ -418,13 +418,16 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 .cfg-seg button.active { background: var(--brand-fill); color: #fff; }
 
 .cfg-form { display: flex; gap: var(--s4); align-items: flex-start; }
-.cfg-nav { display: flex; flex-direction: column; gap: var(--s1); min-width: 150px; }
-.cfg-navitem { display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
-  padding: var(--s2) var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--panel); color: var(--fg-dim); cursor: pointer; font: inherit; text-align: left; }
-.cfg-navitem:hover { border-color: var(--border-hover); color: var(--fg); }
-.cfg-navitem.active { border-color: var(--accent); color: var(--fg); background: var(--accent-soft); }
-.cfg-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.cfg-nav { display: flex; flex-direction: column; gap: 2px; min-width: 156px; }
+.cfg-navitem { position: relative; display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s2); padding: var(--s2) var(--s3); border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--fg-dim); cursor: pointer; font: inherit; font-size: var(--fs-sm);
+  text-align: left; transition: background .14s, color .14s; }
+.cfg-navitem:hover { background: var(--hover); color: var(--fg); }
+.cfg-navitem.active { background: linear-gradient(90deg, rgba(91,157,255,.16), rgba(91,157,255,.04)); color: var(--fg); }
+.cfg-navitem.active::before { content: ""; position: absolute; left: -3px; top: 6px; bottom: 6px;
+  width: 3px; border-radius: 3px; background: var(--accent-grad); }
+.cfg-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--s4); }
 
 .cfg-field { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--fs-sm); color: var(--fg-dim); }
 .cfg-field input, .cfg-field select { background: var(--raised); border: 1px solid var(--border);
@@ -433,10 +436,12 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 .cfg-switch { flex-direction: row; align-items: center; gap: var(--s2); }
 .cfg-switch input { width: auto; }
 
-.cfg-sub { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s3);
-  display: flex; flex-direction: column; gap: var(--s2); }
-.cfg-sub legend { color: var(--muted); font-size: var(--fs-xs); padding: 0 var(--s1); }
-.cfg-upstream legend { display: flex; align-items: center; gap: var(--s2); }
+.cfg-sub { border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: var(--s3) var(--s4) var(--s4); background: var(--panel-2);
+  display: flex; flex-direction: column; gap: var(--s3); }
+.cfg-sub-h { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
+  padding-bottom: var(--s2); border-bottom: 1px solid var(--border-soft); }
 
 .cfg-arr { display: flex; flex-direction: column; gap: var(--s2); }
 .cfg-arr-row { display: flex; gap: var(--s2); align-items: center; }

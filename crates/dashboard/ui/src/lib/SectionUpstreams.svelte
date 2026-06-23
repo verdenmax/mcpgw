@@ -30,8 +30,8 @@
   <p class="muted">无 upstream。</p>
 {/if}
 {#each upstream ?? [] as u, i}
-  <fieldset class="cfg-sub cfg-upstream">
-    <legend>upstream[{i}] <button type="button" class="admbtn" onclick={() => remove(i)}>✕ 移除</button></legend>
+  <div class="cfg-sub" role="group" aria-label={`upstream ${i}`}>
+    <div class="cfg-sub-h">upstream[{i}] <button type="button" class="iconbtn" onclick={() => remove(i)}>✕ 移除</button></div>
     <label class="cfg-field">name <input bind:value={u.name} placeholder="唯一、非空、不含 __" /></label>
     <label class="cfg-field">call_timeout_ms <input type="number" min="1" bind:value={u.call_timeout_ms} /></label>
     <label class="cfg-field">transport
@@ -51,12 +51,12 @@
           <div class="cfg-arr-row">
             <input value={k} onchange={(e) => setHeaderKey(u, k, e.target.value)} placeholder="header 名" />
             <input value={v} onchange={(e) => (u.headers[k] = e.target.value)} placeholder="env 变量名" />
-            <button type="button" class="admbtn" onclick={() => rmHeader(u, k)}>✕</button>
+            <button type="button" class="iconbtn" onclick={() => rmHeader(u, k)}>✕</button>
           </div>
         {/each}
-        <button type="button" class="admbtn" onclick={() => addHeader(u)}>+ add header</button>
+        <button type="button" class="iconbtn" onclick={() => addHeader(u)}>+ add header</button>
       </div>
     {/if}
-  </fieldset>
+  </div>
 {/each}
-<button type="button" class="admbtn" onclick={add}>+ add upstream</button>
+<button type="button" class="iconbtn" onclick={add}>+ add upstream</button>
