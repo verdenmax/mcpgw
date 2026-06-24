@@ -463,6 +463,7 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 .cfg-errs code { color: var(--fg); font-family: var(--mono); }
 
 /* field help: inline hint + ? tooltip */
+.cfg-lbl { display: inline-flex; align-items: center; gap: 4px; }
 .cfg-hint { font-size: var(--fs-2xs); color: var(--muted); line-height: 1.45; }
 .cfg-field.cfg-switch .cfg-hint { flex-basis: 100%; }
 .cfg-q { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;

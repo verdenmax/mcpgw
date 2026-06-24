@@ -20,7 +20,7 @@
         <input bind:value={server.http.bind} />
         <span class="cfg-hint">HTTP 监听地址，host:port，如 127.0.0.1:8970</span>
       </label>
-      <label class="cfg-field">path <span class="cfg-q" title="MCP 端点路径，默认 /mcp" aria-label="MCP 端点路径，默认 /mcp">?</span><input bind:value={server.http.path} /></label>
+      <label class="cfg-field"><span class="cfg-lbl">path <span class="cfg-q" title="MCP 端点路径，默认 /mcp" aria-label="MCP 端点路径，默认 /mcp">?</span></span><input bind:value={server.http.path} /></label>
       <div class="cfg-arr"><span class="label">api_key <span class="cfg-q" title="每条：name=key 标签（仅日志/观测，非密钥本身）、env=存放该 key 的环境变量名" aria-label="每条：name=key 标签（仅日志/观测，非密钥本身）、env=存放该 key 的环境变量名">?</span></span>
         {#each server.http.api_key ?? [] as k, i}
           <div class="cfg-arr-row">
