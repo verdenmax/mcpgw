@@ -468,5 +468,6 @@ table.kv td { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhe
 .cfg-q { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
   border-radius: 50%; background: var(--panel); border: 1px solid var(--border); color: var(--muted);
   font-size: 10px; cursor: help; margin-left: 4px; vertical-align: middle;
+  text-transform: none; letter-spacing: normal;
   transition: color .14s, border-color .14s; }
 .cfg-q:hover { color: var(--fg); border-color: var(--border-hover); }
