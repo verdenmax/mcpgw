@@ -4,7 +4,7 @@
 </script>
 
 {#if dashboard === undefined}
-  <button type="button" class="admbtn" onclick={() => (dashboard = defaultSection("dashboard"))}>+ 启用 [dashboard]</button>
+  <button type="button" class="iconbtn" onclick={() => (dashboard = defaultSection("dashboard"))}>+ 启用 [dashboard]</button>
 {:else}
   <label class="cfg-field cfg-switch">enabled <input type="checkbox" bind:checked={dashboard.enabled} /></label>
   <label class="cfg-field">bind <input bind:value={dashboard.bind} /></label>
